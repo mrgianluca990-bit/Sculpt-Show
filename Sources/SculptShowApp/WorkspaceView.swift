@@ -89,7 +89,7 @@ struct WorkspaceView: View {
     @StateObject private var timecodeReader = TimecodeReader()
     @State private var showingTimecodeReader = false
     @EnvironmentObject private var midi: MIDIControl
-    @State private var showingOutputMixer = false
+    @State private var showingOutputMixer = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -112,6 +112,16 @@ struct WorkspaceView: View {
                 Divider().overlay(Skin.stroke)
                 inspector
                     .frame(width: 346)
+            }
+            .frame(maxHeight: .infinity)
+            if showingOutputMixer {
+                Divider().overlay(Skin.stroke)
+                ShowOutputMixerView()
+                    .environmentObject(playback)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 244)
+                    .background(Skin.panel)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             statusBar
         }
@@ -155,9 +165,6 @@ struct WorkspaceView: View {
         }
         .sheet(isPresented: $showingTimecodeReader) {
             TimecodeReaderView().environmentObject(timecodeReader)
-        }
-        .sheet(isPresented: $showingOutputMixer) {
-            ShowOutputMixerView().environmentObject(playback)
         }
         .alert("Sculpt Show", isPresented: Binding(
             get: { store.errorMessage != nil || playback.errorMessage != nil },
@@ -258,10 +265,14 @@ struct WorkspaceView: View {
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                Button { showingOutputMixer = true } label: {
+                Button { withAnimation(.easeInOut(duration: 0.18)) {
+                    showingOutputMixer.toggle()
+                } } label: {
                     Label("MIXER", systemImage: "slider.vertical.3")
                 }
-                .help("Open the output mixer directly. Audio/MIDI Setup is in the File menu.")
+                .buttonStyle(.borderedProminent)
+                .tint(showingOutputMixer ? Skin.gold : Skin.raised)
+                .help(showingOutputMixer ? "Hide the docked output mixer" : "Show the docked output mixer")
                 HStack(spacing: 4) {
                     Circle().fill(playback.routingEnabled ? Skin.green : .red)
                         .frame(width: 7, height: 7)

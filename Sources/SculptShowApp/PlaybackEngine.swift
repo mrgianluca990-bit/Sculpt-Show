@@ -66,6 +66,8 @@ final class PlaybackEngine: ObservableObject {
     @Published private(set) var outputControls = OutputMuteSoloState(channelCount: 0)
     @Published private(set) var outputPeaks: [Float] = []
     @Published private(set) var outputRMS: [Float] = []
+    @Published private(set) var outputPeakHolds: [Float] = []
+    private var peakHoldState = OutputPeakHoldState(channelCount: 0)
     private let preferredOutputUIDKey = "SculptShow.preferredCoreAudioOutputUID.v1"
     private var routingStartupAttempted = false
 
@@ -73,6 +75,16 @@ final class PlaybackEngine: ObservableObject {
         let index = channel - 1
         guard index >= 0, index < outputPeaks.count, index < outputRMS.count else { return (0, 0) }
         return (outputPeaks[index], outputRMS[index])
+    }
+
+    func outputPeakHold(channel: Int) -> Float {
+        let index = channel - 1
+        return index >= 0 && index < outputPeakHolds.count ? outputPeakHolds[index] : 0
+    }
+
+    func resetOutputPeakHolds() {
+        peakHoldState.reset()
+        outputPeakHolds = peakHoldState.values
     }
 
     /// Prevent unattended playback with an unconfigured or wrong physical device.
@@ -101,6 +113,10 @@ final class PlaybackEngine: ObservableObject {
         guard routingEnabled else { return }
         outputPeaks = peaks
         outputRMS = rms
+        // Peak hold is mixer-monitoring state, not part of the audio pipeline.
+        // Keep a hold for every physical output, even when its strip is scrolled away.
+        peakHoldState.observe(peaks)
+        outputPeakHolds = peakHoldState.values
     }
     var routingOutputCount: Int { routedAudio.selectedDevice?.channels ?? 0 }
 
@@ -163,6 +179,8 @@ final class PlaybackEngine: ObservableObject {
         outputControls = OutputMuteSoloState(channelCount: 0)
         outputPeaks = []
         outputRMS = []
+        peakHoldState = OutputPeakHoldState(channelCount: 0)
+        outputPeakHolds = []
         routedAudio.onMeterSample = { [weak self] peaks, rms in
             self?.updateMeterLevels(peaks: peaks, rms: rms)
         }
@@ -173,6 +191,8 @@ final class PlaybackEngine: ObservableObject {
             outputControls = allAudible
             outputPeaks = [Float](repeating: 0, count: device.channels)
             outputRMS = [Float](repeating: 0, count: device.channels)
+            peakHoldState = OutputPeakHoldState(channelCount: device.channels)
+            outputPeakHolds = peakHoldState.values
             routingEnabled = true
             routingDeviceID = device.id
             if !device.uid.isEmpty {

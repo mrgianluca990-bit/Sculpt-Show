@@ -25,7 +25,7 @@ struct SculptShowApp: App {
                     }
                 }
         }
-        .defaultSize(width: 1300, height: 790)
+        .defaultSize(width: 1300, height: 850)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Show") {

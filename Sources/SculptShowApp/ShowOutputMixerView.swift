@@ -1,11 +1,11 @@
 import SwiftUI
 import SculptShowCore
 
-/// First Cue Native → Show convergence: controls the REAL Core Audio MatrixMixer.
+/// Docked output console in the main show window. No floating sheet and no
+/// audio-graph rebuild when the panel opens/closes or changes banks.
 struct ShowOutputMixerView: View {
     @EnvironmentObject private var playback: PlaybackEngine
-    @Environment(\.dismiss) private var dismiss
-    @State private var bank = 1
+    @State private var bank = 0 // 0 = All, matching the Cue console
     @State private var labels = ShowOutputLabels.load()
 
     private var channelCount: Int { playback.routingOutputCount }
@@ -15,55 +15,72 @@ struct ShowOutputMixerView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 7) {
             header
             if playback.routingEnabled && channelCount > 0 {
                 activeMixer
             } else {
-                Text("Audio output is not available. Open File → Audio/MIDI Setup and choose a connected Core Audio device. Audio GO will be disabled until routing is ready.")
+                Text("Audio not ready. Open File → Audio/MIDI Setup to select an output device.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .padding(20)
-        .frame(minWidth: 650, minHeight: 340)
-        .onChange(of: channelCount) { _ in bank = 1 }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: channelCount) { _ in bank = 0 }
     }
 
     private var header: some View {
-        HStack {
-            Label("SCULPT OUTPUT MIXER", systemImage: "slider.vertical.3")
-                .font(.system(size: 16, weight: .bold, design: .monospaced))
-            Spacer()
+        HStack(spacing: 12) {
+            Label("OUTPUT MIXER", systemImage: "slider.vertical.3")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundColor(Color(red: 0.93, green: 0.70, blue: 0.38))
+            Text("\(deviceName) · \(channelCount) OUT")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            if playback.outputControls.anySolo {
+                Text("SOLO: \(playback.outputControls.soloDescription)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(.yellow)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button("CLEAR PEAK") { playback.resetOutputPeakHolds() }
+                .controlSize(.small)
+                .help("Reset all Peak Hold and clip indicators")
+                .disabled(!playback.routingEnabled)
             Button("RESET M/S") { playback.resetOutputMuteSolo() }
+                .controlSize(.small)
                 .disabled(!playback.routingEnabled ||
                     (playback.outputControls.mutedCount == 0 && !playback.outputControls.anySolo))
-            Button("Close") { dismiss() }
         }
     }
 
     private var activeMixer: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("\(deviceName) · \(channelCount) OUT")
-                    .font(.system(size: 11, design: .monospaced))
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Text("BANK")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
-                Spacer()
-                if playback.outputControls.anySolo {
-                    Text("SOLO ACTIVE: \(playback.outputControls.soloDescription)")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.yellow)
+                Picker("Bank", selection: $bank) {
+                    ForEach(OutputMixerBanks.banks(channelCount: channelCount), id: \.self) { number in
+                        Text(OutputMixerBanks.title(channelCount: channelCount, bank: number))
+                            .tag(number)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .frame(maxWidth: 520)
+                Spacer(minLength: 0)
+                Text("Peak / RMS · dBFS   |   M = Mute   S = Solo")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
             }
-            Picker("Bank", selection: $bank) {
-                ForEach(OutputMixerBanks.banks(channelCount: channelCount), id: \.self) { number in
-                    Text(OutputMixerBanks.title(channelCount: channelCount, bank: number))
-                        .tag(number)
-                }
-            }
-            .pickerStyle(.segmented)
             ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 3) {
+                LazyHStack(alignment: .top, spacing: 3) {
                     ForEach(OutputMixerBanks.channels(channelCount: channelCount, bank: bank), id: \.self) { channel in
                         OutputChannelStrip(channel: channel,
                                            deviceName: deviceName,
@@ -71,12 +88,9 @@ struct ShowOutputMixerView: View {
                                            labels: $labels)
                     }
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 3)
             }
-            .frame(maxHeight: .infinity)
-            Text("POST-ROUTE TRUE PEAK/RMS (dBFS): measured from the live MatrixMixer output buffer. M = mute · S = multi-solo. Stem routing and mute/solo never restart playback. Meter readings reset on hardware change.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
@@ -93,57 +107,90 @@ private struct OutputChannelStrip: View {
 
     private var muted: Bool { playback.outputControls.isMuted(channel) }
     private var soloed: Bool { playback.outputControls.isSoloed(channel) }
-    private var audible: Bool { playback.outputControls.isAudible(channel) }
     private var levels: (peak: Float, rms: Float) { playback.outputMeter(channel: channel) }
+    private var hold: Float { playback.outputPeakHold(channel: channel) }
     private var currentLabel: String {
         labels.label(device: deviceName, channels: channelCount, channel: channel)
     }
 
     var body: some View {
-        VStack(spacing: 7) {
+        VStack(spacing: 3) {
             Text(String(format: "%02d", channel))
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
             signalMeter
-            Text(String(format: "%.0f", max(-90, OutputMeterLevels.dBFS(levels.peak))))
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(.secondary)
+            Text(hold >= 1 ? "CLIP" :
+                String(format: "%.0f", max(-90, OutputMeterLevels.dBFS(hold))))
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundColor(hold >= 1 ? .red : .secondary)
                 .monospacedDigit()
-            Button("M") { playback.toggleOutputMute(channel) }
-                .buttonStyle(.bordered)
-                .tint(muted ? .red : .gray)
-                .help("Mute output \(channel)")
-            Button("S") { playback.toggleOutputSolo(channel) }
-                .buttonStyle(.bordered)
-                .tint(soloed ? .yellow : .gray)
-                .help("Solo output \(channel)")
+            HStack(spacing: 2) {
+                switchButton(letter: "M", isActive: muted, activeColor: .red,
+                             help: "Mute output \(channel)") {
+                    playback.toggleOutputMute(channel)
+                }
+                switchButton(letter: "S", isActive: soloed, activeColor: .yellow,
+                             help: "Solo output \(channel)") {
+                    playback.toggleOutputSolo(channel)
+                }
+            }
             labelView
         }
-        .frame(width: 46)
-        .padding(.vertical, 8)
-        .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
+        .frame(width: 45)
+        .padding(.vertical, 5)
+        .background(Color.gray.opacity(0.11), in: RoundedRectangle(cornerRadius: 4))
     }
 
-    /// Tap is connected after the matrix, so these values reflect actual output audio.
+    /// A real illuminated, latched indicator rather than a tint on a gray
+    /// bordered system button (whose fill never changed on some macOS skins).
+    private func switchButton(letter: String, isActive: Bool, activeColor: Color,
+                              help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(letter)
+                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .foregroundColor(isActive ? .black : .gray)
+                .frame(width: 19, height: 18)
+                .background(isActive ? activeColor : Color.black.opacity(0.38),
+                            in: RoundedRectangle(cornerRadius: 3))
+                .overlay(RoundedRectangle(cornerRadius: 3)
+                    .strokeBorder(isActive ? activeColor : Color.gray.opacity(0.35), lineWidth: 1))
+                .shadow(color: isActive ? activeColor.opacity(0.65) : .clear,
+                        radius: isActive ? 4 : 0)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(help)
+        .accessibilityValue(isActive ? "On" : "Off")
+        .help(help + (isActive ? " · ACTIVE" : " · inactive"))
+    }
+
+    /// Measured after the physical routing matrix. The cap is a held sampled
+    /// peak; it is NOT an oversampled analogue true-peak measurement.
     private var signalMeter: some View {
         let rmsValue = CGFloat(OutputMeterLevels.normalized(levels.rms))
         let peakValue = CGFloat(OutputMeterLevels.normalized(levels.peak))
-        let peakColor: Color = peakValue > 0.95 ? .red : peakValue > 0.82 ? .yellow : .green
+        let heldValue = CGFloat(OutputMeterLevels.normalized(hold))
+        let currentColor: Color = peakValue > 0.98 ? .red : peakValue > 0.83 ? .yellow : .green
         return ZStack(alignment: .bottom) {
             RoundedRectangle(cornerRadius: 2)
-                .fill(Color.gray.opacity(0.25))
-                .frame(width: 16, height: 86)
+                .fill(Color.black.opacity(0.48))
+                .frame(width: 15, height: 65)
             RoundedRectangle(cornerRadius: 2)
                 .fill(Color.green.opacity(0.8))
-                .frame(width: 16, height: 86 * rmsValue)
+                .frame(width: 15, height: 65 * rmsValue)
             if levels.peak > 0 {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(peakColor)
-                    .frame(width: 16, height: 3)
-                    .offset(y: -max(0, 86 * peakValue - 3))
+                Rectangle()
+                    .fill(currentColor)
+                    .frame(width: 15, height: 2)
+                    .offset(y: -max(0, 65 * peakValue - 2))
+            }
+            if hold > 0 {
+                Rectangle()
+                    .fill(hold >= 1 ? Color.red : Color.yellow)
+                    .frame(width: 15, height: 2)
+                    .offset(y: -max(0, 65 * heldValue - 2))
             }
         }
-        .frame(width: 16, height: 86)
-        .help("Real output meter: Peak \(Int(OutputMeterLevels.dBFS(levels.peak))) dBFS / RMS \(Int(OutputMeterLevels.dBFS(levels.rms))) dBFS")
+        .frame(width: 15, height: 65)
+        .help("POST-ROUTE Peak \(Int(OutputMeterLevels.dBFS(levels.peak))) dBFS · RMS \(Int(OutputMeterLevels.dBFS(levels.rms))) dBFS · Hold \(Int(OutputMeterLevels.dBFS(hold))) dBFS")
     }
 
     @ViewBuilder
@@ -155,6 +202,7 @@ private struct OutputChannelStrip: View {
                 .multilineTextAlignment(.center)
                 .focused($focused)
                 .onSubmit { commitLabel() }
+                .frame(width: 43)
         } else {
             Button {
                 labelDraft = currentLabel
@@ -167,7 +215,7 @@ private struct OutputChannelStrip: View {
                     .frame(width: 42)
             }
             .buttonStyle(.plain)
-            .help("Click to rename; Return saves")
+            .help("Rename channel · Return saves")
         }
     }
 
