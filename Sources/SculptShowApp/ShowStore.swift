@@ -258,13 +258,14 @@ final class ShowStore: ObservableObject {
         playback.setElementMix(elementID, for: cueID, gain: safe)
     }
 
-    /// Persist a one-based physical output assignment; changes while playing
-    /// stop the cue so a channel can't jump unexpectedly during a live show.
+    /// Repatch an individual stem without changing its transport, timeline or Rules.
     func setElementOutput(_ elementID: UUID, in cueID: UUID, listID: UUID,
                           to firstOutput: Int, using playback: PlaybackEngine) {
         let safe = min(max(firstOutput, 1), 64)
-        guard show.cue(cueID)?.elements.first(where: { $0.id == elementID })?.outputStartChannel != safe else { return }
-        if playback.snapshots[cueID] != nil { playback.stop(cueID, notifyRules: false) }
+        guard let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID && $0.kind == .audio }),
+              element.outputStartChannel != safe else { return }
+        guard playback.updateLiveElementOutput(elementID, for: cueID,
+                  firstOutput: safe, sourcePath: element.sourcePath) else { return }
         editCue(cueID, list: listID) { cue in
             guard let index = cue.elements.firstIndex(where: { $0.id == elementID && $0.kind == .audio }) else { return }
             cue.elements[index].outputStartChannel = safe

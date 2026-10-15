@@ -1,5 +1,6 @@
 import SwiftUI
 import SculptShowCore
+import AVFAudio
 
 /// An ordered collection of capabilities inside one reusable cue container.
 struct CueContentsEditor: View {
@@ -7,6 +8,12 @@ struct CueContentsEditor: View {
     @EnvironmentObject private var playback: PlaybackEngine
     let cue: Cue
     let listID: UUID
+    @State private var audioChannelCache: [String: Int] = [:]
+
+    private func audioChannelCount(at path: String) -> Int {
+        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) else { return 2 }
+        return Int(file.processingFormat.channelCount)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -65,7 +72,7 @@ struct CueContentsEditor: View {
                                 get: { store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.outputStartChannel ?? element.outputStartChannel },
                                 set: { store.setElementOutput(element.id, in: cue.id, listID: listID, to: $0, using: playback) }
                             )) {
-                                ForEach(1...max(2, playback.routingOutputCount), id: \.self) { channel in
+                                ForEach(1...max(1, playback.routingOutputCount - ((audioChannelCache[element.sourcePath] ?? 2) == 2 ? 1 : 0)), id: \.self) { channel in
                                     Text("OUT \(channel)").tag(channel)
                                 }
                             }
@@ -74,7 +81,7 @@ struct CueContentsEditor: View {
                             .help("Select the first hardware output channel. Mono uses one output, stereo uses two consecutive outputs.")
                         }
                         if !playback.routingEnabled {
-                            Text("Enable OUTPUT ROUTING in global transport to assign physical outputs.")
+                            Text("Audio routing is initializing. Select a device in File → Audio/MIDI Setup if required.")
                                 .font(.caption2).foregroundColor(.secondary)
                         } else if let device = playback.routingDevices.first(where: { $0.id == playback.routingDeviceID }) {
                             Text("\(device.name) · \(device.channels) hardware outputs · mono/stereo destinations")
@@ -125,6 +132,14 @@ struct CueContentsEditor: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+        }
+        .onAppear { updateChannelCache() }
+        .onChange(of: cue.elements) { _ in updateChannelCache() }
+    }
+
+    private func updateChannelCache() {
+        for element in cue.audioElements where audioChannelCache[element.sourcePath] == nil {
+            audioChannelCache[element.sourcePath] = audioChannelCount(at: element.sourcePath)
         }
     }
 }

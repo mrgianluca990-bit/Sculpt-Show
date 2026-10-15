@@ -64,6 +64,44 @@ final class PlaybackEngine: ObservableObject {
     @Published private(set) var routingDeviceID: AudioDeviceID?
     /// Global, live-only output Mute/Solo state. Never serialized into a show.
     @Published private(set) var outputControls = OutputMuteSoloState(channelCount: 0)
+    @Published private(set) var outputPeaks: [Float] = []
+    @Published private(set) var outputRMS: [Float] = []
+    private let preferredOutputUIDKey = "SculptShow.preferredCoreAudioOutputUID.v1"
+    private var routingStartupAttempted = false
+
+    func outputMeter(channel: Int) -> (peak: Float, rms: Float) {
+        let index = channel - 1
+        guard index >= 0, index < outputPeaks.count, index < outputRMS.count else { return (0, 0) }
+        return (outputPeaks[index], outputRMS[index])
+    }
+
+    /// Prevent unattended playback with an unconfigured or wrong physical device.
+    func startRoutingAutomatically() async {
+        guard !routingStartupAttempted else { return }
+        routingStartupAttempted = true
+        refreshRoutingDevices()
+        guard !routingDevices.isEmpty else {
+            errorMessage = "No Core Audio output device is available. Open File → Audio/MIDI Setup and connect one."
+            return
+        }
+        if let uid = UserDefaults.standard.string(forKey: preferredOutputUIDKey), !uid.isEmpty {
+            guard let saved = routingDevices.first(where: { $0.uid == uid }) else {
+                errorMessage = "The last selected audio interface is disconnected. Select it or another output in File → Audio/MIDI Setup. Audio GO remains disabled."
+                return
+            }
+            await configureRouting(deviceID: saved.id)
+        } else {
+            let defaultID = RoutedAudioEngine.defaultOutputID()
+            let device = routingDevices.first(where: { $0.id == defaultID }) ?? routingDevices[0]
+            await configureRouting(deviceID: device.id)
+        }
+    }
+
+    private func updateMeterLevels(peaks: [Float], rms: [Float]) {
+        guard routingEnabled else { return }
+        outputPeaks = peaks
+        outputRMS = rms
+    }
     var routingOutputCount: Int { routedAudio.selectedDevice?.channels ?? 0 }
 
     /// Output-level Mute/Solo goes directly to the MatrixMixer output gain.
@@ -102,32 +140,80 @@ final class PlaybackEngine: ObservableObject {
         routingDevices = RoutedAudioEngine.availableOutputs()
     }
 
-    /// Reconfigure only while silent, and never silently route to the wrong device.
+    /// Never interrupts a show. Hardware-device changes require an idle transport.
+    /// Normal crosspoint/output mixer edits do NOT reconfigure the engine.
     func configureRouting(deviceID: AudioDeviceID?) async {
-        stopAll()
+        guard let deviceID else {
+            errorMessage = "Routing is always enabled when an audio interface is available. Select a Core Audio output device."
+            return
+        }
+        if routingEnabled, routingDeviceID == deviceID { return }
+        guard snapshots.isEmpty else {
+            errorMessage = "Cannot change audio interface while cues are active. The current audio keeps playing; stop the show before changing hardware."
+            return
+        }
+        refreshRoutingDevices()
+        guard let device = routingDevices.first(where: { $0.id == deviceID }) else {
+            errorMessage = "Selected output device is not connected. Current routing was not changed."
+            return
+        }
         routedAudio.teardown()
         routingEnabled = false
         routingDeviceID = nil
         outputControls = OutputMuteSoloState(channelCount: 0)
-        guard let deviceID else { return }
-        refreshRoutingDevices()
-        guard let device = routingDevices.first(where: { $0.id == deviceID }) else {
-            errorMessage = "Selected output device is not connected."
-            return
+        outputPeaks = []
+        outputRMS = []
+        routedAudio.onMeterSample = { [weak self] peaks, rms in
+            self?.updateMeterLevels(peaks: peaks, rms: rms)
         }
         do {
             try await routedAudio.configure(device: device)
-            let initialOutputs = OutputMuteSoloState(channelCount: device.channels)
-            try routedAudio.applyOutputControls(initialOutputs)
-            outputControls = initialOutputs
+            let allAudible = OutputMuteSoloState(channelCount: device.channels)
+            try routedAudio.applyOutputControls(allAudible)
+            outputControls = allAudible
+            outputPeaks = [Float](repeating: 0, count: device.channels)
+            outputRMS = [Float](repeating: 0, count: device.channels)
             routingEnabled = true
             routingDeviceID = device.id
+            if !device.uid.isEmpty {
+                UserDefaults.standard.set(device.uid, forKey: preferredOutputUIDKey)
+            }
         } catch {
             routedAudio.teardown()
-            errorMessage = "Cannot enable routed playback: \(error.localizedDescription)"
+            errorMessage = "Cannot initialize Core Audio output: \(error.localizedDescription). Audio GO stays disabled until setup succeeds."
         }
     }
 
+    /// Repatch an active voice inside the matrix; it keeps playing continuously.
+    /// Validates source channel count and output range before changing anything.
+    @discardableResult
+    func updateLiveElementOutput(_ elementID: UUID, for cueID: UUID,
+                                 firstOutput: Int, sourcePath: String) -> Bool {
+        guard routingEnabled else {
+            errorMessage = "Audio routing is not ready. Select an interface in File → Audio/MIDI Setup."
+            return false
+        }
+        do {
+            let file = try AVAudioFile(forReading: URL(fileURLWithPath: sourcePath))
+            let sourceChannels = Int(file.processingFormat.channelCount)
+            guard AudioRoutePlan.crosspoints(firstOutput: firstOutput,
+                sourceChannels: sourceChannels, deviceChannels: routingOutputCount) != nil else {
+                errorMessage = "OUT \(firstOutput) is not valid for this \(sourceChannels)-channel file on a \(routingOutputCount)-channel device."
+                return false
+            }
+            try routedAudio.changeOutput(cueID: cueID, elementID: elementID,
+                                         firstOutput: firstOutput, sourceChannels: sourceChannels)
+            if var cue = activeCues[cueID],
+                let index = cue.elements.firstIndex(where: { $0.id == elementID }) {
+                cue.elements[index].outputStartChannel = firstOutput
+                activeCues[cueID] = cue
+            }
+            return true
+        } catch {
+            errorMessage = "Cannot change route while playing: \(error.localizedDescription)"
+            return false
+        }
+    }
 
     /// Allow all prepared players to receive their play(atTime:) call before the
     /// device deadline. Every element uses the SAME deadline, not a per-file now.
@@ -158,10 +244,10 @@ final class PlaybackEngine: ObservableObject {
     func play(_ requestedCue: Cue, overrideFadeInSeconds: Double? = nil,
               from markerOffsetSeconds: Double = 0) -> Bool {
         guard requestedCue.enabled else { return false }
-        // Safety: stored hardware routes must never silently be folded into
-        // a stereo system output just because a new session starts in legacy mode.
-        if !routingEnabled && requestedCue.audioElements.contains(where: { $0.outputStartChannel != 1 }) {
-            errorMessage = "This cue contains physical output assignments. Enable OUTPUT ROUTING before GO; stereo fallback was blocked for safety."
+        // Show mode always requires an active Core Audio route for audio cues.
+        // Never silently fall back to system stereo if the hardware is unavailable.
+        if requestedCue.hasAudio && !routingEnabled {
+            errorMessage = "Audio output is not ready. Open File → Audio/MIDI Setup and select a connected interface."
             return false
         }
         var cue = requestedCue

@@ -20,7 +20,7 @@ struct ShowOutputMixerView: View {
             if playback.routingEnabled && channelCount > 0 {
                 activeMixer
             } else {
-                Text("Enable OUTPUT ROUTING and select a Core Audio interface to control individual outputs. System stereo playback is unchanged.")
+                Text("Audio output is not available. Open File → Audio/MIDI Setup and choose a connected Core Audio device. Audio GO will be disabled until routing is ready.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -74,7 +74,7 @@ struct ShowOutputMixerView: View {
                 .padding(.vertical, 8)
             }
             .frame(maxHeight: .infinity)
-            Text("M = mute individual output · S = multi-solo · mute overrides solo. Switches affect the MatrixMixer's physical outputs without restarting audio. Levels reset when routing is disabled or the device changes.")
+            Text("POST-ROUTE TRUE PEAK/RMS (dBFS): measured from the live MatrixMixer output buffer. M = mute · S = multi-solo. Stem routing and mute/solo never restart playback. Meter readings reset on hardware change.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -94,6 +94,7 @@ private struct OutputChannelStrip: View {
     private var muted: Bool { playback.outputControls.isMuted(channel) }
     private var soloed: Bool { playback.outputControls.isSoloed(channel) }
     private var audible: Bool { playback.outputControls.isAudible(channel) }
+    private var levels: (peak: Float, rms: Float) { playback.outputMeter(channel: channel) }
     private var currentLabel: String {
         labels.label(device: deviceName, channels: channelCount, channel: channel)
     }
@@ -102,10 +103,11 @@ private struct OutputChannelStrip: View {
         VStack(spacing: 7) {
             Text(String(format: "%02d", channel))
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-            RoundedRectangle(cornerRadius: 3)
-                .fill(audible ? Color.green.opacity(0.65) : Color.gray.opacity(0.30))
-                .frame(width: 14, height: 66)
-                .help("Output enabled status, not a peak meter")
+            signalMeter
+            Text(String(format: "%.0f", max(-90, OutputMeterLevels.dBFS(levels.peak))))
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
             Button("M") { playback.toggleOutputMute(channel) }
                 .buttonStyle(.bordered)
                 .tint(muted ? .red : .gray)
@@ -119,6 +121,29 @@ private struct OutputChannelStrip: View {
         .frame(width: 46)
         .padding(.vertical, 8)
         .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    /// Tap is connected after the matrix, so these values reflect actual output audio.
+    private var signalMeter: some View {
+        let rmsValue = CGFloat(OutputMeterLevels.normalized(levels.rms))
+        let peakValue = CGFloat(OutputMeterLevels.normalized(levels.peak))
+        let peakColor: Color = peakValue > 0.95 ? .red : peakValue > 0.82 ? .yellow : .green
+        return ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.gray.opacity(0.25))
+                .frame(width: 16, height: 86)
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.green.opacity(0.8))
+                .frame(width: 16, height: 86 * rmsValue)
+            if levels.peak > 0 {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(peakColor)
+                    .frame(width: 16, height: 3)
+                    .offset(y: -max(0, 86 * peakValue - 3))
+            }
+        }
+        .frame(width: 16, height: 86)
+        .help("Real output meter: Peak \(Int(OutputMeterLevels.dBFS(levels.peak))) dBFS / RMS \(Int(OutputMeterLevels.dBFS(levels.rms))) dBFS")
     }
 
     @ViewBuilder

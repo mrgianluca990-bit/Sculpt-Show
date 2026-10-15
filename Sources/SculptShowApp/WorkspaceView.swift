@@ -88,9 +88,8 @@ struct WorkspaceView: View {
     @State private var rulesScope: RuleScope?
     @StateObject private var timecodeReader = TimecodeReader()
     @State private var showingTimecodeReader = false
-    @StateObject private var midi = MIDIControl()
-    @State private var showingMIDISettings = false
-    @State private var showingRouting = false
+    @EnvironmentObject private var midi: MIDIControl
+    @State private var showingOutputMixer = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -118,6 +117,7 @@ struct WorkspaceView: View {
         }
         .background(Skin.base)
         .onAppear {
+            Task { @MainActor in await playback.startRoutingAutomatically() }
             midi.onCommand = { [weak store, weak playback] command in
                 guard let store, let playback else { return }
                 switch command {
@@ -156,11 +156,8 @@ struct WorkspaceView: View {
         .sheet(isPresented: $showingTimecodeReader) {
             TimecodeReaderView().environmentObject(timecodeReader)
         }
-        .sheet(isPresented: $showingMIDISettings) {
-            MIDIControlSettings().environmentObject(midi)
-        }
-        .sheet(isPresented: $showingRouting) {
-            OutputRoutingView().environmentObject(playback)
+        .sheet(isPresented: $showingOutputMixer) {
+            ShowOutputMixerView().environmentObject(playback)
         }
         .alert("Sculpt Show", isPresented: Binding(
             get: { store.errorMessage != nil || playback.errorMessage != nil },
@@ -261,14 +258,16 @@ struct WorkspaceView: View {
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                Button { showingRouting = true } label: {
-                    Label(playback.routingEnabled ? "ROUTING \(playback.routingOutputCount)CH" : "OUTPUT ROUTING", systemImage: "cable.connector")
+                Button { showingOutputMixer = true } label: {
+                    Label("MIXER", systemImage: "slider.vertical.3")
                 }
-                .help("Choose Core Audio device and enable per-file physical channel routing")
-                Button { showingMIDISettings = true } label: {
-                    Label(midi.selectedID == nil ? "MIDI SETUP" : "MIDI CONNECTED", systemImage: "pianokeys")
+                .help("Open the output mixer directly. Audio/MIDI Setup is in the File menu.")
+                HStack(spacing: 4) {
+                    Circle().fill(playback.routingEnabled ? Skin.green : .red)
+                        .frame(width: 7, height: 7)
+                    Text(playback.routingEnabled ? "AUDIO \(playback.routingOutputCount)CH" : "AUDIO OFF")
+                        .font(.system(size: 10, design: .monospaced))
                 }
-                .help("Learn USB MIDI buttons for live transport and navigation")
                 Button { showingTimecodeReader = true } label: {
                     Text(timecodeReader.frame?.display ?? "MTC READER")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))

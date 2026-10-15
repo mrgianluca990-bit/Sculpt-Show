@@ -14,6 +14,7 @@ final class RoutedAudioEngine {
         let id: AudioDeviceID
         let name: String
         let channels: Int
+        let uid: String
     }
 
     enum RoutingError: LocalizedError {
@@ -54,6 +55,18 @@ final class RoutedAudioEngine {
     private var voices: [Voice] = []
     private(set) var selectedDevice: OutputDevice?
     private var cueToVoices: [UUID: [Int]] = [:]
+    /// Called on the main queue with actual PCM values tapped after the matrix.
+    var onMeterSample: (([Float], [Float]) -> Void)?
+
+    static func defaultOutputID() -> AudioDeviceID? {
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var id = AudioDeviceID(0)
+        var bytes = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &bytes, &id) == noErr, id != 0 else { return nil }
+        return id
+    }
 
     var isReady: Bool { engine?.isRunning == true && selectedDevice != nil }
 
@@ -89,7 +102,15 @@ final class RoutedAudioEngine {
             } else {
                 label = "Audio Device"
             }
-            return OutputDevice(id: device, name: label, channels: channels)
+            var uidAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
+                mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            var uidValue: Unmanaged<CFString>?
+            var uidBytes = UInt32(MemoryLayout<CFString>.size)
+            let uidStatus = AudioObjectGetPropertyData(device, &uidAddress, 0, nil, &uidBytes, &uidValue)
+            let uid: String
+            if uidStatus == noErr, let uidValue { uid = uidValue.takeRetainedValue() as String }
+            else { uid = "" }
+            return OutputDevice(id: device, name: label, channels: channels, uid: uid)
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
@@ -165,6 +186,31 @@ final class RoutedAudioEngine {
                    kAudioUnitScope_Global, (UInt32(input) << 16) | UInt32(output), 0, 0), "clear matrix")
             }
         }
+        // Real peak/RMS of each physical output, after per-stem matrix routing
+        // and output-scope mute/solo. No fake signal-presence meters.
+        // Use a 2048-frame tap to keep SwiftUI updates around 20–25 Hz.
+        let meterSink = onMeterSample
+        mixerUnit.installTap(onBus: 0, bufferSize: 2048, format: multichannel) { buffer, _ in
+            guard let data = buffer.floatChannelData, buffer.frameLength > 0 else { return }
+            let count = min(Int(buffer.format.channelCount), device.channels)
+            let frames = Int(buffer.frameLength)
+            guard count > 0 else { return }
+            var peaks = [Float](repeating: 0, count: count)
+            var rms = [Float](repeating: 0, count: count)
+            for ch in 0..<count {
+                let source = data[ch]
+                var peak: Float = 0
+                var squareSum: Double = 0
+                for index in 0..<frames {
+                    let sample = source[index].isFinite ? source[index] : 0
+                    peak = max(peak, abs(sample))
+                    squareSum += Double(sample) * Double(sample)
+                }
+                peaks[ch] = peak
+                rms[ch] = Float(sqrt(squareSum / Double(frames)))
+            }
+            DispatchQueue.main.async { meterSink?(peaks, rms) }
+        }
         engine = graph
         matrix = mixerUnit
         voices = newVoices
@@ -193,6 +239,8 @@ final class RoutedAudioEngine {
     }
 
     func teardown() {
+        // Disconnect the tap before destroying its host graph.
+        if let matrix { matrix.removeTap(onBus: 0) }
         for voice in voices { voice.node.stop() }
         engine?.stop()
         voices = []
@@ -275,6 +323,41 @@ final class RoutedAudioEngine {
             try require(AudioUnitSetParameter(au, kMatrixMixerParam_Volume,
                  kAudioUnitScope_Global, (UInt32(input) << 16) | UInt32(map.deviceChannel), 1, 0), "assign stem")
         }
+    }
+
+    /// Live output crosspoint patch. Does NOT stop/schedule the player node.
+    /// A paused cue has no allocated voices, but will honor the stored route on resume.
+    func changeOutput(cueID: UUID, elementID: UUID, firstOutput: Int,
+                      sourceChannels: Int) throws {
+        guard let device = selectedDevice, let matrix else { throw RoutingError.engineNotReady }
+        guard AudioRoutePlan.crosspoints(firstOutput: firstOutput,
+            sourceChannels: sourceChannels, deviceChannels: device.channels) != nil else {
+            throw RoutingError.invalidChannel("Audio", firstOutput)
+        }
+        guard let index = (cueToVoices[cueID] ?? []).first(where: { voices[$0].elementID == elementID }) else {
+            // The caller may be paused and has no scheduled voice to patch.
+            return
+        }
+        guard let previous = AudioRoutePlan.crosspoints(firstOutput: voices[index].firstOutput,
+            sourceChannels: voices[index].fileChannels, deviceChannels: device.channels),
+              let next = AudioRoutePlan.crosspoints(firstOutput: firstOutput,
+            sourceChannels: voices[index].fileChannels, deviceChannels: device.channels) else {
+            throw RoutingError.invalidChannel("Audio", firstOutput)
+        }
+        // Only modify changed crosspoints; do not clear unrelated channels or
+        // stop the player. This is a live patch, not an engine reconfigure.
+        let start = index * 2
+        for old in previous where !next.contains(old) {
+            let key = (UInt32(start + old.sourceChannel) << 16) | UInt32(old.deviceChannel)
+            try require(AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
+                kAudioUnitScope_Global, key, 0, 0), "live route disconnect")
+        }
+        for newPoint in next where !previous.contains(newPoint) {
+            let key = (UInt32(start + newPoint.sourceChannel) << 16) | UInt32(newPoint.deviceChannel)
+            try require(AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
+                kAudioUnitScope_Global, key, 1, 0), "live route connect")
+        }
+        voices[index].firstOutput = firstOutput
     }
 
     func updateMix(_ cue: Cue, fadeFactor: Float, dimFactor: Float) {
