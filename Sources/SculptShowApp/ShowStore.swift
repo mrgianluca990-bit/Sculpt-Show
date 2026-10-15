@@ -519,11 +519,77 @@ final class ShowStore: ObservableObject {
         }
     }
 
+    /// Markers are timeline positions inside the cue, never separate cue types.
+    @discardableResult
+    func addMarker(to cueID: UUID, in listID: UUID, at seconds: Double) -> UUID? {
+        guard let cue = show.cue(cueID) else { return nil }
+        let id = UUID()
+        let safe = seconds.isFinite ? min(max(0, seconds), 86400) : 0
+        editCue(cueID, list: listID) { cue in
+            cue.markers.append(CueMarker(id: id, name: "Marker \(cue.markers.count + 1)", positionSeconds: safe))
+        }
+        return show.cue(cueID)?.markers.contains(where: { $0.id == id }) == true ? id : nil
+    }
+
+    func renameMarker(_ markerID: UUID, cueID: UUID, listID: UUID, to name: String) {
+        editCue(cueID, list: listID) { cue in
+            guard let i = cue.markers.firstIndex(where: { $0.id == markerID }) else { return }
+            cue.markers[i].name = name
+        }
+    }
+
+    func setMarkerPosition(_ markerID: UUID, cueID: UUID, listID: UUID, to seconds: Double) {
+        guard seconds.isFinite else { return }
+        editCue(cueID, list: listID) { cue in
+            guard let i = cue.markers.firstIndex(where: { $0.id == markerID }) else { return }
+            cue.markers[i].positionSeconds = min(max(0, seconds), 86400)
+        }
+    }
+
+    func removeMarker(_ markerID: UUID, cueID: UUID, listID: UUID) {
+        editCue(cueID, list: listID) { cue in
+            cue.markers.removeAll { $0.id == markerID }
+            // Avoid dangling rule destinations within the source cue.
+            for i in cue.markers.indices {
+                for j in cue.markers[i].rules.indices where cue.markers[i].rules[j].fireAtMarkerID == markerID {
+                    cue.markers[i].rules[j].fireAtMarkerID = nil
+                }
+            }
+            for i in cue.rules.indices where cue.rules[i].fireAtMarkerID == markerID {
+                cue.rules[i].fireAtMarkerID = nil
+            }
+        }
+        // Other cue rules may refer to the marker too; clear these stale references.
+        var next = show
+        var didChange = false
+        for li in next.cueLists.indices {
+            for ci in next.cueLists[li].cues.indices {
+                for ri in next.cueLists[li].cues[ci].rules.indices {
+                    if next.cueLists[li].cues[ci].rules[ri].fireAtMarkerID == markerID {
+                        next.cueLists[li].cues[ci].rules[ri].fireAtMarkerID = nil
+                        didChange = true
+                    }
+                }
+                for mi in next.cueLists[li].cues[ci].markers.indices {
+                    for ri in next.cueLists[li].cues[ci].markers[mi].rules.indices {
+                        if next.cueLists[li].cues[ci].markers[mi].rules[ri].fireAtMarkerID == markerID {
+                            next.cueLists[li].cues[ci].markers[mi].rules[ri].fireAtMarkerID = nil
+                            didChange = true
+                        }
+                    }
+                }
+            }
+        }
+        if didChange { commit(next) }
+    }
+
     func rules(for scope: RuleScope) -> [InteractionRule] {
         switch scope {
         case .show: return show.rules
         case .cueList(let id): return show.cueLists.first(where: { $0.id == id })?.rules ?? []
         case .cue(let cueID, _): return show.cue(cueID)?.rules ?? []
+        case .marker(let markerID, let cueID):
+            return show.cue(cueID)?.markers.first(where: { $0.id == markerID })?.rules ?? []
         }
     }
 
@@ -546,6 +612,12 @@ final class ShowStore: ObservableObject {
                 $0.rules = rules
                 $0.ignoreParentRules = ignoreParent
             }
+        case .marker(let markerID, let cueID):
+            guard let listID = updated.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) })?.id else { return }
+            updated.updateCue(cueID, in: listID) { cue in
+                guard let index = cue.markers.firstIndex(where: { $0.id == markerID }) else { return }
+                cue.markers[index].rules = rules
+            }
         }
         guard updated != show else { return }
         commit(updated)
@@ -562,6 +634,29 @@ final class ShowStore: ObservableObject {
         }
         eventTimestamps.append(now)
 
+        let commands = RulePlanner.commands(for: event, source: cueID, in: show, states: currentRuleStates(using: playback))
+        scheduleCommands(commands, using: playback)
+    }
+
+    /// Called by the cue playback timeline when the playhead crosses a marker.
+    /// Trigger is always Reaching Marker, independent from Starting/Ending/Stopping.
+    func handleMarkersReached(_ markerIDs: [UUID], in cueID: UUID, using playback: PlaybackEngine) {
+        guard !suppressRuleEvents else { return }
+        for markerID in markerIDs {
+            let now = Date()
+            eventTimestamps.removeAll { now.timeIntervalSince($0) > 1 }
+            guard eventTimestamps.count < 64 else {
+                errorMessage = "Rule safety limit reached (64 events/second). Check marker loop rules."
+                return
+            }
+            eventTimestamps.append(now)
+            let commands = RulePlanner.markerCommands(markerID: markerID, source: cueID,
+                in: show, states: currentRuleStates(using: playback))
+            scheduleCommands(commands, using: playback, sourceMarkerID: markerID)
+        }
+    }
+
+    private func currentRuleStates(using playback: PlaybackEngine) -> [UUID: RuleCueState] {
         var states: [UUID: RuleCueState] = [:]
         for (id, snapshot) in playback.snapshots {
             switch snapshot.phase {
@@ -570,7 +665,11 @@ final class ShowStore: ObservableObject {
             case .playing, .fading: states[id] = .playing
             }
         }
-        let commands = RulePlanner.commands(for: event, source: cueID, in: show, states: states)
+        return states
+    }
+
+    private func scheduleCommands(_ commands: [RuleCommand], using playback: PlaybackEngine,
+                                  sourceMarkerID: UUID? = nil) {
         for command in commands {
             let key = UUID()
             let generation = eventGeneration
@@ -587,16 +686,39 @@ final class ShowStore: ObservableObject {
                       self.eventGeneration == generation else { return }
                 self.pendingRuleTasks.removeValue(forKey: key)
                 self.pendingRuleTargets.removeValue(forKey: key)
-                self.execute(command, using: playback)
+                self.execute(command, using: playback, sourceMarkerID: sourceMarkerID)
             }
         }
     }
 
-    private func execute(_ command: RuleCommand, using playback: PlaybackEngine) {
+    private func execute(_ command: RuleCommand, using playback: PlaybackEngine,
+                         sourceMarkerID: UUID? = nil) {
         for targetID in command.targets {
             guard let cue = show.cue(targetID) else { continue }
             switch command.rule.action {
-            case .fire: _ = playback.play(cue, overrideFadeInSeconds: command.rule.fireFadeInSeconds)
+            case .fire:
+                let targetMarkerPosition: Double?
+                if let markerID = command.rule.fireAtMarkerID {
+                    targetMarkerPosition = cue.markers.first(where: { $0.id == markerID })?.positionSeconds
+                } else if let sourceMarkerID, targetID == command.sourceCueID {
+                    // Ovation-style Fire Itself: return to the preceding marker.
+                    targetMarkerPosition = MarkerPlanner.loopDestination(for: sourceMarkerID, in: cue.markers)
+                } else {
+                    targetMarkerPosition = nil
+                }
+                if let position = targetMarkerPosition, let state = playback.snapshots[targetID],
+                   state.phase == .playing || state.phase == .paused {
+                    // Re-fire at a marker of an already active cue without restarting its start rules.
+                    playback.seek(targetID, toSeconds: position)
+                    if state.phase == .paused { _ = playback.play(cue) }
+                } else {
+                    // A pending GO cannot be repositioned. Cancel it explicitly and fire the new location.
+                    if playback.snapshots[targetID]?.phase == .waiting {
+                        playback.stop(targetID, notifyRules: false)
+                    }
+                    _ = playback.play(cue, overrideFadeInSeconds: command.rule.fireFadeInSeconds,
+                                      from: targetMarkerPosition ?? 0)
+                }
             case .stop: playback.stop(targetID)
             case .pause: playback.pause(targetID)
             case .fade: playback.fadeOut(cue, overrideSeconds: command.rule.fadeSeconds)

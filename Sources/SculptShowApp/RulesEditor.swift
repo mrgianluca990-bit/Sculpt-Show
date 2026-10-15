@@ -13,11 +13,34 @@ struct RulesEditor: View {
     @State private var ignoreParents = false
 
     private var allCues: [Cue] { store.show.cueLists.flatMap(\.cues) }
+    private var isMarkerRule: Bool {
+        if case .marker = scope { return true }
+        return false
+    }
+
+    /// Destination marker choices follow the target (itself or a specific cue).
+    private var destinationMarkers: [CueMarker] {
+        switch draft.target {
+        case .itself:
+            switch scope {
+            case .marker(_, let cueID), .cue(let cueID, _):
+                return store.show.cue(cueID)?.sortedMarkers ?? []
+            default: return []
+            }
+        case .specificCue:
+            return draft.targetID.flatMap(store.show.cue)?.sortedMarkers ?? []
+        default: return []
+        }
+    }
     private var scopeName: String {
         switch scope {
         case .show: return "Show: \(store.show.name)"
         case .cueList(let id): return "Cue List: \(store.show.cueLists.first(where: { $0.id == id })?.name ?? "Missing")"
         case .cue(let id, _): return "Cue: \(store.show.cue(id)?.name ?? "Missing")"
+        case .marker(let markerID, let cueID):
+            let cue = store.show.cue(cueID)
+            let marker = cue?.markers.first(where: { $0.id == markerID })
+            return "Marker: \(marker?.name ?? "Missing") · \(cue?.name ?? "Missing")"
         }
     }
 
@@ -48,7 +71,7 @@ struct RulesEditor: View {
             Image(systemName: "arrow.triangle.branch")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 3) {
-                Text("INTERACTION RULES").font(.headline)
+                Text(isMarkerRule ? "MARKER INTERACTION RULES" : "INTERACTION RULES").font(.headline)
                 Text(scopeName).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -72,7 +95,7 @@ struct RulesEditor: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("\(rule.action.rawValue) · \(rule.target.rawValue)")
                                         .font(.system(size: 12, weight: .semibold))
-                                    Text("When \(rule.event.rawValue)\(rule.delaySeconds > 0 ? String(format: " + %.1fs", rule.delaySeconds) : "")")
+                                    Text("When \(isMarkerRule ? "Reaching Marker" : rule.event.rawValue)\(rule.delaySeconds > 0 ? String(format: " + %.1fs", rule.delaySeconds) : "")")
                                         .font(.system(size: 11))
                                         .foregroundStyle(.secondary)
                                 }
@@ -106,8 +129,14 @@ struct RulesEditor: View {
         Form {
             Section("TRIGGER") {
                 Toggle("Enabled", isOn: $draft.enabled)
-                Picker("When cue is", selection: $draft.event) {
-                    ForEach(RuleEvent.allCases, id: \.self) { item in Text(item.rawValue).tag(item) }
+                if isMarkerRule {
+                    LabeledContent("When", value: "Reaching Marker")
+                    Text("Marker rules run at their position on the cue timeline, not on Starting/Ending/Stopping.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Picker("When cue is", selection: $draft.event) {
+                        ForEach(RuleEvent.allCases, id: \.self) { item in Text(item.rawValue).tag(item) }
+                    }
                 }
                 delayPicker
             }
@@ -121,7 +150,21 @@ struct RulesEditor: View {
                 targetPicker
                 if draft.action == .dim { dimPicker }
                 if draft.action == .fade { fadePicker }
-                if draft.action == .fire { fireFadePicker }
+                if draft.action == .fire {
+                    fireFadePicker
+                    if !destinationMarkers.isEmpty {
+                        Picker("Fire at Marker", selection: $draft.fireAtMarkerID) {
+                            Text(isMarkerRule && draft.target == .itself ? "Previous marker (loop)" : "Cue beginning")
+                                .tag(UUID?.none)
+                            ForEach(Array(destinationMarkers.enumerated()), id: \.element.id) { item in
+                                Text("M\(item.offset + 1) · \(item.element.name)")
+                                    .tag(Optional(item.element.id))
+                            }
+                        }
+                        Text("Target marker references stay linked when markers are moved or renumbered.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             Section("CONDITION (OPTIONAL)") {
                 conditionControls
@@ -262,6 +305,8 @@ struct RulesEditor: View {
     }
 
     private var validDraft: Bool {
+        if draft.action == .fire, let markerID = draft.fireAtMarkerID,
+           !destinationMarkers.contains(where: { $0.id == markerID }) { return false }
         if draft.target == .specificCue { return draft.targetID.flatMap(store.show.cue) != nil }
         if draft.target == .cueList {
             guard let id = draft.targetID else { return false }
@@ -277,7 +322,7 @@ struct RulesEditor: View {
 
     private func makeNew() {
         selectedID = nil
-        draft = InteractionRule()
+        draft = InteractionRule(event: isMarkerRule ? .starting : .ending)
     }
 
     private func applyDraft() {

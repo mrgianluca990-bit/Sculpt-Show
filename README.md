@@ -1,4 +1,17 @@
-# Sculpt Show 0.9.0 — Multichannel Output Routing (opt-in preview)
+# Sculpt Show 0.10.0 — Ovation-style Cue Markers
+
+New in 0.10:
+- Cue-local named markers, persisted in .scshow with stable UUIDs
+- Chronological marker numbering, timeline ruler, drag and text position editing (HH:MM:SS:MMM)
+- Per-marker Interaction Rules with the fixed `Reaching Marker` event
+- Fire/Stop/Pause/Fade/Select/Dim/Restore targets including conditions and delayed rules
+- Fire a target cue at a specific marker; Fire Itself on a marker defaults to the previous marker for internal looping
+- Seeking/skipping does not trigger markers that were crossed by the jump; markers re-arm on repeats
+- Existing cue transport, multichannel routing, MIDI, and show format compatibility preserved
+
+**Time precision:** Marker Rule events are polled by the existing 50ms UI timer, NOT sample-accurate. Loop transitions require rescheduling on the audio engine and are not gapless. They need macOS hardware validation before live use.
+
+---
 
 Baseline: Sculpt Show 0.8.3 (tested and approved on user's Mac).
 

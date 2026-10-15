@@ -48,13 +48,16 @@ public struct InteractionRule: Identifiable, Codable, Equatable, Sendable {
     public var dimDecibels: Double
     public var fadeSeconds: Double?
     public var fireFadeInSeconds: Double?
+    /// Optional destination Marker when Action=Fire. UUID stays stable when markers are moved.
+    /// Old projects decode with nil and keep their original behavior.
+    public var fireAtMarkerID: UUID?
 
     public init(id: UUID = UUID(), enabled: Bool = true,
                 event: RuleEvent = .ending, action: RuleAction = .fire,
                 target: RuleTarget = .nextCue, targetID: UUID? = nil,
                 delaySeconds: Double = 0, conditionCueID: UUID? = nil,
                 conditionState: RuleCueState = .playing, dimDecibels: Double = -12,
-                fadeSeconds: Double? = nil, fireFadeInSeconds: Double? = nil) {
+                fadeSeconds: Double? = nil, fireFadeInSeconds: Double? = nil, fireAtMarkerID: UUID? = nil) {
         self.id = id
         self.enabled = enabled
         self.event = event
@@ -67,6 +70,7 @@ public struct InteractionRule: Identifiable, Codable, Equatable, Sendable {
         self.dimDecibels = min(0, max(-80, dimDecibels))
         self.fadeSeconds = fadeSeconds.map { max(0, min(600, $0)) }
         self.fireFadeInSeconds = fireFadeInSeconds.map { max(0, min(600, $0)) }
+        self.fireAtMarkerID = fireAtMarkerID
     }
 }
 
@@ -74,12 +78,14 @@ public enum RuleScope: Identifiable, Equatable, Sendable {
     case show
     case cueList(UUID)
     case cue(UUID, in: UUID)
+    case marker(UUID, in: UUID)
 
     public var id: String {
         switch self {
         case .show: return "show"
         case .cueList(let id): return "list-\(id.uuidString)"
         case .cue(let id, _): return "cue-\(id.uuidString)"
+        case .marker(let id, _): return "marker-\(id.uuidString)"
         }
     }
 }
@@ -113,6 +119,25 @@ public enum RulePlanner {
             let ids = resolve(rule.target, id: rule.targetID, source: sourceID, list: list, show: show, action: rule.action)
             guard !ids.isEmpty else { return nil }
             return RuleCommand(rule: rule, sourceCueID: sourceID, targets: ids)
+        }
+    }
+
+    /// Marker-local rules fire only when this exact marker is crossed. Parent
+    /// starting/ending/stopping rules remain separate and are not replayed here.
+    public static func markerCommands(markerID: UUID, source sourceID: UUID,
+                                      in show: Show, states: [UUID: RuleCueState]) -> [RuleCommand] {
+        guard let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == sourceID }) }),
+              let cue = list.cues.first(where: { $0.id == sourceID }),
+              let marker = cue.markers.first(where: { $0.id == markerID }) else { return [] }
+        return marker.rules.compactMap { rule in
+            guard rule.enabled else { return nil }
+            if let checked = rule.conditionCueID {
+                guard show.cue(checked) != nil,
+                      (states[checked] ?? .stopped) == rule.conditionState else { return nil }
+            }
+            let ids = resolve(rule.target, id: rule.targetID, source: sourceID,
+                              list: list, show: show, action: rule.action)
+            return ids.isEmpty ? nil : RuleCommand(rule: rule, sourceCueID: sourceID, targets: ids)
         }
     }
 

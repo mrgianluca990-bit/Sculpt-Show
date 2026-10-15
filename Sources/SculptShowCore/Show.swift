@@ -133,12 +133,28 @@ public struct Show: Codable, Equatable, Sendable {
             cloned.id = UUID()
             return cloned
         }
+        // Copy marker positions/names but remap marker IDs and internal references.
+        let markerRemap = Dictionary(uniqueKeysWithValues: copy.markers.map { ($0.id, UUID()) })
+        copy.markers = copy.markers.map { marker in
+            var cloned = marker
+            cloned.id = markerRemap[marker.id]!
+            cloned.rules = marker.rules.map { rule in
+                var newRule = rule
+                newRule.id = UUID()
+                if newRule.target == .specificCue && newRule.targetID == cueID { newRule.targetID = copy.id }
+                if newRule.conditionCueID == cueID { newRule.conditionCueID = copy.id }
+                if let id = newRule.fireAtMarkerID, let remapped = markerRemap[id] { newRule.fireAtMarkerID = remapped }
+                return newRule
+            }
+            return cloned
+        }
         // Duplicates must receive unique rule IDs, and self-targets stay relative.
         copy.rules = copy.rules.map { rule in
             var clone = rule
             clone.id = UUID()
             if clone.target == .specificCue && clone.targetID == cueID { clone.targetID = copy.id }
             if clone.conditionCueID == cueID { clone.conditionCueID = copy.id }
+            if let id = clone.fireAtMarkerID, let remapped = markerRemap[id] { clone.fireAtMarkerID = remapped }
             return clone
         }
         cueLists[listIndex].cues.insert(copy, at: cueIndex + 1)
@@ -280,10 +296,57 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// A timeline landmark. Its identity is stable while its displayed number follows time order.
+/// Marker rules are evaluated on *Reaching Marker*, never on cue start/end/stop.
+public struct CueMarker: Identifiable, Codable, Equatable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var positionSeconds: Double
+    public var rules: [InteractionRule]
+
+    public init(id: UUID = UUID(), name: String = "Marker", positionSeconds: Double = 0,
+                rules: [InteractionRule] = []) {
+        self.id = id
+        self.name = name
+        self.positionSeconds = positionSeconds.isFinite ? min(max(positionSeconds, 0), 86400) : 0
+        self.rules = rules
+    }
+}
+
+/// Pure time-crossing logic. A seek resets the cursor, so jumping across a marker
+/// never fires an intervening rule; normal playback and looping can reach it again.
+public enum MarkerPlanner {
+    public static func crossed(_ markers: [CueMarker], from previous: Double, to current: Double,
+                               duration: Double) -> [CueMarker] {
+        guard previous.isFinite, current.isFinite, duration.isFinite,
+              current >= previous, duration > 0 else { return [] }
+        return markers.filter { $0.positionSeconds > previous &&
+                                $0.positionSeconds <= current &&
+                                $0.positionSeconds < duration }
+            .sorted { $0.positionSeconds == $1.positionSeconds
+                ? $0.id.uuidString < $1.id.uuidString
+                : $0.positionSeconds < $1.positionSeconds }
+    }
+
+    /// Ovation's Fire Itself at an Out marker loops to the preceding marker.
+    /// If this is the first marker, restart at the cue beginning.
+    public static func loopDestination(for markerID: UUID, in markers: [CueMarker]) -> Double? {
+        let ordered = markers.sorted { $0.positionSeconds == $1.positionSeconds
+            ? $0.id.uuidString < $1.id.uuidString : $0.positionSeconds < $1.positionSeconds }
+        guard let index = ordered.firstIndex(where: { $0.id == markerID }) else { return nil }
+        return index > 0 ? ordered[index - 1].positionSeconds : 0
+    }
+}
+
 public struct Cue: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID
     public var name: String
     public var elements: [CueElement]
+    public var markers: [CueMarker]
+    public var sortedMarkers: [CueMarker] {
+        markers.sorted { $0.positionSeconds == $1.positionSeconds
+            ? $0.id.uuidString < $1.id.uuidString : $0.positionSeconds < $1.positionSeconds }
+    }
     public var durationMode: CueDurationMode
     public var gain: Double
     public var fadeOutSeconds: Double
@@ -365,6 +428,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
                 durationMode: CueDurationMode? = nil) {
         self.id = id
         self.name = name
+        self.markers = []
         self.elements = mediaPath.isEmpty ? [] : [CueElement(kind: .audio,
             name: URL(fileURLWithPath: mediaPath).deletingPathExtension().lastPathComponent,
             sourcePath: mediaPath, inSeconds: inPointSeconds, outSeconds: outPointSeconds)]
@@ -382,7 +446,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, elements, durationMode, gain, fadeOutSeconds, enabled
+        case id, name, elements, markers, durationMode, gain, fadeOutSeconds, enabled
         case fadeInSeconds, loop, followOnFinish, preWaitSeconds, rules, ignoreParentRules
         case durationSeconds
         // Old show fields, decoded for migration but never written into the new format.
@@ -411,6 +475,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         if let contents = try c.decodeIfPresent([CueElement].self, forKey: .elements) {
             elements = contents
         }
+        markers = try c.decodeIfPresent([CueMarker].self, forKey: .markers) ?? []
         rules = try c.decodeIfPresent([InteractionRule].self, forKey: .rules) ?? []
         ignoreParentRules = try c.decodeIfPresent(Bool.self, forKey: .ignoreParentRules) ?? false
     }
@@ -420,6 +485,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
         try c.encode(elements, forKey: .elements)
+        try c.encode(markers, forKey: .markers)
         try c.encode(durationMode, forKey: .durationMode)
         try c.encode(gain, forKey: .gain)
         try c.encode(fadeOutSeconds, forKey: .fadeOutSeconds)

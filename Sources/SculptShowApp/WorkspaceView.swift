@@ -140,6 +140,10 @@ struct WorkspaceView: View {
                 guard let store, let playback else { return }
                 store.handleRuleEvent(.starting, source: id, using: playback)
             }
+            playback.onMarkersReached = { [weak store, weak playback] cueID, markerIDs in
+                guard let store, let playback else { return }
+                store.handleMarkersReached(markerIDs, in: cueID, using: playback)
+            }
             playback.onStopped = { [weak store, weak playback] id in
                 guard let store, let playback else { return }
                 store.didStopCue(id)
@@ -344,6 +348,9 @@ struct WorkspaceView: View {
                 CueTimingEditor(cue: cue, listID: listID)
 
                 Divider()
+                CueMarkersEditor(cue: cue, listID: listID)
+
+                Divider()
                 HStack {
                     Text("FADE OUT")
                     Spacer()
@@ -456,7 +463,7 @@ struct WorkspaceView: View {
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.8.0")
+            Text("SCULPT SHOW 0.10.0")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -805,6 +812,13 @@ private struct CueRow: View {
             HStack(spacing: 6) {
                 Image(systemName: cue.hasAudio ? "waveform" : cue.hasTimecode ? "clock" : "square.dashed")
                 Text(playbackLabel)
+                if !cue.markers.isEmpty {
+                    Image(systemName: "mappin")
+                    Text("M\(cue.markers.count)")
+                    if cue.markers.contains(where: { !$0.rules.isEmpty }) {
+                        Image(systemName: "bolt.fill").foregroundColor(Skin.gold)
+                    }
+                }
             }
             .font(.system(size: 10, design: .monospaced))
             .foregroundColor(state == nil ? Skin.soft : Skin.green)

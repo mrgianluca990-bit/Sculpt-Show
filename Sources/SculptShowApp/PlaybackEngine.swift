@@ -40,9 +40,13 @@ final class PlaybackEngine: ObservableObject {
     var onNaturalFinish: ((UUID) -> Void)?
     var onStarted: ((UUID) -> Void)?
     var onStopped: ((UUID) -> Void)?
+    /// Emits markers when the running playhead crosses them, in chronological order.
+    var onMarkersReached: ((UUID, [UUID]) -> Void)?
 
     private var tracks: [UUID: [AudioTrack]] = [:]
     private var activeCues: [UUID: Cue] = [:]
+    /// Last observed timeline position per cue. Reset on seek, restart and new GO.
+    private var lastMarkerPosition: [UUID: Double] = [:]
     private var startedAt: [UUID: Date] = [:]
     private var elapsedAtStart: [UUID: Double] = [:]
     private var pendingTokens: [UUID: UUID] = [:]
@@ -113,7 +117,8 @@ final class PlaybackEngine: ObservableObject {
     }
 
     @discardableResult
-    func play(_ requestedCue: Cue, overrideFadeInSeconds: Double? = nil) -> Bool {
+    func play(_ requestedCue: Cue, overrideFadeInSeconds: Double? = nil,
+              from markerOffsetSeconds: Double = 0) -> Bool {
         guard requestedCue.enabled else { return false }
         // Safety: stored hardware routes must never silently be folded into
         // a stereo system output just because a new session starts in legacy mode.
@@ -135,7 +140,7 @@ final class PlaybackEngine: ObservableObject {
                 return false
             }
         }
-        if cue.preWaitSeconds <= 0 { return playImmediately(cue) }
+        if cue.preWaitSeconds <= 0 { return playImmediately(cue, from: markerOffsetSeconds) }
         let token = UUID()
         pendingTokens[cue.id] = token
         pendingDeadlines[cue.id] = Date().addingTimeInterval(cue.preWaitSeconds)
@@ -146,14 +151,14 @@ final class PlaybackEngine: ObservableObject {
             self.pendingTokens.removeValue(forKey: cue.id)
             self.pendingDeadlines.removeValue(forKey: cue.id)
             self.snapshots.removeValue(forKey: cue.id)
-            _ = self.playImmediately(cue)
+            _ = self.playImmediately(cue, from: markerOffsetSeconds)
         }
         return true
     }
 
     /// Hardware-mapped cue: playback occurs in one AVAudioEngine with one host clock.
     /// Failure is visible and does not fall back to stereo outputs 1/2.
-    private func playRouted(_ cue: Cue) -> Bool {
+    private func playRouted(_ cue: Cue, from requestedPosition: Double = 0) -> Bool {
         do {
             var audioEnds: [Double] = []
             for element in cue.alignedAudioElements {
@@ -165,12 +170,14 @@ final class PlaybackEngine: ObservableObject {
                 errorMessage = "Cue ‘\(cue.name)’ has zero duration."
                 return false
             }
-            let lead = try routedAudio.start(cue, from: 0,
+            let position = min(max(0, requestedPosition), max(0, length - 0.001))
+            let lead = try routedAudio.start(cue, from: position,
                 fade: cue.fadeInSeconds > 0 ? 0 : 1)
             routedCues.insert(cue.id)
             activeCues[cue.id] = cue
             tracks[cue.id] = []
-            elapsedAtStart[cue.id] = 0
+            elapsedAtStart[cue.id] = position
+            lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
             startedAt[cue.id] = Date().addingTimeInterval(lead)
             snapshots[cue.id] = Snapshot(phase: .playing, elapsed: 0, duration: length)
             onStarted?(cue.id)
@@ -182,8 +189,8 @@ final class PlaybackEngine: ObservableObject {
     }
 
     @discardableResult
-    private func playImmediately(_ cue: Cue) -> Bool {
-        if routingEnabled && cue.hasAudio { return playRouted(cue) }
+    private func playImmediately(_ cue: Cue, from requestedPosition: Double = 0) -> Bool {
+        if routingEnabled && cue.hasAudio { return playRouted(cue, from: requestedPosition) }
         var prepared: [AudioTrack] = []
         do {
             for element in cue.alignedAudioElements {
@@ -211,11 +218,13 @@ final class PlaybackEngine: ObservableObject {
             errorMessage = "Cue ‘\(cue.name)’ has zero duration. Set a container length."
             return false
         }
+        let position = min(max(0, requestedPosition), max(0, length - 0.001))
         activeCues[cue.id] = cue
         tracks[cue.id] = prepared
-        elapsedAtStart[cue.id] = 0
-        snapshots[cue.id] = Snapshot(phase: .playing, elapsed: 0, duration: length)
-        armAudio(for: cue.id, from: 0)
+        elapsedAtStart[cue.id] = position
+        lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
+        snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length)
+        armAudio(for: cue.id, from: position)
         onStarted?(cue.id)
         return true
     }
@@ -400,6 +409,7 @@ final class PlaybackEngine: ObservableObject {
         for track in tracks[id] ?? [] { track.player.stop() }
         tracks.removeValue(forKey: id)
         activeCues.removeValue(forKey: id)
+        lastMarkerPosition.removeValue(forKey: id)
         startedAt.removeValue(forKey: id)
         elapsedAtStart.removeValue(forKey: id)
         dimFactors.removeValue(forKey: id)
@@ -459,15 +469,41 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func seek(_ id: UUID, to fraction: Double) {
-        guard let state = snapshots[id], state.phase != .waiting, state.phase != .fading else { return }
-        let position = min(max(fraction, 0), 0.9999) * state.duration
+        guard let state = snapshots[id] else { return }
+        seek(id, toSeconds: min(max(fraction, 0), 0.9999) * state.duration)
+    }
+
+    /// Jump directly to a marker or timeline position, without firing skipped markers.
+    /// Routed AVAudioEngine voices are re-armed against one host clock.
+    func seek(_ id: UUID, toSeconds seconds: Double) {
+        guard let state = snapshots[id], state.phase != .waiting, state.phase != .fading,
+              seconds.isFinite else { return }
+        let position = min(max(seconds, 0), max(0, state.duration - 0.001))
         elapsedAtStart[id] = position
+        lastMarkerPosition[id] = position
         snapshots[id]?.elapsed = position
         if state.phase == .playing {
             armAudio(for: id, from: position)
         } else {
-            // A paused seek must not queue audio until Resume.
+            if routedCues.contains(id) { routedAudio.stop(id) }
             for track in tracks[id] ?? [] { track.player.stop() }
+        }
+    }
+
+    private func emitCrossedMarkers(_ id: UUID, at elapsed: Double, duration: Double) {
+        guard let cue = activeCues[id], !cue.markers.isEmpty else { return }
+        let previous = lastMarkerPosition[id] ?? elapsed
+        let reached = MarkerPlanner.crossed(cue.markers, from: previous,
+                                            to: min(elapsed, duration), duration: duration)
+        lastMarkerPosition[id] = min(elapsed, duration)
+        if !reached.isEmpty { onMarkersReached?(id, reached.map(\.id)) }
+    }
+
+    /// Allow live editing of cue markers without rebuilding the audio graph.
+    func updateMarkers(_ markers: [CueMarker], for id: UUID) {
+        activeCues[id]?.markers = markers
+        if lastMarkerPosition[id] == nil, activeCues[id] != nil {
+            lastMarkerPosition[id] = snapshots[id]?.elapsed ?? 0
         }
     }
 
@@ -499,10 +535,13 @@ final class PlaybackEngine: ObservableObject {
                 if routedCues.contains(id) { refreshAudio(for: id, elapsed: elapsed) }
                 continue
             }
+            // Catch markers crossed since the previous UI tick, including near END.
+            emitCrossedMarkers(id, at: elapsed, duration: snapshot.duration)
             if elapsed >= snapshot.duration {
                 if activeCues[id]?.loop == true && snapshot.phase == .playing {
                     snapshot.elapsed = 0
                     snapshots[id] = snapshot
+                    lastMarkerPosition[id] = -0.0001
                     // Loop re-arms together on the device clock. This is not
                     // yet a gapless loop: that requires the next engine stage.
                     armAudio(for: id, from: 0, leadOverride: 0.08)
