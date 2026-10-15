@@ -84,6 +84,7 @@ private struct EditableTitle: View {
 struct WorkspaceView: View {
     @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var playback: PlaybackEngine
+    @State private var rulesScope: RuleScope?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -115,6 +116,17 @@ struct WorkspaceView: View {
                 guard let store, let playback else { return }
                 store.didFinishNaturally(id, using: playback)
             }
+            playback.onStarted = { [weak store, weak playback] id in
+                guard let store, let playback else { return }
+                store.handleRuleEvent(.starting, source: id, using: playback)
+            }
+            playback.onStopped = { [weak store, weak playback] id in
+                guard let store, let playback else { return }
+                store.handleRuleEvent(.stopping, source: id, using: playback)
+            }
+        }
+        .sheet(item: $rulesScope) { scope in
+            RulesEditor(scope: scope).environmentObject(store)
         }
         .alert("Sculpt Show", isPresented: Binding(
             get: { store.errorMessage != nil || playback.errorMessage != nil },
@@ -162,6 +174,7 @@ struct WorkspaceView: View {
                 if store.openShow() { playback.stopAll() }
             }
             headerButton("square.and.arrow.down", "Save") { store.save() }
+            headerButton("arrow.triangle.branch", "Show Rules") { rulesScope = .show }
             headerButton("plus.rectangle.on.folder", "New List") { store.addList() }
         }
         .padding(.horizontal, 22)
@@ -197,7 +210,7 @@ struct WorkspaceView: View {
             }
             .buttonStyle(.plain)
 
-            Button { playback.stopAll() } label: {
+            Button { store.stopAll(using: playback) } label: {
                 Label("STOP ALL", systemImage: "stop.fill")
                     .font(.system(size: 13, weight: .bold))
                     .frame(height: 56)
@@ -355,6 +368,13 @@ struct WorkspaceView: View {
                             .foregroundColor(Skin.green)
                     }
                 }
+                Button {
+                    rulesScope = .cue(cue.id, in: listID)
+                } label: {
+                    Label("Edit Interaction Rules (\(cue.rules.count))", systemImage: "arrow.triangle.branch")
+                }
+                .buttonStyle(.bordered)
+
                 HStack {
                     Button { store.duplicateCue(cue.id, in: listID) } label: {
                         Label("Duplicate", systemImage: "plus.square.on.square")
@@ -395,7 +415,7 @@ struct WorkspaceView: View {
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.3.0")
+            Text("SCULPT SHOW 0.4.0")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -424,6 +444,7 @@ struct WorkspaceView: View {
 private struct CueListPanel: View {
     @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var playback: PlaybackEngine
+    @State private var editingRules = false
     let list: CueList
 
     var body: some View {
@@ -439,12 +460,19 @@ private struct CueListPanel: View {
                     store.renameList(list.id, to: newName)
                 }
                 Spacer()
+                if !list.rules.isEmpty {
+                    Image(systemName: "bolt.fill")
+                        .foregroundStyle(.orange)
+                        .help("\(list.rules.count) list rules")
+                }
                 Text("\(list.cues.count)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(Skin.soft)
                 Menu {
+                    Button("Edit List Rules…") { editingRules = true }
+                    Divider()
                     Button("Remove Cue List", role: .destructive) {
-                        for cue in list.cues { playback.stop(cue.id) }
+                        for cue in list.cues { playback.stop(cue.id, notifyRules: false) }
                         store.removeList(list.id)
                     }
                     .disabled(store.show.cueLists.count < 2)
@@ -539,6 +567,9 @@ private struct CueListPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(Skin.stroke, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 9))
         .frame(maxHeight: .infinity)
+        .sheet(isPresented: $editingRules) {
+            RulesEditor(scope: .cueList(list.id)).environmentObject(store)
+        }
     }
 }
 

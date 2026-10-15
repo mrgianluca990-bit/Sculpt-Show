@@ -31,6 +31,8 @@ final class PlaybackEngine: ObservableObject {
     @Published var errorMessage: String?
     /// Invoked only when non-looping audio reaches its natural end.
     var onNaturalFinish: ((UUID) -> Void)?
+    var onStarted: ((UUID) -> Void)?
+    var onStopped: ((UUID) -> Void)?
     private var players: [UUID: AVAudioPlayer] = [:]
     /// Pending pre-wait starts are tracked separately from audio players.
     /// Removing a token makes the delayed task harmless after STOP / STOP ALL.
@@ -38,6 +40,7 @@ final class PlaybackEngine: ObservableObject {
     private var pendingDeadlines: [UUID: Date] = [:]
     private var finishDelegates: [UUID: AudioFinishDelegate] = [:]
     private var cueGains: [UUID: Float] = [:]
+    private var dimFactors: [UUID: Float] = [:]
     private var fadeTokens: [UUID: UUID] = [:]
     private var updateTimer: Timer?
 
@@ -48,15 +51,17 @@ final class PlaybackEngine: ObservableObject {
     }
 
     @discardableResult
-    func play(_ cue: Cue) -> Bool {
+    func play(_ cue: Cue, overrideFadeInSeconds: Double? = nil) -> Bool {
         guard cue.enabled else { return false }
+        var cue = cue
+        if let overrideFadeInSeconds { cue.fadeInSeconds = max(0, min(600, overrideFadeInSeconds)) }
         // Already queued or playing cues never receive a duplicate start.
         guard pendingTokens[cue.id] == nil else { return false }
         // A repeated GO on a paused cue resumes it. A running cue does not restart.
         if let player = players[cue.id] {
             if snapshots[cue.id]?.phase == .paused {
                 fadeTokens.removeValue(forKey: cue.id)
-                player.setVolume(Float(cue.gain), fadeDuration: 0)
+                player.setVolume((cueGains[cue.id] ?? Float(cue.gain)) * (dimFactors[cue.id] ?? 1), fadeDuration: 0)
                 player.play()
                 snapshots[cue.id]?.phase = .playing
                 return true
@@ -114,6 +119,7 @@ final class PlaybackEngine: ObservableObject {
             players[cue.id] = player
             cueGains[cue.id] = Float(cue.gain)
             snapshots[cue.id] = Snapshot(phase: .playing, elapsed: 0, duration: player.duration)
+            onStarted?(cue.id)
             return true
         } catch {
             errorMessage = "Cannot open ‘\(cue.name)’: \(error.localizedDescription)"
@@ -128,7 +134,7 @@ final class PlaybackEngine: ObservableObject {
             return
         case .paused:
             fadeTokens.removeValue(forKey: id)
-            player.setVolume(cueGains[id] ?? 1, fadeDuration: 0)
+            player.setVolume((cueGains[id] ?? 1) * (dimFactors[id] ?? 1), fadeDuration: 0)
             player.play()
             snapshots[id]?.phase = .playing
         case .playing, .fading:
@@ -138,7 +144,15 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
-    func stop(_ id: UUID) {
+    func pause(_ id: UUID) {
+        guard let state = snapshots[id], state.phase == .playing, let player = players[id] else { return }
+        player.pause()
+        snapshots[id]?.phase = .paused
+    }
+
+    func stop(_ id: UUID, notifyRules: Bool = true) {
+        let wasActive = snapshots[id] != nil
+        let alreadyFading = snapshots[id]?.phase == .fading
         pendingTokens.removeValue(forKey: id)
         pendingDeadlines.removeValue(forKey: id)
         fadeTokens.removeValue(forKey: id)
@@ -146,31 +160,49 @@ final class PlaybackEngine: ObservableObject {
         players.removeValue(forKey: id)
         finishDelegates.removeValue(forKey: id)
         cueGains.removeValue(forKey: id)
+        dimFactors.removeValue(forKey: id)
         snapshots.removeValue(forKey: id)
+        if wasActive && notifyRules && !alreadyFading { onStopped?(id) }
     }
 
-    func fadeOut(_ cue: Cue) {
+    func fadeOut(_ cue: Cue, overrideSeconds: Double? = nil) {
         // A queued cue has not produced audio, so Fade behaves as cancel.
         if pendingTokens[cue.id] != nil { stop(cue.id); return }
         guard let player = players[cue.id] else { return }
-        guard cue.fadeOutSeconds > 0 else { stop(cue.id); return }
+        let seconds = overrideSeconds.map { max(0, min($0, 600)) } ?? cue.fadeOutSeconds
+        guard seconds > 0 else { stop(cue.id); return }
         guard snapshots[cue.id]?.phase != .fading else { return }
         let token = UUID()
         fadeTokens[cue.id] = token
         snapshots[cue.id]?.phase = .fading
-        player.setVolume(0, fadeDuration: cue.fadeOutSeconds)
+        onStopped?(cue.id)
+        player.setVolume(0, fadeDuration: seconds)
         Task { @MainActor [weak self, weak player] in
-            try? await Task.sleep(nanoseconds: UInt64(cue.fadeOutSeconds * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard let self, let player, self.fadeTokens[cue.id] == token,
                   self.players[cue.id] === player else { return }
-            self.stop(cue.id)
+            self.stop(cue.id, notifyRules: false)
         }
     }
 
     func setGain(_ gain: Double, for cueID: UUID) {
         guard snapshots[cueID]?.phase != .fading else { return }
         cueGains[cueID] = Float(gain)
-        players[cueID]?.volume = Float(gain)
+        players[cueID]?.volume = Float(gain) * (dimFactors[cueID] ?? 1)
+    }
+
+    func dim(_ id: UUID, by decibels: Double) {
+        guard let player = players[id], snapshots[id]?.phase != .fading else { return }
+        let bounded = max(-80, min(0, decibels))
+        let factor = Float(pow(10.0, bounded / 20.0))
+        dimFactors[id] = factor
+        player.setVolume((cueGains[id] ?? 1) * factor, fadeDuration: 0.15)
+    }
+
+    func restoreGain(_ id: UUID) {
+        dimFactors.removeValue(forKey: id)
+        guard snapshots[id]?.phase != .fading else { return }
+        players[id]?.setVolume(cueGains[id] ?? 1, fadeDuration: 0.15)
     }
 
     func seek(_ id: UUID, to fraction: Double) {
@@ -187,12 +219,12 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func stopAll() {
-        for id in Array(snapshots.keys) { stop(id) }
+        for id in Array(snapshots.keys) { stop(id, notifyRules: false) }
     }
 
     private func handleCompletion(_ id: UUID, success: Bool) {
         guard players[id] != nil, snapshots[id]?.phase == .playing else { return }
-        stop(id)
+        stop(id, notifyRules: false)
         if success { onNaturalFinish?(id) }
         else { errorMessage = "Audio playback could not finish successfully." }
     }
@@ -208,7 +240,7 @@ final class PlaybackEngine: ObservableObject {
             if state.phase != .paused && !player.isPlaying {
                 // A completed file is handled by the delegate. Interrupted players
                 // must not remain stuck in a misleading PLAYING state.
-                if state.phase == .fading { stop(id) }
+                if state.phase == .fading { stop(id, notifyRules: false) }
                 continue
             }
             state.elapsed = player.currentTime

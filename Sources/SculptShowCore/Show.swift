@@ -7,11 +7,23 @@ public struct Show: Codable, Equatable, Sendable {
     public var formatVersion: Int
     public var name: String
     public var cueLists: [CueList]
+    public var rules: [InteractionRule]
 
     public init(name: String = "Untitled Show", cueLists: [CueList] = [CueList(name: "Cue List 1")]) {
         self.formatVersion = Self.currentVersion
         self.name = name
         self.cueLists = cueLists
+        self.rules = []
+    }
+
+    private enum CodingKeys: String, CodingKey { case formatVersion, name, cueLists, rules }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try c.decode(Int.self, forKey: .formatVersion)
+        name = try c.decode(String.self, forKey: .name)
+        cueLists = try c.decode([CueList].self, forKey: .cueLists)
+        rules = try c.decodeIfPresent([InteractionRule].self, forKey: .rules) ?? []
     }
 
     @discardableResult
@@ -69,6 +81,14 @@ public struct Show: Codable, Equatable, Sendable {
         var copy = cueLists[listIndex].cues[cueIndex]
         copy.id = UUID()
         copy.name += " copy"
+        // Duplicates must receive unique rule IDs, and self-targets stay relative.
+        copy.rules = copy.rules.map { rule in
+            var clone = rule
+            clone.id = UUID()
+            if clone.target == .specificCue && clone.targetID == cueID { clone.targetID = copy.id }
+            if clone.conditionCueID == cueID { clone.conditionCueID = copy.id }
+            return clone
+        }
         cueLists[listIndex].cues.insert(copy, at: cueIndex + 1)
         return copy.id
     }
@@ -89,11 +109,23 @@ public struct CueList: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID
     public var name: String
     public var cues: [Cue]
+    public var rules: [InteractionRule]
 
     public init(id: UUID = UUID(), name: String, cues: [Cue] = []) {
         self.id = id
         self.name = name
         self.cues = cues
+        self.rules = []
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, cues, rules }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        cues = try c.decode([Cue].self, forKey: .cues)
+        rules = try c.decodeIfPresent([InteractionRule].self, forKey: .rules) ?? []
     }
 }
 
@@ -111,6 +143,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     public var followOnFinish: Bool
     /// Delay before playback begins after GO; a pending cue is cancelable with STOP.
     public var preWaitSeconds: Double
+    public var rules: [InteractionRule]
+    public var ignoreParentRules: Bool
 
     public init(id: UUID = UUID(), name: String, mediaPath: String,
                 gain: Double = 1.0, fadeOutSeconds: Double = 2.0,
@@ -127,11 +161,13 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         self.loop = loop
         self.followOnFinish = followOnFinish
         self.preWaitSeconds = min(max(preWaitSeconds, 0), 600)
+        self.rules = []
+        self.ignoreParentRules = false
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, mediaPath, gain, fadeOutSeconds, enabled
-        case fadeInSeconds, loop, followOnFinish, preWaitSeconds
+        case fadeInSeconds, loop, followOnFinish, preWaitSeconds, rules, ignoreParentRules
     }
 
     public init(from decoder: Decoder) throws {
@@ -148,6 +184,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
             followOnFinish: try values.decodeIfPresent(Bool.self, forKey: .followOnFinish) ?? false,
             preWaitSeconds: try values.decodeIfPresent(Double.self, forKey: .preWaitSeconds) ?? 0
         )
+        rules = try values.decodeIfPresent([InteractionRule].self, forKey: .rules) ?? []
+        ignoreParentRules = try values.decodeIfPresent(Bool.self, forKey: .ignoreParentRules) ?? false
     }
 }
 

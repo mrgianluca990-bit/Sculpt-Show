@@ -1,120 +1,59 @@
-# Sculpt Show
+# Sculpt Show 0.4.0 — Interaction Rules
 
-Independent macOS audio cue player and show-control workbench inspired by professional cue-list workflows. **Not a Merging Technologies product**; no Ovation source code or assets are included.
+Independent macOS cue player (macOS 13+, Intel and Apple Silicon). This is an independently authored functional reimplementation, **not** Merging Ovation and **not** compatible with its proprietary project files.
 
-## Version 0.3.0 — timed cues and list transport
+## Novita della 0.4
 
-- **Pre-Wait (0–120 s in the inspector)**: a cue starts after an adjustable countdown. A waiting cue shows `WAIT` and `START IN`. No audio is heard during the delay.
-- **STOP LIST**: cancels pending starts and stops only the cues belonging to that cue list; all other lists remain active.
-- **FADE LIST**: applies each playing cue's own Fade Out; queued, not-yet-audible cues are canceled.
-- **Duplicate**: inserts an independent cue right after the selected cue, retaining parameters and the reference to its audio media file. It does not duplicate the media itself.
-- Turning **Cue enabled** off immediately stops that cue, including a queued start.
-- **Existing show compatibility:** the `.scshow` format is still version 1. Missing `preWaitSeconds` in v0.1/v0.2 shows defaults to `0`.
-- Existing rename dialog for show and cue list is preserved.
-- **Tests**: 14 core/model tests pass on Linux. Full macOS interface build must be verified in GitHub Actions.
+Un nuovo editor **Interaction Rules** implementa i trigger **Starting**, **Ending** e **Stopping** con azioni sui target seguenti:
 
-### Pre-wait behavior
+- **Fire**, **Stop**, **Pause**, **Fade Out**, **Select**, **Dim**, **Restore Gain**.
+- Target **Next Cue**, **Previous Cue**, **Itself**, **Specific Cue**, **Cue List**, **All Cues**.
+- Ritardo per regola 0–30 s dall'interfaccia (modello fino a 600 s).
+- Condizioni opzionali sullo stato di un'altra cue: Playing, Paused, Waiting, Stopped.
+- Override per-rule di Fade In (azione Fire) e Fade Out (azione Fade); Dim in dB.
+- Regole definite separatamente a livello **Show**, **Cue List** e **Cue**; flag **Ignore Show and Cue List rules** nelle singole cue.
+- Editor Rules: crea, modifica, riordina, rimuovi, attiva/disattiva e salva le regole.
+- Le regole vengono incluse nel file `.scshow` e i vecchi show senza regole restano leggibili.
+- Protezioni: Anti-runaway a 64 eventi al secondo; STOP ALL annulla cue in attesa e regole temporizzate; STOP LIST annulla regole temporizzate che puntano alla lista.
 
-1. Select a cue in the inspector and set `PRE-WAIT` (e.g. 5 seconds).
-2. Press GO. The cue shows a countdown. AUTO NEXT, when enabled, still advances the selection immediately.
-3. Press the cue's STOP, its cue-list STOP or STOP ALL during the countdown: the scheduled playback is canceled.
-4. FADE cancels a waiting cue, rather than fading nonexistent audio.
-5. A cue started by Auto-follow also respects its own Pre-Wait setting.
+### Apertura editor
 
-**Timing disclaimer:** the current delay uses a high-level macOS task timer and `AVAudioPlayer`, not sample-accurate scheduling. This is a development prototype, not yet a redundant show-critical playback system. Hardware multichannel routing and Cue Groups are not yet implemented.
+- **Show Rules** nella barra in alto: regole globali.
+- Menu `...` nell'intestazione di una Cue List > **Edit List Rules...**.
+- Seleziona una cue > Cue Inspector > **Edit Interaction Rules**.
 
-## Version 0.2.0 — cue control update
+**Importante:** in un editor vuoto, configura la regola e premi **Add Rule**, quindi **Save Rules**. Su una regola esistente modifica i parametri e premi **Update Rule** o direttamente **Save Rules**. Cambiare selezione senza aggiornare scarta solo la bozza.
 
-Added in 0.2:
+### Esempi pratici
 
-- **Auto Next** switch: pressing GO or list FIRE starts the selected cue, then selects the following enabled cue (never wraps automatically).
-- **Auto-follow** per cue: when its file finishes naturally, starts the next enabled cue in the same list. Loop takes priority over auto-follow.
-- **Loop** per cue: repeats indefinitely until STOP or FADE. Can toggle during playback.
-- **Fade-in** per cue (0 to 30 seconds) in addition to the existing fade-out.
-- **Seek**: click/drag each active cue's progress slider; works when paused, disabled during fade-out.
-- **Time remaining** shown in each playing row and the inspector.
-- **Move cue Up/Down** in the inspector. Keeps the cue's identity and saved settings.
-- Compatibility with `.scshow` files created in 0.1: missing new keys default to disabled/zero. Existing formatVersion remains 1.
+1. Cue di apertura: `When Ending → Fire Next Cue` (eventuale fade-in dell'altra cue).
+2. Cue annuncio: `When Starting → Dim All Cues` a -18 dB; un'altra cue puo' usare `Restore Gain`.
+3. Passaggio scena: `When Starting → Fade Out Specific Cue`, fade-out 3 s.
+4. Cue lancio: `When Starting → Fire Cue List` (la prima cue abilitata della lista scelta), eventualmente After 2 s.
+5. Condizione: `Only if` una cue scelta e' `Paused`, allora `Fire Next Cue`.
 
-Version 0.2 was compiled successfully on GitHub Actions and tested by the user. Version 0.3 still requires macOS build and playback tests.
+### Semantica degli eventi
 
-## Previous 0.1.0 foundation
+- **Starting:** nel momento in cui parte davvero l'audio (dopo un eventuale Pre-Wait).
+- **Ending:** solo al termine naturale del file non in loop.
+- **Stopping:** a seguito dello STOP manuale o all'avvio del Fade Out, **non** durante STOP ALL / STOP LIST di emergenza.
+- Le regole globali e di lista vengono valutate insieme alle regole della singola cue; il flag Ignore Parents esclude globali e lista. Non e' un clone 1:1 della precedenza di Ovation.
+- Le regole con ritardo vengono eseguite con timer di sistema (`Task.sleep`) e **non sono sample-accurate**. Non sono ancora implementate regole sui marker, riferimenti a timecode, controlli MIDI/OSC, automazione snapshot o routing fisico multicanale.
+- L'opzione legacy **Auto-follow next cue** resta operativa; disattivala se usi una regola Ending → Fire Next Cue per evitare configurazioni ridondanti.
 
-- Native **SwiftUI** interface for macOS 13+ (universal arm64 + x86_64 build on a Mac).
-- Multiple cue lists visible side by side.
-- Import multiple audio files into a cue list using **Add Audio**, or drag file URLs into the list.
-- Concurrent cue playback via **AVAudioPlayer** (Apple's default audio output).
-- GO, per-cue pause/resume, stop, configurable fade-out, and global Stop All.
-- Separate cue selection, enabled switch, gain and fade setting.
-- Save/Open a `.scshow` JSON show file.
-- Keyboard shortcuts: **Space** for GO, **⌘↓** for next selection, **⌘.** stop all, **⌘S** save, **⌘O** open.
-- Unit tests for the portable project-model layer.
-- GitHub Actions macOS build produces a downloadable `.app` ZIP as an Actions artifact.
+## Compilazione
 
-## Run from Xcode
+GitHub Actions su push di `main` esegue `bash Scripts/build-macos.sh`, lancia i test e crea l'artifact `Sculpt-Show-macOS` che contiene un'app `.app` ZIP.
 
-1. On a Mac with Xcode 15 or newer, clone/download this repository.
-2. Open `Package.swift` with Xcode.
-3. Select executable scheme `SculptShow`, target **My Mac**, and Run.
+Oppure apri `Package.swift` in Xcode 15+ e avvia `SculptShow` su My Mac.
 
-To create the `.app` locally in Terminal:
+**Build 0.4:** il modello ha superato i test su Linux, e i sorgenti macOS sono stati controllati sintatticamente; il bundle SwiftUI e il playback devono ancora essere validati sulla build GitHub/macOS.
 
-```bash
-bash Scripts/build-macos.sh
-```
+## Stesse limitazioni delle versioni precedenti
 
-Then open `dist/Sculpt Show.app`. The app is ad-hoc signed **for development**, not notarized. macOS may block downloads from other Macs without additional security handling. Never disable system-wide Gatekeeper.
+- Output del dispositivo audio predefinito (non c'e' routing per-cue sulle uscite Core Audio).
+- Gli show `.scshow` salvano percorsi media assoluti; tenere i WAV/AIFF/MP3 in posizioni stabili.
+- Prototipo non notarizzato, non raccomandato come unico riproduttore per show critici.
+- Gli show Ovation `.ovs`/`.ovl` non sono importabili nella 0.4.
 
-## Get a build without Xcode
-
-After pushing to `main`, open **GitHub > Actions > Build Sculpt Show for macOS > latest successful run > Artifacts** and download `Sculpt-Show-macOS`. It contains `Sculpt-Show-macOS.zip` with the macOS application. **A Mac is required to run it.** The prototype does not yet have a notarized release.
-
-## First smoke test
-
-1. Run Sculpt Show, click **ADD AUDIO**, and select both files from `Samples/`.
-2. Press **Space** to GO the selected cue, then select the second cue and GO again: both should play simultaneously.
-3. Try Pause, Fade and Stop. Adjust cue gain and fade time in the inspector.
-4. Set Fade In on a cue, enable Loop on another, and check that GO uses the new values.
-5. With AUTO NEXT on, GO should advance the selection without interrupting audio already playing.
-6. Enable Auto-follow on a short cue, then verify it starts the following enabled cue only when it ends normally.
-7. Seek and pause using the progress slider; use the Up/Down buttons to reorder the selected cue.
-8. Use **Save** to create a `.scshow` file, reopen it, and check that settings survive.
-9. Open an older 0.1 `.scshow`; the three new cue options should safely default to off/0.
-10. Disconnect one referenced audio file: the inspector warns that the media is missing.
-
-The included WAV tones are synthetic test signals, not third-party content.
-
-## File storage warning
-
-`.scshow` contains **absolute paths to your media**, not the audio itself. Moving the audio files, changing computers, or deleting their source folders breaks the link. At this stage shows are not portable; use stable media folders and keep a separate copy of source assets. Future work: relative paths, media relinking, portable show package and project consolidation.
-
-## What this is not yet
-
-- No professional deterministic playback guarantees, hot backup, or cue scheduler.
-- **No arbitrary hardware-channel routing**: all cues go to the system-default output.
-- No OSC, MIDI, LTC/MTC, GPI, networking, timecode, video or Merging `.ovs`/`.ovl` import.
-- No multichannel matrix, sample-accurate cue synchronization or redundant show engine.
-- No compatibility claim with Ovation binary files; this is **functional reimplementation** based on public descriptions.
-- A CI build is not proof of show-critical reliability. Do not deploy as the sole playback system for paid shows until tested.
-
-## Structure
-
-- `Sources/SculptShowCore/Show.swift`: Codable show model, legacy compatibility, cue reordering, and next-cue selection.
-- `Sources/SculptShowApp/`: SwiftUI main window, show store, AVFAudio playback engine.
-- `Tests/SculptShowCoreTests/`: model round-trip and editing tests.
-- `.github/workflows/macos-build.yml`: builds/tests on a macOS runner and uploads an app ZIP.
-
-## Near-term roadmap
-
-1. CI verification of 0.2 on macOS and real playback tests; introduce UI tests.
-2. Cue delay and automatic start triggers, cue group actions and per-list STOP commands.
-3. Audio engine redesign around `AVAudioEngine` and Core Audio with per-cue routing, metering, and buffering.
-4. Portable projects, media relinking and validation.
-5. MIDI/OSC commands and external GO, with emergency stop.
-6. More advanced Ovation-inspired show modes, cue rules, and show-control protocols.
-
-## Legal and attribution
-
-Sculpt Show is a new independently authored project. Ovation and Merging Technologies are trademarks of their respective owners. No reverse-engineered proprietary binaries, third-party source, or official UI assets are distributed here.
-
-No open-source license is granted yet while the private initial prototype is being evaluated. Choose and add a `LICENSE` before a public release or contributor onboarding.
+Il codice non include software o asset proprietari di Merging Technologies.

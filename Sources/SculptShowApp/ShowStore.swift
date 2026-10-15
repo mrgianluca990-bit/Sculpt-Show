@@ -13,6 +13,10 @@ final class ShowStore: ObservableObject {
     @Published var errorMessage: String?
     /// A manual GO advances the selected cue to the next enabled row in that list.
     @Published var advanceAfterGO = true
+    private var pendingRuleTasks: [UUID: Task<Void, Never>] = [:]
+    private var pendingRuleTargets: [UUID: Set<UUID>] = [:]
+    private var eventGeneration = UUID()
+    private var eventTimestamps: [Date] = []
 
     init() {
         selectedListID = show.cueLists.first?.id
@@ -37,6 +41,7 @@ final class ShowStore: ObservableObject {
     @discardableResult
     func newShow() -> Bool {
         guard confirmDiscard() else { return false }
+        cancelPendingRules()
         show = Show()
         documentURL = nil
         dirty = false
@@ -130,9 +135,15 @@ final class ShowStore: ObservableObject {
         select(duplicateID, in: listID)
     }
 
+    func stopAll(using playback: PlaybackEngine) {
+        cancelPendingRules()
+        playback.stopAll()
+    }
+
     func stopList(_ listID: UUID, using playback: PlaybackEngine) {
         guard let list = show.cueLists.first(where: { $0.id == listID }) else { return }
-        for cue in list.cues { playback.stop(cue.id) }
+        cancelPendingRules(targeting: Set(list.cues.map(\.id)))
+        for cue in list.cues { playback.stop(cue.id, notifyRules: false) }
     }
 
     func fadeList(_ listID: UUID, using playback: PlaybackEngine) {
@@ -166,6 +177,7 @@ final class ShowStore: ObservableObject {
 
     /// Called only for a naturally finished file, not Stop, Fade Out or Pause.
     func didFinishNaturally(_ cueID: UUID, using playback: PlaybackEngine) {
+        handleRuleEvent(.ending, source: cueID, using: playback)
         guard let finished = show.cue(cueID), finished.followOnFinish,
               let next = show.followingCue(after: cueID) else { return }
         if playback.play(next), let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == next.id }) }) {
@@ -223,6 +235,7 @@ final class ShowStore: ObservableObject {
         do {
             let next = try ShowCodec.decode(Data(contentsOf: url))
             guard confirmDiscard() else { return false }
+            cancelPendingRules()
             show = next
             documentURL = url
             cueSelection = [:]
@@ -234,6 +247,115 @@ final class ShowStore: ObservableObject {
             errorMessage = "Unable to open show: \(error.localizedDescription)"
             return false
         }
+    }
+
+    func rules(for scope: RuleScope) -> [InteractionRule] {
+        switch scope {
+        case .show: return show.rules
+        case .cueList(let id): return show.cueLists.first(where: { $0.id == id })?.rules ?? []
+        case .cue(let cueID, _): return show.cue(cueID)?.rules ?? []
+        }
+    }
+
+    func ignoreParentRules(for scope: RuleScope) -> Bool {
+        guard case .cue(let id, _) = scope else { return false }
+        return show.cue(id)?.ignoreParentRules ?? false
+    }
+
+    func updateRules(_ rules: [InteractionRule], for scope: RuleScope, ignoreParent: Bool = false) {
+        var updated = show
+        switch scope {
+        case .show:
+            updated.rules = rules
+        case .cueList(let id):
+            guard let index = updated.cueLists.firstIndex(where: { $0.id == id }) else { return }
+            updated.cueLists[index].rules = rules
+        case .cue(let cueID, let listID):
+            guard updated.cue(cueID) != nil else { return }
+            updated.updateCue(cueID, in: listID) {
+                $0.rules = rules
+                $0.ignoreParentRules = ignoreParent
+            }
+        }
+        guard updated != show else { return }
+        commit(updated)
+    }
+
+    func handleRuleEvent(_ event: RuleEvent, source cueID: UUID, using playback: PlaybackEngine) {
+        // Anti-runaway guard: a misconfigured chain cannot spawn unlimited events.
+        let now = Date()
+        eventTimestamps.removeAll { now.timeIntervalSince($0) > 1 }
+        guard eventTimestamps.count < 64 else {
+            errorMessage = "Rule safety limit reached (64 events/second). Check for cyclic rules."
+            return
+        }
+        eventTimestamps.append(now)
+
+        var states: [UUID: RuleCueState] = [:]
+        for (id, snapshot) in playback.snapshots {
+            switch snapshot.phase {
+            case .waiting: states[id] = .waiting
+            case .paused: states[id] = .paused
+            case .playing, .fading: states[id] = .playing
+            }
+        }
+        let commands = RulePlanner.commands(for: event, source: cueID, in: show, states: states)
+        for command in commands {
+            let key = UUID()
+            let generation = eventGeneration
+            let delay = command.rule.delaySeconds
+            pendingRuleTargets[key] = Set(command.targets)
+            pendingRuleTasks[key] = Task { @MainActor [weak self, weak playback] in
+                if delay > 0 {
+                    do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+                    catch { return }
+                } else {
+                    await Task.yield() // Do not mutate playback while inside its event callback.
+                }
+                guard let self, let playback, !Task.isCancelled,
+                      self.eventGeneration == generation else { return }
+                self.pendingRuleTasks.removeValue(forKey: key)
+                self.pendingRuleTargets.removeValue(forKey: key)
+                self.execute(command, using: playback)
+            }
+        }
+    }
+
+    private func execute(_ command: RuleCommand, using playback: PlaybackEngine) {
+        for targetID in command.targets {
+            guard let cue = show.cue(targetID) else { continue }
+            switch command.rule.action {
+            case .fire: _ = playback.play(cue, overrideFadeInSeconds: command.rule.fireFadeInSeconds)
+            case .stop: playback.stop(targetID)
+            case .pause: playback.pause(targetID)
+            case .fade: playback.fadeOut(cue, overrideSeconds: command.rule.fadeSeconds)
+            case .select:
+                if let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == targetID }) }) {
+                    select(targetID, in: list.id)
+                }
+            case .dim: playback.dim(targetID, by: command.rule.dimDecibels)
+            case .undim: playback.restoreGain(targetID)
+            }
+        }
+    }
+
+    private func cancelPendingRules(targeting targets: Set<UUID>) {
+        let matchingKeys = pendingRuleTargets.compactMap { key, pending in
+            pending.isDisjoint(with: targets) ? nil : key
+        }
+        for key in matchingKeys {
+            pendingRuleTasks[key]?.cancel()
+            pendingRuleTasks.removeValue(forKey: key)
+            pendingRuleTargets.removeValue(forKey: key)
+        }
+    }
+
+    private func cancelPendingRules() {
+        eventGeneration = UUID()
+        for task in pendingRuleTasks.values { task.cancel() }
+        pendingRuleTasks.removeAll()
+        pendingRuleTargets.removeAll()
+        eventTimestamps.removeAll()
     }
 
     private func confirmDiscard() -> Bool {
