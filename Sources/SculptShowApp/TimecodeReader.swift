@@ -40,8 +40,12 @@ final class TimecodeReader: ObservableObject {
 
     deinit {
         watchdog?.invalidate()
-        if connectedEndpoint != 0 && inputPort != 0 { MIDIPortDisconnectSource(inputPort, connectedEndpoint) }
-        if inputPort != 0 { MIDIPortDispose(inputPort) }
+        if inputPort != 0 {
+            if connectedEndpoint != 0 {
+                MIDIPortDisconnectSource(inputPort, connectedEndpoint)
+            }
+            MIDIPortDispose(inputPort)
+        }
         if client != 0 { MIDIClientDispose(client) }
     }
 
