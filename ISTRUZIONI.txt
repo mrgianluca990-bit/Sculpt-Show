@@ -1,34 +1,17 @@
-SCULPT SHOW v0.14.0 — CORREZIONE COMPILAZIONE LTC
-================================================
+SCULPT SHOW 0.14.0 - LTC SWIFT FLAGS COMPILE FIX
 
-Correzione basata sul log reale di GitHub Actions:
-Run: https://github.com/mrgianluca990-bit/Sculpt-Show/actions/runs/38808491719
+Build fallita: https://github.com/mrgianluca990-bit/Sculpt-Show/actions/runs/38810069413
+Errore: LTCRealtimeState.swift:22:48 - AudioTimeStampFlags non convertibile in UInt32.
 
-ERRORE RISOLTO:
-Sources/SculptShowApp/LTCRealtimeState.swift:20:57
-'cannot find kAudioTimeStampHostTimeValid in scope'
-La costante C viene sostituita con il suo bit CoreAudioTypes (0x02).
+PATCH MINIMA - SOLO UN FILE DA SOSTITUIRE:
+Sources/SculptShowApp/LTCRealtimeState.swift
 
-WARNINGS:
-Sources/SculptShowApp/ShowStore.swift:625
-Rimosso binding non usato nella guardia del metodo addMarker().
+1. Apri https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowApp
+2. Seleziona Add file > Upload files.
+3. Carica il file LTCRealtimeState.swift contenuto in Sources/SculptShowApp/ di questo ZIP.
+4. Conferma la sostituzione e fai Commit changes. GitHub Actions avviera' la build.
 
-FILE DA SOSTITUIRE SUL REPOSITORY
-1. Sources/SculptShowApp/LTCRealtimeState.swift
-2. Sources/SculptShowApp/ShowStore.swift
+La correzione usa il flag Core Audio tipizzato:
+    timestamp.pointee.mFlags.contains(.hostTimeValid)
 
-GITHUB WEB:
-- Apri https://github.com/mrgianluca990-bit/Sculpt-Show
-- Apri Sources/SculptShowApp
-- Fai Add file -> Upload files
-- Carica i due file .swift presenti in questa cartella, sovrascrivendo gli omonimi
-- Esegui Commit changes su main
-- Attendi l'esito della workflow Build Sculpt Show for macOS
-
-NON caricare il file ZIP come file del repository: prima estrailo.
-La versione resta 0.14.0. Non sono modificate le funzioni LTC, routing, MIDI o audio.
-
-VERIFICHE LOCALI:
-- 113/113 test Swift Package superati (Linux)
-- Controllo sintattico dei due file Swift superato
-- Verifica della build macOS ancora necessaria tramite GitHub Actions
+Non cambiare altri file. L'app 0.14.0 deve ancora superare la compilazione e il test LTC hardware su macOS.

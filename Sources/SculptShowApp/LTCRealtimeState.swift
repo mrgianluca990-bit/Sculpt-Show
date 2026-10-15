@@ -17,9 +17,9 @@ final class LTCRealtimeState {
                 outputData: UnsafeMutablePointer<AudioBufferList>,
                 sampleRate: Float) {
         let buffers = UnsafeMutableAudioBufferListPointer(outputData)
-        // CoreAudioTypes defines kAudioTimeStampHostTimeValid as bit 1 (0x02).
-        // The named C constant is not always surfaced in Swift's SDK imports.
-        let validHostTime = (timestamp.pointee.mFlags & 0x02) != 0
+        // AudioTimeStamp.mFlags is AudioTimeStampFlags (OptionSet), not UInt32.
+        // Check the Core Audio flag using its strongly typed Swift member.
+        let validHostTime = timestamp.pointee.mFlags.contains(.hostTimeValid)
         let hostNanos: UInt64 = validHostTime
             ? AudioConvertHostTimeToNanos(timestamp.pointee.mHostTime) : 0
         for (index, buffer) in buffers.enumerated() {
