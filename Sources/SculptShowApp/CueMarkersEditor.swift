@@ -9,7 +9,8 @@ struct CueMarkersEditor: View {
     let cue: Cue
     let listID: UUID
 
-    @State private var selectedMarkerID: UUID?
+    /// Shared selection with Waveforms: Inspector edits the marker picked on the waveform.
+    @Binding var selectedMarkerID: UUID?
     @State private var editingMarker: CueMarker?
     @State private var markerName = ""
     @State private var markerTime = ""
@@ -29,7 +30,6 @@ struct CueMarkersEditor: View {
             playback.mediaDuration(for: Cue(name: element.name, mediaPath: element.sourcePath))
         }.max() ?? cue.durationSeconds)
     }
-    private var playhead: Double { playback.snapshots[cue.id]?.elapsed ?? 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -37,16 +37,12 @@ struct CueMarkersEditor: View {
                 Text("CUE MARKERS (\(cue.markers.count))")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                 Spacer()
-                Button { addAtPlayhead() } label: {
-                    Label("Add", systemImage: "plus")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Insert a marker at the playing cue position, or at 00:00:00:000 when stopped")
+                Text("ADD / DRAG IN WAVEFORMS")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
             }
-            ruler
             if ordered.isEmpty {
-                Text("Add a marker, drag it on the timeline, then assign Reaching Marker rules.")
+                Text("Open WAVEFORMS: double-click the marker ruler to create a marker, then select it here to edit name, time and Rules.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(Array(ordered.enumerated()), id: \.element.id) { numbered in
@@ -132,8 +128,15 @@ struct CueMarkersEditor: View {
             selectedMarkerID = nil
             restoreSelection()
         }
+        .onChange(of: selectedMarkerID) { newID in
+            if let marker = cue.markers.first(where: { $0.id == newID }) { choose(marker) }
+        }
         .onChange(of: cue.markers) { changed in
             playback.updateMarkers(changed, for: cue.id)
+            if let marker = changed.first(where: { $0.id == selectedMarkerID }), !editingTime {
+                markerTime = CueClock.format(marker.positionSeconds)
+                markerName = marker.name
+            }
             if let selectedID = selectedMarkerID,
                !changed.contains(where: { $0.id == selectedID }) { selectedMarkerID = nil }
         }
@@ -143,76 +146,21 @@ struct CueMarkersEditor: View {
         }
     }
 
-    private var ruler: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(Color.gray.opacity(0.16))
-                    .frame(height: 50)
-                Rectangle().fill(Color.gray.opacity(0.45))
-                    .frame(height: 1).padding(.horizontal, 8)
-                ForEach(Array(ordered.enumerated()), id: \.element.id) { numbered in
-                    markerHandle(numbered.element, number: numbered.offset + 1, width: geo.size.width)
-                }
-                if playback.snapshots[cue.id] != nil {
-                    Rectangle().fill(Color.green)
-                        .frame(width: 2, height: 44)
-                        .offset(x: xPosition(playhead, width: geo.size.width) - 1)
-                        .allowsHitTesting(false)
-                }
-            }
-            .frame(height: 50)
-            .coordinateSpace(name: "marker-timeline")
-        }
-        .frame(height: 50)
-        .help("Click a marker to select; drag a marker horizontally to reposition; double-click for Rules")
-    }
-
-    private func markerHandle(_ marker: CueMarker, number: Int, width: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            Text("\(number)").font(.system(size: 10, weight: .bold, design: .monospaced))
-            Image(systemName: marker.rules.isEmpty ? "mappin" : "mappin.and.ellipse")
-                .font(.system(size: 15, weight: .semibold))
-        }
-        .foregroundStyle(selectedMarkerID == marker.id ? Color.yellow : Color.orange)
-        .frame(width: 27, height: 41)
-        .contentShape(Rectangle())
-        .position(x: xPosition(marker.positionSeconds, width: width), y: 24)
-        .onTapGesture(count: 2) {
-            choose(marker)
-            editingMarker = marker
-        }
-        .onTapGesture { choose(marker) }
-        .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("marker-timeline"))
-            .onEnded { value in
-                let fraction = min(max(Double(value.location.x / max(1, width)), 0), 1)
-                let updated = (fraction * duration * 1000).rounded() / 1000
-                store.setMarkerPosition(marker.id, cueID: cue.id, listID: listID, to: updated)
-                selectedMarkerID = marker.id
-                markerTime = CueClock.format(updated)
-            })
-    }
-
-    private func xPosition(_ time: Double, width: CGFloat) -> CGFloat {
-        max(14, min(max(14, width - 14), CGFloat(min(max(0, time / duration), 1)) * width))
-    }
-
     private func restoreSelection() {
-        if let marker = cue.sortedMarkers.first { choose(marker) }
+        if let selectedMarkerID,
+           let marker = cue.markers.first(where: { $0.id == selectedMarkerID }) {
+            choose(marker)
+        } else if let marker = cue.sortedMarkers.first {
+            choose(marker)
+        } else {
+            selectedMarkerID = nil
+        }
     }
 
     private func choose(_ marker: CueMarker) {
         selectedMarkerID = marker.id
         markerName = marker.name
         markerTime = CueClock.format(marker.positionSeconds)
-        invalidTime = false
-    }
-
-    private func addAtPlayhead() {
-        guard let id = store.addMarker(to: cue.id, in: listID, at: playhead) else { return }
-        selectedMarkerID = id
-        markerName = "Marker \(cue.markers.count + 1)"
-        markerTime = CueClock.format(playhead)
         invalidTime = false
     }
 

@@ -82,7 +82,8 @@ struct ShowOutputMixerView: View {
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: 3) {
                     ForEach(OutputMixerBanks.channels(channelCount: channelCount, bank: bank), id: \.self) { channel in
-                        OutputChannelStrip(channel: channel,
+                        OutputChannelStrip(meter: playback.meterMonitor,
+                                           channel: channel,
                                            deviceName: deviceName,
                                            channelCount: channelCount,
                                            labels: $labels)
@@ -97,6 +98,7 @@ struct ShowOutputMixerView: View {
 
 private struct OutputChannelStrip: View {
     @EnvironmentObject private var playback: PlaybackEngine
+    @ObservedObject var meter: OutputMeterMonitor
     let channel: Int
     let deviceName: String
     let channelCount: Int
@@ -109,8 +111,8 @@ private struct OutputChannelStrip: View {
 
     private var muted: Bool { playback.outputControls.isMuted(channel) }
     private var soloed: Bool { playback.outputControls.isSoloed(channel) }
-    private var levels: (peak: Float, rms: Float) { playback.outputMeter(channel: channel) }
-    private var hold: Float { playback.outputPeakHold(channel: channel) }
+    private var levels: (peak: Float, rms: Float) { meter.level(channel: channel) }
+    private var hold: Float { meter.peakHold(channel: channel) }
     private var currentLabel: String {
         labels.label(device: deviceName, channels: channelCount, channel: channel)
     }

@@ -92,6 +92,7 @@ struct WorkspaceView: View {
     @State private var showingOutputMixer = true
     @State private var showingWaveforms = false
     @State private var showingPreflight = false
+    @State private var selectedMarkerID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -213,20 +214,12 @@ struct WorkspaceView: View {
 
     @ViewBuilder
     private var waveformAndMixer: some View {
-        if showingOutputMixer && showingWaveforms {
-            VSplitView {
-                ShowOutputMixerView()
-                    .environmentObject(playback)
-                    .frame(minHeight: 235, idealHeight: 340)
-                ShowWaveformOverview()
-                    .environmentObject(store)
-                    .environmentObject(playback)
-                    .frame(minHeight: 145, idealHeight: 250)
-            }
-        } else if showingOutputMixer {
+        // Exactly one primary dock. Timecode Reader remains independent and
+        // may be displayed alone or beside either dock.
+        if showingOutputMixer {
             ShowOutputMixerView().environmentObject(playback)
         } else if showingWaveforms {
-            ShowWaveformOverview()
+            ShowWaveformOverview(selectedMarkerID: $selectedMarkerID)
                 .environmentObject(store)
                 .environmentObject(playback)
         }
@@ -319,24 +312,26 @@ struct WorkspaceView: View {
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                Button { withAnimation(.easeInOut(duration: 0.18)) {
-                    showingOutputMixer.toggle()
-                } } label: {
+                Button {
+                    let open = !showingOutputMixer
+                    showingOutputMixer = open
+                    if open { showingWaveforms = false }
+                } label: {
                     Label("MIXER", systemImage: "slider.vertical.3")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(showingOutputMixer ? Skin.gold : Skin.raised)
                 .help(showingOutputMixer ? "Hide the docked output mixer" : "Show the docked output mixer")
                 Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        showingWaveforms.toggle()
-                    }
+                    let open = !showingWaveforms
+                    showingWaveforms = open
+                    if open { showingOutputMixer = false }
                 } label: {
                     Label("WAVEFORMS", systemImage: "waveform")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(showingWaveforms ? Skin.gold : Skin.raised)
-                .help("Show aligned cue waveforms, marker positions and live playhead")
+                .help("Open waveform editor (replaces Mixer); double-click ruler to add, drag markers to move")
                 HStack(spacing: 4) {
                     Circle().fill(playback.routingEnabled ? Skin.green : .red)
                         .frame(width: 7, height: 7)
@@ -427,7 +422,8 @@ struct WorkspaceView: View {
                 CueTimingEditor(cue: cue, listID: listID)
 
                 Divider()
-                CueMarkersEditor(cue: cue, listID: listID)
+                CueMarkersEditor(cue: cue, listID: listID,
+                                 selectedMarkerID: $selectedMarkerID)
 
                 Divider()
                 HStack {

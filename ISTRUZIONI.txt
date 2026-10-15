@@ -1,31 +1,31 @@
-SCULPT SHOW 0.11.0 - CONVERGENZA CUE / BUILD CUMULATIVA
-======================================================
+SCULPT SHOW 0.12.0 — MARKER / PERFORMANCE / DOCK
 
-Base pubblicata verificata su GitHub: Sculpt Show 0.10.4.
-La versione 0.10.5 è inclusa nel pacchetto, anche se non è stata
-ancora caricata nel repository.
+Basato esattamente sulla release 0.11.0 collaudata su macOS.
 
-METODO CONSIGLIATO (GitHub via browser):
-1) Scarica Sculpt-Show-v0.11.0-Cue-Convergence-Update.zip
-2) Estrai lo ZIP.
-3) Apri https://github.com/mrgianluca990-bit/Sculpt-Show
-4) Carica i file nelle corrispondenti cartelle, preservando la struttura.
-   ATTENZIONE: non caricare l'intera cartella principale come sottocartella
-   di main. Le directory sono Sources, Tests, Scripts.
-5) Commit su main: GitHub Actions avvierà la build macOS universale.
-6) Scarica l'app da Actions -> ultimo run -> Sculpt-Show-macOS.
+1) Apri https://github.com/mrgianluca990-bit/Sculpt-Show
+2) Carica i file della patch nelle cartelle corrispondenti del repository. Non caricare la cartella esterna: i percorsi DEVONO essere Sources/... , Tests/... e Scripts/...
+3) GitHub Actions crea automaticamente la build macOS universal; scarica l'artifact Sculpt-Show-macOS.
+4) Conserva la precedente applicazione 0.11.0 come fallback durante i test.
 
-ALTERNATIVA: usa Sculpt-Show-v0.11.0-Complete-Source.zip per
-sostituire tutti i sorgenti. Include script, workflow, test, icona.
+FILE MODIFICATI/NUOVI:
+  README.md
+  Scripts/Info.plist
+  Sources/SculptShowApp/CueMarkersEditor.swift
+  Sources/SculptShowApp/OutputMeterMonitor.swift
+  Sources/SculptShowApp/PlaybackEngine.swift
+  Sources/SculptShowApp/ShowOutputMixerView.swift
+  Sources/SculptShowApp/ShowWaveformOverview.swift
+  Sources/SculptShowApp/WorkspaceView.swift
+  Sources/SculptShowCore/MarkerTimelineGeometry.swift
+  Tests/SculptShowCoreTests/MarkerTimelineGeometryTests.swift
 
-NON rimuovere gli script esistenti e NON cancellare .scshow.
+TEST DI ACCETTAZIONE:
+- WAVEFORMS chiude automaticamente MIXER; MIXER chiude WAVEFORMS. MTC funziona in parallelo.
+- Doppio click sulla barra MARKERS della waveform aggiunge un marker.
+- Trascina il marker sulla barra o su una linea sopra un'onda; il tempo nell'Inspector cambia al rilascio.
+- Rinomina il marker, cambia HH:MM:SS:MMM, collega una Rule e salva lo show. Riapri e verifica.
+- Provare snap 1ms, 100ms, 1s, pulsanti marker precedente/successivo e FIT.
+- Prova durante playback: metering, marker Rules, routing a caldo, M/S, riproduzione multistem e Timecode Reader.
 
-IL PACCHETTO È SORGENTE: finché GitHub Actions non restituisce
-SUCCESS, non considerarlo un'app compilata né una versione live stabile.
-
-TEST PRINCIPALI:
-- WAVEFORMS su cue multitraccia e marker.
-- MIXER + WAVEFORMS + MTC simultanei.
-- PREFLIGHT -> JSON / RELINK / ricerca cartella.
-- Audio/MIDI Setup -> speaker test 440 Hz -30 dBFS, solo senza cue attive.
-- Verifica nessuna interruzione al cambio live di OUT, M/S, drag dei pannelli.
+NOTA: Test Linux e sintassi Swift verificati. Una build GitHub macOS completa e la prova reale sul Mac sono ancora necessari.
+Non cambia l'audio graph, la serializzazione .scshow o la temporizzazione 50ms delle Rules.
