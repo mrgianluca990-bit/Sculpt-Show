@@ -122,11 +122,15 @@ final class RoutedAudioEngine {
         let current = graph.outputNode.outputFormat(forBus: 0)
         let rate = current.sampleRate > 0 ? current.sampleRate : 48000
         guard let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Unknown | UInt32(device.channels)),
-              let multichannel = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate,
-                                               interleaved: false, channelLayout: layout),
               let stereo = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2) else {
             throw RoutingError.noDeviceOutput
         }
+        // This AVAudioFormat initializer is non-optional on macOS; it must not
+        // participate in a `guard let` optional-binding clause.
+        let multichannel = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                         sampleRate: rate,
+                                         interleaved: false,
+                                         channelLayout: layout)
         graph.connect(mixerUnit, to: graph.outputNode, format: multichannel)
         var newVoices: [Voice] = []
         for index in 0..<Self.maximumVoices {
