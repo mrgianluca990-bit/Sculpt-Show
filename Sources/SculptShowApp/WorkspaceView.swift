@@ -12,6 +12,75 @@ private enum Skin {
     static let soft = Color(red: 0.62, green: 0.65, blue: 0.67)
 }
 
+
+/// Local editing state keeps text input independent from show-model redraws.
+/// Renames commit only on Save or Return; Cancel leaves the original untouched.
+private struct EditableTitle: View {
+    let title: String
+    let context: String
+    let fontSize: CGFloat
+    let fontWeight: Font.Weight
+    let onRename: (String) -> Void
+
+    @State private var showingEditor = false
+    @State private var draft = ""
+    @FocusState private var isTextFocused: Bool
+
+    var body: some View {
+        Button(action: beginEditing) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: fontSize, weight: fontWeight))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: "pencil")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Skin.gold)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Rename \(context)")
+        .accessibilityLabel("Rename \(context)")
+        .sheet(isPresented: $showingEditor) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Rename \(context)")
+                    .font(.title3.weight(.semibold))
+
+                TextField("Name", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isTextFocused)
+                    .onSubmit(saveName)
+
+                HStack {
+                    Spacer()
+                    Button("Cancel") { showingEditor = false }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Save") { saveName() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(24)
+            .frame(width: 410)
+            .onAppear { isTextFocused = true }
+        }
+    }
+
+    private func beginEditing() {
+        draft = title
+        showingEditor = true
+    }
+
+    private func saveName() {
+        let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        if name != title { onRename(name) }
+        showingEditor = false
+    }
+}
+
 struct WorkspaceView: View {
     @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var playback: PlaybackEngine
@@ -75,12 +144,14 @@ struct WorkspaceView: View {
                     .foregroundColor(Skin.gold)
             }
             Rectangle().fill(Skin.stroke).frame(width: 1, height: 31).padding(.horizontal, 12)
-            TextField("Show name", text: Binding(
-                get: { store.show.name },
-                set: { store.renameShow($0) }
-            ))
-            .textFieldStyle(.plain)
-            .font(.system(size: 16, weight: .medium))
+            EditableTitle(
+                title: store.show.name,
+                context: "Show",
+                fontSize: 16,
+                fontWeight: .medium
+            ) { newName in
+                store.renameShow(newName)
+            }
             .frame(maxWidth: 350, alignment: .leading)
             if store.dirty {
                 Circle().fill(Skin.gold).frame(width: 7, height: 7)
@@ -334,12 +405,14 @@ private struct CueListPanel: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Circle().fill(Skin.gold).frame(width: 7, height: 7)
-                TextField("List name", text: Binding(
-                    get: { store.show.cueLists.first(where: { $0.id == list.id })?.name ?? list.name },
-                    set: { store.renameList(list.id, to: $0) }
-                ))
-                .textFieldStyle(.plain)
-                .font(.system(size: 15, weight: .bold))
+                EditableTitle(
+                    title: list.name,
+                    context: "Cue List",
+                    fontSize: 15,
+                    fontWeight: .bold
+                ) { newName in
+                    store.renameList(list.id, to: newName)
+                }
                 Spacer()
                 Text("\(list.cues.count)")
                     .font(.system(size: 11, design: .monospaced))
