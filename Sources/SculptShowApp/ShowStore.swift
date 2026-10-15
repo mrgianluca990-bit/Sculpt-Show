@@ -107,6 +107,10 @@ final class ShowStore: ObservableObject {
         editCue(id, list: list) { $0.fadeOutSeconds = max(seconds, 0) }
     }
 
+    func setPreWait(_ id: UUID, in list: UUID, to seconds: Double) {
+        editCue(id, list: list) { $0.preWaitSeconds = min(max(seconds, 0), 600) }
+    }
+
     func setFadeIn(_ id: UUID, in list: UUID, to seconds: Double) {
         editCue(id, list: list) { $0.fadeInSeconds = max(seconds, 0) }
     }
@@ -117,6 +121,23 @@ final class ShowStore: ObservableObject {
 
     func setFollow(_ id: UUID, in list: UUID, to enabled: Bool) {
         editCue(id, list: list) { $0.followOnFinish = enabled }
+    }
+
+    func duplicateCue(_ cueID: UUID, in listID: UUID) {
+        var updated = show
+        guard let duplicateID = updated.duplicateCue(cueID, in: listID) else { return }
+        commit(updated)
+        select(duplicateID, in: listID)
+    }
+
+    func stopList(_ listID: UUID, using playback: PlaybackEngine) {
+        guard let list = show.cueLists.first(where: { $0.id == listID }) else { return }
+        for cue in list.cues { playback.stop(cue.id) }
+    }
+
+    func fadeList(_ listID: UUID, using playback: PlaybackEngine) {
+        guard let list = show.cueLists.first(where: { $0.id == listID }) else { return }
+        for cue in list.cues { playback.fadeOut(cue) }
     }
 
     func moveCue(_ cueID: UUID, in list: UUID, by offset: Int) {

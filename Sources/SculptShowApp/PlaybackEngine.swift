@@ -12,6 +12,7 @@ private final class AudioFinishDelegate: NSObject, AVAudioPlayerDelegate {
 @MainActor
 final class PlaybackEngine: ObservableObject {
     enum Phase: String {
+        case waiting = "WAITING"
         case playing = "PLAYING"
         case paused = "PAUSED"
         case fading = "FADING"
@@ -31,6 +32,10 @@ final class PlaybackEngine: ObservableObject {
     /// Invoked only when non-looping audio reaches its natural end.
     var onNaturalFinish: ((UUID) -> Void)?
     private var players: [UUID: AVAudioPlayer] = [:]
+    /// Pending pre-wait starts are tracked separately from audio players.
+    /// Removing a token makes the delayed task harmless after STOP / STOP ALL.
+    private var pendingTokens: [UUID: UUID] = [:]
+    private var pendingDeadlines: [UUID: Date] = [:]
     private var finishDelegates: [UUID: AudioFinishDelegate] = [:]
     private var cueGains: [UUID: Float] = [:]
     private var fadeTokens: [UUID: UUID] = [:]
@@ -45,6 +50,8 @@ final class PlaybackEngine: ObservableObject {
     @discardableResult
     func play(_ cue: Cue) -> Bool {
         guard cue.enabled else { return false }
+        // Already queued or playing cues never receive a duplicate start.
+        guard pendingTokens[cue.id] == nil else { return false }
         // A repeated GO on a paused cue resumes it. A running cue does not restart.
         if let player = players[cue.id] {
             if snapshots[cue.id]?.phase == .paused {
@@ -56,6 +63,30 @@ final class PlaybackEngine: ObservableObject {
             }
             return false
         }
+        // Reject missing files before creating a countdown.
+        guard FileManager.default.fileExists(atPath: cue.mediaPath) else {
+            errorMessage = "Cannot open ‘\(cue.name)’: media file is missing."
+            return false
+        }
+        guard cue.preWaitSeconds > 0 else { return playImmediately(cue) }
+        let cueID = cue.id
+        let token = UUID()
+        pendingTokens[cueID] = token
+        pendingDeadlines[cueID] = Date().addingTimeInterval(cue.preWaitSeconds)
+        snapshots[cueID] = Snapshot(phase: .waiting, elapsed: 0, duration: cue.preWaitSeconds)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(cue.preWaitSeconds * 1_000_000_000))
+            guard let self, self.pendingTokens[cueID] == token else { return }
+            self.pendingTokens.removeValue(forKey: cueID)
+            self.pendingDeadlines.removeValue(forKey: cueID)
+            self.snapshots.removeValue(forKey: cueID)
+            _ = self.playImmediately(cue)
+        }
+        return true
+    }
+
+    @discardableResult
+    private func playImmediately(_ cue: Cue) -> Bool {
         do {
             let url = URL(fileURLWithPath: cue.mediaPath)
             guard FileManager.default.fileExists(atPath: url.path) else {
@@ -93,6 +124,8 @@ final class PlaybackEngine: ObservableObject {
     func togglePause(_ id: UUID) {
         guard let player = players[id], let current = snapshots[id] else { return }
         switch current.phase {
+        case .waiting:
+            return
         case .paused:
             fadeTokens.removeValue(forKey: id)
             player.setVolume(cueGains[id] ?? 1, fadeDuration: 0)
@@ -106,6 +139,8 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func stop(_ id: UUID) {
+        pendingTokens.removeValue(forKey: id)
+        pendingDeadlines.removeValue(forKey: id)
         fadeTokens.removeValue(forKey: id)
         players[id]?.stop()
         players.removeValue(forKey: id)
@@ -115,6 +150,8 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func fadeOut(_ cue: Cue) {
+        // A queued cue has not produced audio, so Fade behaves as cancel.
+        if pendingTokens[cue.id] != nil { stop(cue.id); return }
         guard let player = players[cue.id] else { return }
         guard cue.fadeOutSeconds > 0 else { stop(cue.id); return }
         guard snapshots[cue.id]?.phase != .fading else { return }
@@ -150,7 +187,7 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func stopAll() {
-        for id in Array(players.keys) { stop(id) }
+        for id in Array(snapshots.keys) { stop(id) }
     }
 
     private func handleCompletion(_ id: UUID, success: Bool) {
@@ -161,6 +198,11 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func refresh() {
+        for (id, deadline) in pendingDeadlines {
+            guard var state = snapshots[id], state.phase == .waiting else { continue }
+            state.elapsed = min(max(state.duration - deadline.timeIntervalSinceNow, 0), state.duration)
+            snapshots[id] = state
+        }
         for (id, player) in players {
             guard var state = snapshots[id] else { continue }
             if state.phase != .paused && !player.isPlaying {

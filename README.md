@@ -2,6 +2,27 @@
 
 Independent macOS audio cue player and show-control workbench inspired by professional cue-list workflows. **Not a Merging Technologies product**; no Ovation source code or assets are included.
 
+## Version 0.3.0 — timed cues and list transport
+
+- **Pre-Wait (0–120 s in the inspector)**: a cue starts after an adjustable countdown. A waiting cue shows `WAIT` and `START IN`. No audio is heard during the delay.
+- **STOP LIST**: cancels pending starts and stops only the cues belonging to that cue list; all other lists remain active.
+- **FADE LIST**: applies each playing cue's own Fade Out; queued, not-yet-audible cues are canceled.
+- **Duplicate**: inserts an independent cue right after the selected cue, retaining parameters and the reference to its audio media file. It does not duplicate the media itself.
+- Turning **Cue enabled** off immediately stops that cue, including a queued start.
+- **Existing show compatibility:** the `.scshow` format is still version 1. Missing `preWaitSeconds` in v0.1/v0.2 shows defaults to `0`.
+- Existing rename dialog for show and cue list is preserved.
+- **Tests**: 14 core/model tests pass on Linux. Full macOS interface build must be verified in GitHub Actions.
+
+### Pre-wait behavior
+
+1. Select a cue in the inspector and set `PRE-WAIT` (e.g. 5 seconds).
+2. Press GO. The cue shows a countdown. AUTO NEXT, when enabled, still advances the selection immediately.
+3. Press the cue's STOP, its cue-list STOP or STOP ALL during the countdown: the scheduled playback is canceled.
+4. FADE cancels a waiting cue, rather than fading nonexistent audio.
+5. A cue started by Auto-follow also respects its own Pre-Wait setting.
+
+**Timing disclaimer:** the current delay uses a high-level macOS task timer and `AVAudioPlayer`, not sample-accurate scheduling. This is a development prototype, not yet a redundant show-critical playback system. Hardware multichannel routing and Cue Groups are not yet implemented.
+
 ## Version 0.2.0 — cue control update
 
 Added in 0.2:
@@ -15,7 +36,7 @@ Added in 0.2:
 - **Move cue Up/Down** in the inspector. Keeps the cue's identity and saved settings.
 - Compatibility with `.scshow` files created in 0.1: missing new keys default to disabled/zero. Existing formatVersion remains 1.
 
-The 0.2 UI and playback engine must be compiled and tested on macOS through GitHub Actions before being considered a verified build. The Core model passes tests on Linux.
+Version 0.2 was compiled successfully on GitHub Actions and tested by the user. Version 0.3 still requires macOS build and playback tests.
 
 ## Previous 0.1.0 foundation
 

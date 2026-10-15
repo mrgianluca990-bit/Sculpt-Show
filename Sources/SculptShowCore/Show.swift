@@ -61,6 +61,18 @@ public struct Show: Codable, Equatable, Sendable {
         cueLists[listIndex].cues.insert(cue, at: destination)
     }
 
+    /// Create an independent cue directly after the original. Audio media is referenced, not copied.
+    @discardableResult
+    public mutating func duplicateCue(_ cueID: UUID, in listID: UUID) -> UUID? {
+        guard let listIndex = cueLists.firstIndex(where: { $0.id == listID }),
+              let cueIndex = cueLists[listIndex].cues.firstIndex(where: { $0.id == cueID }) else { return nil }
+        var copy = cueLists[listIndex].cues[cueIndex]
+        copy.id = UUID()
+        copy.name += " copy"
+        cueLists[listIndex].cues.insert(copy, at: cueIndex + 1)
+        return copy.id
+    }
+
     /// Find the next enabled cue in the same list (never wraps into another list).
     public func followingCue(after cueID: UUID) -> Cue? {
         guard let list = cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }),
@@ -97,11 +109,14 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     public var fadeInSeconds: Double
     public var loop: Bool
     public var followOnFinish: Bool
+    /// Delay before playback begins after GO; a pending cue is cancelable with STOP.
+    public var preWaitSeconds: Double
 
     public init(id: UUID = UUID(), name: String, mediaPath: String,
                 gain: Double = 1.0, fadeOutSeconds: Double = 2.0,
                 enabled: Bool = true, fadeInSeconds: Double = 0,
-                loop: Bool = false, followOnFinish: Bool = false) {
+                loop: Bool = false, followOnFinish: Bool = false,
+                preWaitSeconds: Double = 0) {
         self.id = id
         self.name = name
         self.mediaPath = mediaPath
@@ -111,11 +126,12 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         self.fadeInSeconds = max(fadeInSeconds, 0)
         self.loop = loop
         self.followOnFinish = followOnFinish
+        self.preWaitSeconds = min(max(preWaitSeconds, 0), 600)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, mediaPath, gain, fadeOutSeconds, enabled
-        case fadeInSeconds, loop, followOnFinish
+        case fadeInSeconds, loop, followOnFinish, preWaitSeconds
     }
 
     public init(from decoder: Decoder) throws {
@@ -129,7 +145,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
             enabled: try values.decode(Bool.self, forKey: .enabled),
             fadeInSeconds: try values.decodeIfPresent(Double.self, forKey: .fadeInSeconds) ?? 0,
             loop: try values.decodeIfPresent(Bool.self, forKey: .loop) ?? false,
-            followOnFinish: try values.decodeIfPresent(Bool.self, forKey: .followOnFinish) ?? false
+            followOnFinish: try values.decodeIfPresent(Bool.self, forKey: .followOnFinish) ?? false,
+            preWaitSeconds: try values.decodeIfPresent(Double.self, forKey: .preWaitSeconds) ?? 0
         )
     }
 }

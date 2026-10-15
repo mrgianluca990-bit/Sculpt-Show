@@ -118,4 +118,60 @@ final class ShowTests: XCTestCase {
         XCTAssertEqual(cue.fadeInSeconds, 0)
     }
 
+    func testPreWaitPersistsAndIsBounded() throws {
+        let original = Cue(name: "Waited", mediaPath: "/tmp/wait.wav", preWaitSeconds: 4.5)
+        let decoded = try JSONDecoder().decode(Cue.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(decoded.preWaitSeconds, 4.5)
+        XCTAssertEqual(Cue(name: "negative", mediaPath: "n", preWaitSeconds: -12).preWaitSeconds, 0)
+        XCTAssertEqual(Cue(name: "limit", mediaPath: "n", preWaitSeconds: 9999).preWaitSeconds, 600)
+    }
+
+    func testDuplicateCueCopiesSettingsButNotIdentity() throws {
+        var show = Show(name: "Demo")
+        let listID = try XCTUnwrap(show.cueLists.first?.id)
+        let ids = show.addAudio([URL(fileURLWithPath: "/tmp/intro.wav"),
+                                 URL(fileURLWithPath: "/tmp/outro.wav")], to: listID)
+        show.updateCue(ids[0], in: listID) { cue in
+            cue.gain = 0.3
+            cue.loop = true
+            cue.preWaitSeconds = 3
+            cue.followOnFinish = false
+        }
+        let copiedID = try XCTUnwrap(show.duplicateCue(ids[0], in: listID))
+        XCTAssertNotEqual(ids[0], copiedID)
+        XCTAssertEqual(show.cueLists[0].cues.map(\.id), [ids[0], copiedID, ids[1]])
+        let duplicate = try XCTUnwrap(show.cue(copiedID))
+        XCTAssertEqual(duplicate.name, "intro copy")
+        XCTAssertEqual(duplicate.mediaPath, "/tmp/intro.wav")
+        XCTAssertEqual(duplicate.preWaitSeconds, 3)
+        XCTAssertTrue(duplicate.loop)
+        XCTAssertEqual(duplicate.gain, 0.3)
+        XCTAssertNil(show.duplicateCue(UUID(), in: listID))
+        XCTAssertEqual(try ShowCodec.decode(ShowCodec.encode(show)), show)
+    }
+
+    func testOldProjectWithoutPreWaitDefaultsToZero() throws {
+        var show = Show(name: "Legacy v0.2")
+        let listID = try XCTUnwrap(show.cueLists.first?.id)
+        show.addAudio([URL(fileURLWithPath: "/tmp/test.wav")], to: listID)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: ShowCodec.encode(show)) as? [String: Any])
+        var lists = try XCTUnwrap(json["cueLists"] as? [[String: Any]])
+        var cues = try XCTUnwrap(lists[0]["cues"] as? [[String: Any]])
+        cues[0].removeValue(forKey: "preWaitSeconds")
+        lists[0]["cues"] = cues
+        json["cueLists"] = lists
+        let old = try ShowCodec.decode(JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(old.cueLists[0].cues[0].preWaitSeconds, 0)
+    }
+
+    func testRenameShowAndListPersistAcrossSave() throws {
+        var show = Show()
+        let listID = try XCTUnwrap(show.cueLists.first?.id)
+        show.name = "Concerto primavera"
+        show.renameList(listID, to: "Ambienti")
+        let restored = try ShowCodec.decode(ShowCodec.encode(show))
+        XCTAssertEqual(restored.name, "Concerto primavera")
+        XCTAssertEqual(restored.cueLists[0].name, "Ambienti")
+    }
+
 }

@@ -261,6 +261,23 @@ struct WorkspaceView: View {
                 ), in: 0...1)
                 .tint(Skin.gold)
 
+                Divider()
+                HStack {
+                    Text("PRE-WAIT")
+                    Spacer()
+                    Text("\(cue.preWaitSeconds, specifier: "%.1f") s")
+                        .monospacedDigit()
+                        .foregroundColor(Skin.gold)
+                }
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                Slider(value: Binding(
+                    get: { store.show.cue(cue.id)?.preWaitSeconds ?? cue.preWaitSeconds },
+                    set: { store.setPreWait(cue.id, in: listID, to: $0) }
+                ), in: 0...120, step: 0.5)
+                .tint(Skin.gold)
+                .help("Delay before a cue starts after GO. STOP cancels a waiting cue.")
+
+                Divider()
                 HStack {
                     Text("FADE OUT")
                     Spacer()
@@ -306,7 +323,10 @@ struct WorkspaceView: View {
 
                 Toggle("Cue enabled", isOn: Binding(
                     get: { store.show.cue(cue.id)?.enabled ?? cue.enabled },
-                    set: { store.setEnabled(cue.id, in: listID, to: $0) }
+                    set: { isEnabled in
+                        store.setEnabled(cue.id, in: listID, to: isEnabled)
+                        if !isEnabled { playback.stop(cue.id) }
+                    }
                 ))
                 .toggleStyle(.switch)
 
@@ -327,12 +347,17 @@ struct WorkspaceView: View {
                 }
                 if let active = playback.snapshots[cue.id] {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("REMAINING")
+                        Text(active.phase == .waiting ? "START IN" : "REMAINING")
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
                             .foregroundColor(Skin.soft)
                         Text("−" + clock(active.remaining))
                             .font(.system(size: 24, weight: .bold, design: .monospaced))
                             .foregroundColor(Skin.green)
+                    }
+                }
+                HStack {
+                    Button { store.duplicateCue(cue.id, in: listID) } label: {
+                        Label("Duplicate", systemImage: "plus.square.on.square")
                     }
                 }
                 HStack {
@@ -370,7 +395,7 @@ struct WorkspaceView: View {
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.2.0")
+            Text("SCULPT SHOW 0.3.0")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -449,8 +474,21 @@ private struct CueListPanel: View {
                 }
                 .buttonStyle(.plain)
                 Spacer()
-                Text("CUE LIST")
-                    .foregroundColor(Skin.soft)
+                Button {
+                    store.fadeList(list.id, using: playback)
+                } label: {
+                    Label("FADE", systemImage: "arrow.down.right")
+                }
+                .buttonStyle(.plain)
+                .help("Fade all active cues in this list and cancel pending starts")
+                Button {
+                    store.stopList(list.id, using: playback)
+                } label: {
+                    Label("STOP", systemImage: "stop.fill")
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(.plain)
+                .help("Stop playing cues and cancel waiting cues in this list")
             }
             .font(.system(size: 11, weight: .semibold, design: .monospaced))
             .padding(.horizontal, 14)
@@ -579,17 +617,19 @@ private struct CueRow: View {
 
     private var playbackLabel: String {
         guard let state else { return "AUDIO" }
+        if state.phase == .waiting { return "WAIT  −\(clock(state.remaining))" }
         return "\(clock(state.elapsed))  •  −\(clock(state.remaining))"
     }
 
     private var statusIndicator: some View {
         Image(systemName: statusSymbol)
-            .foregroundColor(state == nil ? Skin.soft : Skin.green)
+            .foregroundColor(state == nil ? Skin.soft : state?.phase == .waiting ? Skin.gold : Skin.green)
             .font(.system(size: 11))
     }
 
     private var statusSymbol: String {
         guard let state else { return "circle" }
+        if state.phase == .waiting { return "clock.fill" }
         return state.phase == .paused ? "pause.circle.fill" : "circle.fill"
     }
 
@@ -599,7 +639,7 @@ private struct CueRow: View {
                 .disabled(!cue.enabled)
                 .help("Fire cue")
             Button { playback.togglePause(cue.id) } label: { Image(systemName: "pause.fill") }
-                .disabled(state == nil)
+                .disabled(state == nil || state?.phase == .waiting)
                 .help("Pause / resume cue")
             Button { playback.fadeOut(cue) } label: { Image(systemName: "arrow.down.right") }
                 .disabled(state == nil)
@@ -622,7 +662,7 @@ private struct CueRow: View {
         })
         .controlSize(.mini)
         .tint(Skin.green)
-        .disabled(state == nil || state?.phase == .fading)
+        .disabled(state == nil || state?.phase == .fading || state?.phase == .waiting)
         .padding(.horizontal, 10)
         .frame(height: 17)
         .help("Click or drag to seek within a playing or paused cue")
