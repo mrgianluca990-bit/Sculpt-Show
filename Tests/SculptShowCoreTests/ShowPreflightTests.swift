@@ -79,3 +79,46 @@ extension ShowPreflightTests {
         XCTAssertEqual(element.gain, 0.35)
     }
 }
+
+extension ShowPreflightTests {
+    func testLTCRequiresDedicatedOutputAndValidSMPTE() throws {
+        var show = Show()
+        let list = show.cueLists[0].id
+        let id = try XCTUnwrap(show.addEmptyCue(to: list))
+        show.updateCue(id, in: list) { cue in
+            cue.elements.append(.timecode())
+            cue.durationSeconds = 10
+        }
+        XCTAssertTrue(ShowPreflight.check(show, outputChannels: 16, media: [:])
+            .issues.contains { $0.code == "ltc-output" })
+        show.updateCue(id, in: list) { cue in
+            cue.elements[0].ltcOutputChannel = 16
+            cue.elements[0].frameRate = 30
+            cue.elements[0].timecodeDropFrame = true
+            cue.elements[0].timecodeStart = "00:01:00:00"
+        }
+        XCTAssertTrue(ShowPreflight.check(show, outputChannels: 16, media: [:])
+            .issues.contains { $0.code == "ltc-start" })
+        show.updateCue(id, in: list) { $0.elements[0].timecodeStart = "00:01:00:02" }
+        XCTAssertTrue(ShowPreflight.check(show, outputChannels: 16, media: [:]).ready)
+    }
+
+    func testLTCPhysicalOutputCannotOverlapAudioStereoStem() throws {
+        var show = Show()
+        let list = show.cueLists[0].id
+        let path = "/audio/score.wav"
+        show.addAudio([URL(fileURLWithPath: path)], to: list)
+        let id = try XCTUnwrap(show.cueLists[0].cues.first?.id)
+        show.updateCue(id, in: list) { cue in
+            cue.elements[0].outputStartChannel = 1
+            var tc = CueElement.timecode()
+            tc.ltcOutputChannel = 2
+            cue.elements.append(tc)
+        }
+        let audio = PreflightAudioInfo(channelCount: 2, duration: 20, sampleRate: 48000)
+        XCTAssertTrue(ShowPreflight.check(show, outputChannels: 16, media: [path: audio])
+            .issues.contains { $0.code == "ltc-route-collision" })
+        show.updateCue(id, in: list) { $0.elements[1].ltcOutputChannel = 16 }
+        XCTAssertTrue(ShowPreflight.check(show, outputChannels: 16, media: [path: audio]).ready)
+    }
+}

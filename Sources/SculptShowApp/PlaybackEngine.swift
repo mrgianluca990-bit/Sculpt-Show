@@ -40,6 +40,36 @@ final class PlaybackEngine: ObservableObject {
     /// Kept only in memory: the .scshow show format and Rules are unchanged.
     @Published private(set) var cuePlayCursors: [UUID: Double] = [:]
 
+    struct GeneratedLTC: Equatable {
+        let cueName: String
+        let timecode: String
+        let output: Int
+        let rate: String
+        let active: Bool
+    }
+    @Published private(set) var generatedLTC: GeneratedLTC?
+
+    private func updateGeneratedLTC() {
+        guard let owner = routedAudio.ltcOwner,
+              let element = routedAudio.ltcElement,
+              let cue = activeCues[owner],
+              let address = LTCTimecode(text: element.timecodeStart,
+                  rate: LTCFrameRate(fps: element.frameRate, drop: element.timecodeDropFrame)),
+              let output = element.ltcOutputChannel,
+              let snapshot = snapshots[owner] else {
+            if generatedLTC != nil { generatedLTC = nil }
+            return
+        }
+        let seconds = max(0, snapshot.elapsed - element.startSeconds)
+        let isSending = snapshot.elapsed >= element.startSeconds &&
+                        (snapshot.phase == .playing || snapshot.phase == .fading) &&
+                        outputControls.isAudible(output)
+        let value = GeneratedLTC(cueName: cue.name,
+            timecode: isSending ? address.adding(seconds: seconds).display : "--:--:--:--",
+            output: output, rate: address.rate.label, active: isSending)
+        if value != generatedLTC { generatedLTC = value }
+    }
+
     func setCuePlayCursor(_ id: UUID, to seconds: Double) {
         guard seconds.isFinite else { return }
         cuePlayCursors[id] = max(0, seconds)
@@ -150,6 +180,7 @@ final class PlaybackEngine: ObservableObject {
         do {
             try routedAudio.applyOutputControls(next)
             outputControls = next
+            updateGeneratedLTC()
         } catch {
             errorMessage = "Cannot update output mute/solo: \(error.localizedDescription)"
         }
@@ -286,13 +317,14 @@ final class PlaybackEngine: ObservableObject {
 
     @discardableResult
     func play(_ requestedCue: Cue, overrideFadeInSeconds: Double? = nil,
-              from markerOffsetSeconds: Double = 0) -> Bool {
+              from markerOffsetSeconds: Double = 0,
+              restartPaused: Bool = false) -> Bool {
         guard requestedCue.enabled else { return false }
         // A forgotten diagnostic tone can never continue into a live GO.
         stopTestTone()
         // Show mode always requires an active Core Audio route for audio cues.
         // Never silently fall back to system stereo if the hardware is unavailable.
-        if requestedCue.hasAudio && !routingEnabled {
+        if (requestedCue.hasAudio || requestedCue.hasTimecode) && !routingEnabled {
             errorMessage = "Audio output is not ready. Open File → Audio/MIDI Setup and select a connected interface."
             return false
         }
@@ -300,8 +332,22 @@ final class PlaybackEngine: ObservableObject {
         if let overrideFadeInSeconds { cue.fadeInSeconds = max(0, min(600, overrideFadeInSeconds)) }
         guard pendingTokens[cue.id] == nil else { return false }
         if let snapshot = snapshots[cue.id] {
-            if snapshot.phase == .paused { resume(cue.id); return true }
-            return false
+            if snapshot.phase == .paused {
+                if restartPaused { stop(cue.id, notifyRules: false) }
+                else { resume(cue.id); return true }
+            } else { return false }
+        }
+        if requestedCue.elements.contains(where: { $0.kind == .timecode && !$0.muted }) {
+            let active = requestedCue.elements.filter { $0.kind == .timecode && !$0.muted }
+            guard active.count == 1 else {
+                errorMessage = "Use one LTC element per cue; mute any additional timecode elements."
+                return false
+            }
+            guard let channel = active[0].ltcOutputChannel,
+                  channel > 0, channel <= routingOutputCount else {
+                errorMessage = "Set a dedicated LTC output in the cue Inspector before GO."
+                return false
+            }
         }
         // Reject missing or unsupported media before even entering pre-wait.
         for element in cue.audioElements {
@@ -350,6 +396,7 @@ final class PlaybackEngine: ObservableObject {
             lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
             startedAt[cue.id] = Date().addingTimeInterval(lead)
             snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length)
+            updateGeneratedLTC()
             onStarted?(cue.id)
             return true
         } catch {
@@ -360,7 +407,7 @@ final class PlaybackEngine: ObservableObject {
 
     @discardableResult
     private func playImmediately(_ cue: Cue, from requestedPosition: Double = 0) -> Bool {
-        if routingEnabled && cue.hasAudio { return playRouted(cue, from: requestedPosition) }
+        if routingEnabled && (cue.hasAudio || cue.hasTimecode) { return playRouted(cue, from: requestedPosition) }
         var prepared: [AudioTrack] = []
         do {
             for element in cue.alignedAudioElements {
@@ -567,6 +614,7 @@ final class PlaybackEngine: ObservableObject {
         for track in tracks[id] ?? [] { track.player.stop() }
         snapshots[id]?.phase = .paused
         snapshots[id]?.elapsed = elapsed
+        updateGeneratedLTC()
     }
 
     func stop(_ id: UUID, notifyRules: Bool = true) {
@@ -584,6 +632,7 @@ final class PlaybackEngine: ObservableObject {
         elapsedAtStart.removeValue(forKey: id)
         dimFactors.removeValue(forKey: id)
         snapshots.removeValue(forKey: id)
+        updateGeneratedLTC()
         if previous != nil && previous?.phase != .fading && notifyRules { onStopped?(id) }
     }
 
@@ -724,5 +773,6 @@ final class PlaybackEngine: ObservableObject {
             snapshots[id] = snapshot
             if snapshot.phase == .playing || routedCues.contains(id) { refreshAudio(for: id, elapsed: elapsed) }
         }
+        updateGeneratedLTC()
     }
 }

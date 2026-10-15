@@ -3,6 +3,7 @@ import AVFAudio
 import AudioToolbox
 import CoreAudio
 import SculptShowCore
+import SculptLTCCore
 
 /// Optional multi-output engine. The proven AVAudioPlayer backend remains the
 /// default until the user explicitly enables routing from the panel.
@@ -25,6 +26,7 @@ final class RoutedAudioEngine {
         case noVoices(Int)
         case invalidChannel(String, Int)
         case engineNotReady
+        case ltcConflict(String)
 
         var errorDescription: String? {
             switch self {
@@ -34,7 +36,8 @@ final class RoutedAudioEngine {
             case .unsupportedSource(let name, let count): return "\(name) has \(count) channels. Routed playback currently accepts mono/stereo WAV/AIFF stems only."
             case .noVoices(let count): return "This show requires \(count) voices. The current routed engine supports 16 simultaneous mono/stereo files."
             case .invalidChannel(let name, let index): return "Invalid output \(index) for ‘\(name)’ on the selected device."
-            case .engineNotReady: return "Routing engine not initialized. Open OUTPUT ROUTING and enable it first."
+            case .engineNotReady: return "Routing engine not initialized. Open Audio/MIDI Setup and select the output."
+            case .ltcConflict(let text): return text
             }
         }
     }
@@ -55,6 +58,15 @@ final class RoutedAudioEngine {
     private var voices: [Voice] = []
     private(set) var selectedDevice: OutputDevice?
     private var cueToVoices: [UUID: [Int]] = [:]
+    /// Exactly one SMPTE LTC transport can own the dedicated matrix input.
+    private var ltcSource: AVAudioSourceNode?
+    private var ltcRealtime: LTCRealtimeState?
+    private(set) var ltcOwner: UUID?
+    private(set) var ltcElement: CueElement?
+    private var ltcOutput: Int?
+    private var sampleRate: Double = 48000
+    private static let ltcInputIndex = maximumVoices
+
     // Test tone reuses one FREE voice only when the transport is idle.
     // No extra mixer bus, AVAudioEngine node or graph rebuild is needed.
     private var testBuffer: AVAudioPCMBuffer?
@@ -137,7 +149,7 @@ final class RoutedAudioEngine {
             kAudioUnitScope_Global, 0, &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size))
         guard status == noErr else { throw RoutingError.cannotConfigure("select device", status) }
 
-        var inputCount = UInt32(Self.maximumVoices)
+        var inputCount = UInt32(Self.maximumVoices + 1)
         var outputBusCount: UInt32 = 1
         status = AudioUnitSetProperty(mixerUnit.audioUnit, kAudioUnitProperty_ElementCount,
             kAudioUnitScope_Input, 0, &inputCount, UInt32(MemoryLayout<UInt32>.size))
@@ -170,6 +182,19 @@ final class RoutedAudioEngine {
             gain.outputVolume = 0
             newVoices.append(Voice(node: player, gainNode: gain))
         }
+        guard let realtime = LTCRealtimeState() else { throw RoutingError.engineNotReady }
+        let ltcNode = AVAudioSourceNode(format: stereo) { isSilence, timestamp, frameCount, data in
+            isSilence.pointee = ObjCBool(false)
+            realtime.render(timestamp: timestamp, frameCount: frameCount,
+                            outputData: data, sampleRate: Float(rate))
+            return noErr
+        }
+        graph.attach(ltcNode)
+        graph.connect(ltcNode, to: mixerUnit, fromBus: 0,
+                      toBus: Self.ltcInputIndex, format: stereo)
+        sampleRate = rate
+        ltcSource = ltcNode
+        ltcRealtime = realtime
         let frameCount = AVAudioFrameCount(max(1024, Int(rate / 2)))
         guard let toneFormat = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2),
               let tone = AVAudioPCMBuffer(pcmFormat: toneFormat, frameCapacity: frameCount),
@@ -187,7 +212,7 @@ final class RoutedAudioEngine {
         // *crosspoints stay zero* until a cue is assigned to the appropriate bus.
         try require(AudioUnitSetParameter(au, kMatrixMixerParam_Volume,
                 kAudioUnitScope_Global, 0xFFFFFFFF, 1, 0), "master")
-        for index in 0..<Self.maximumVoices * 2 {
+        for index in 0..<(Self.maximumVoices + 1) * 2 {
             try require(AudioUnitSetParameter(au, kMatrixMixerParam_Volume,
                 kAudioUnitScope_Input, UInt32(index), 1, 0), "input channel")
         }
@@ -196,7 +221,7 @@ final class RoutedAudioEngine {
                 kAudioUnitScope_Output, UInt32(channel), 1, 0), "output channel")
         }
         // Explicit all-zero crosspoints ensures disconnected tracks cannot leak.
-        for input in 0..<(Self.maximumVoices * 2) {
+        for input in 0..<((Self.maximumVoices + 1) * 2) {
             for output in 0..<device.channels {
                 try require(AudioUnitSetParameter(au, kMatrixMixerParam_Volume,
                    kAudioUnitScope_Global, (UInt32(input) << 16) | UInt32(output), 0, 0), "clear matrix")
@@ -294,6 +319,7 @@ final class RoutedAudioEngine {
     }
 
     func teardown() {
+        stopLTC()
         // Disconnect the tap before destroying its host graph.
         if let matrix { matrix.removeTap(onBus: 0) }
         stopTestTone()
@@ -304,12 +330,48 @@ final class RoutedAudioEngine {
         cueToVoices.removeAll()
         matrix = nil
         engine = nil
+        ltcSource = nil
+        ltcRealtime = nil
         selectedDevice = nil
     }
 
     func start(_ cue: Cue, from elapsed: Double, fade: Float, hostLead: Double = 0.22) throws -> Double {
         stopTestTone()
         guard isReady, let matrix, let device = selectedDevice else { throw RoutingError.engineNotReady }
+        // Validate LTC BEFORE changing any running cue, to prevent live
+        // output collisions and accidental SMPTE audio on an audio stem.
+        let timecodes = cue.elements.filter { $0.kind == .timecode && !$0.muted }
+        guard timecodes.count <= 1 else {
+            throw RoutingError.ltcConflict("Only one active LTC element is supported per cue.")
+        }
+        let timecode = timecodes.first
+        if let timecode {
+            guard let channel = timecode.ltcOutputChannel,
+                  (1...device.channels).contains(channel) else {
+                throw RoutingError.ltcConflict("Configure a dedicated LTC OUT on ‘\(cue.name)’ before GO.")
+            }
+            guard LTCTimecode(text: timecode.timecodeStart,
+                  rate: LTCFrameRate(fps: timecode.frameRate,
+                                     drop: timecode.timecodeDropFrame)) != nil else {
+                throw RoutingError.ltcConflict("Invalid SMPTE start address in ‘\(cue.name)’.")
+            }
+            if let owner = ltcOwner, owner != cue.id {
+                throw RoutingError.ltcConflict("LTC is already being generated by another cue. Stop it before starting a second LTC cue.")
+            }
+            for voice in voices where voice.owner != nil && voice.owner != cue.id {
+                if voice.firstOutput == channel || (voice.fileChannels == 2 && voice.firstOutput + 1 == channel) {
+                    throw RoutingError.ltcConflict("LTC OUT \(channel) is already carrying an active audio stem.")
+                }
+            }
+        }
+        if let output = ltcOutput, ltcOwner != cue.id {
+            for stem in cue.alignedAudioElements {
+                let f = try AVAudioFile(forReading: URL(fileURLWithPath: stem.sourcePath))
+                if stem.outputStartChannel == output || (f.processingFormat.channelCount == 2 && stem.outputStartChannel + 1 == output) {
+                    throw RoutingError.ltcConflict("OUT \(output) is reserved for active LTC. Choose another audio output.")
+                }
+            }
+        }
         // Remove and re-arm on seek/resume, keeping free-voice occupancy atomic.
         stop(cue.id)
         var files: [(CueElement, AVAudioFile)] = []
@@ -320,6 +382,11 @@ final class RoutedAudioEngine {
             guard AudioRoutePlan.crosspoints(firstOutput: stem.outputStartChannel,
                  sourceChannels: count, deviceChannels: device.channels) != nil else {
                 throw RoutingError.invalidChannel(stem.name, stem.outputStartChannel)
+            }
+            if let tcChannel = timecode?.ltcOutputChannel,
+               (stem.outputStartChannel == tcChannel ||
+                (count == 2 && stem.outputStartChannel + 1 == tcChannel)) {
+                throw RoutingError.ltcConflict("LTC OUT \(tcChannel) overlaps with a stem in ‘\(cue.name)’.")
             }
             files.append((stem, f))
         }
@@ -349,6 +416,12 @@ final class RoutedAudioEngine {
                 voices[index].gainNode.outputVolume = fade * Float(cue.gain * entry.0.gain) * (entry.0.muted ? 0 : 1)
             }
             let deadline = AudioGetCurrentHostTime() + AVAudioTime.hostTime(forSeconds: hostLead)
+            if let timecode {
+                try startLTC(timecode, owner: cue.id, hostDeadline: deadline,
+                             from: elapsed, duration: cue.timelineLength(audioEnds: files.map {
+                                  Double($0.1.length) / $0.1.processingFormat.sampleRate
+                             }))
+            }
             for index in assigned {
                 let f = voices[index].file!
                 let offsetFrames = AVAudioFramePosition(max(0, elapsed) * f.processingFormat.sampleRate)
@@ -361,6 +434,41 @@ final class RoutedAudioEngine {
             stop(cue.id)
             throw error
         }
+    }
+
+    private func startLTC(_ element: CueElement, owner: UUID, hostDeadline: UInt64,
+                          from elapsed: Double, duration: Double) throws {
+        guard let matrix, let realtime = ltcRealtime,
+              let channel = element.ltcOutputChannel,
+              let address = LTCTimecode(text: element.timecodeStart,
+                   rate: LTCFrameRate(fps: element.frameRate,
+                                      drop: element.timecodeDropFrame)) else {
+            throw RoutingError.ltcConflict("Missing or invalid LTC configuration.")
+        }
+        stopLTC()
+        let input = UInt32(Self.ltcInputIndex * 2)
+        let crosspoint = (input << 16) | UInt32(channel - 1)
+        try require(AudioUnitSetParameter(matrix.audioUnit,
+                    kMatrixMixerParam_Volume, kAudioUnitScope_Global,
+                    crosspoint, 1, 0), "LTC physical route")
+        sculpt_ltc_start(realtime.pointer, AudioConvertHostTimeToNanos(hostDeadline),
+                         address.absoluteFrames, Int32(address.rate.rawValue),
+                         element.startSeconds, elapsed, duration)
+        ltcOwner = owner
+        ltcElement = element
+        ltcOutput = channel
+    }
+
+    private func stopLTC() {
+        ltcRealtime.map { sculpt_ltc_stop($0.pointer) }
+        if let matrix, let output = ltcOutput {
+            let crosspoint = (UInt32(Self.ltcInputIndex * 2) << 16) | UInt32(output - 1)
+            _ = AudioUnitSetParameter(matrix.audioUnit,
+                kMatrixMixerParam_Volume, kAudioUnitScope_Global, crosspoint, 0, 0)
+        }
+        ltcOwner = nil
+        ltcElement = nil
+        ltcOutput = nil
     }
 
     private func route(index: Int, fileChannels: Int, firstOutput: Int, on matrix: AVAudioUnit) throws {
@@ -388,6 +496,10 @@ final class RoutedAudioEngine {
     func changeOutput(cueID: UUID, elementID: UUID, firstOutput: Int,
                       sourceChannels: Int) throws {
         guard let device = selectedDevice, let matrix else { throw RoutingError.engineNotReady }
+        if let output = ltcOutput,
+           (firstOutput == output || (sourceChannels == 2 && firstOutput + 1 == output)) {
+            throw RoutingError.ltcConflict("OUT \(output) is reserved for active LTC.")
+        }
         guard AudioRoutePlan.crosspoints(firstOutput: firstOutput,
             sourceChannels: sourceChannels, deviceChannels: device.channels) != nil else {
             throw RoutingError.invalidChannel("Audio", firstOutput)
@@ -427,6 +539,7 @@ final class RoutedAudioEngine {
     }
 
     func stop(_ cueID: UUID) {
+        if ltcOwner == cueID { stopLTC() }
         guard let assigned = cueToVoices.removeValue(forKey: cueID) else { return }
         for index in assigned {
             voices[index].gainNode.outputVolume = 0

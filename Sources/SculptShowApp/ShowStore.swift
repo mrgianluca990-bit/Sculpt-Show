@@ -155,8 +155,11 @@ final class ShowStore: ObservableObject {
     }
 
     func addTimecode(to cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
-        playback.stop(cueID, notifyRules: false)
-        editCue(cueID, list: listID) { $0.elements.append(.timecode()) }
+        // Attaching LTC is non-destructive; a running cue adopts it on next GO.
+        editCue(cueID, list: listID) { cue in
+            if cue.elements.contains(where: { $0.kind == .timecode }) { return }
+            cue.elements.append(.timecode())
+        }
     }
 
     func removeElement(_ elementID: UUID, from cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
@@ -244,8 +247,10 @@ final class ShowStore: ObservableObject {
     }
 
     func setTimecode(_ elementID: UUID, in cueID: UUID, listID: UUID, to value: String) {
-        let frameRate = show.cue(cueID)?.elements.first(where: { $0.id == elementID })?.frameRate ?? 25
-        guard CueElement.isValidTimecode(value, frameRate: frameRate) else {
+        let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID })
+        let frameRate = element?.frameRate ?? 25
+        guard CueElement.isValidTimecode(value, frameRate: frameRate,
+                                         dropFrame: element?.timecodeDropFrame ?? false) else {
             errorMessage = "Use timecode HH:MM:SS:FF with frames below the selected FPS."
             return
         }
@@ -255,10 +260,42 @@ final class ShowStore: ObservableObject {
         }
     }
 
+    func setTimecodeLTCFrameRate(_ elementID: UUID, in cueID: UUID,
+                                 listID: UUID, to rate: LTCFrameRate) {
+        guard let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID }),
+              CueElement.isValidTimecode(element.timecodeStart,
+                  frameRate: rate.nominal, dropFrame: rate == .fps2997DF) else {
+            errorMessage = "Invalid SMPTE address for the selected rate (29.97 DF skips frames 00/01 at non-tenth minutes)."
+            return
+        }
+        editCue(cueID, list: listID) { cue in
+            guard let i = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[i].frameRate = rate.nominal
+            cue.elements[i].timecodeDropFrame = rate == .fps2997DF
+        }
+    }
+
+    func setTimecodeOutput(_ elementID: UUID, in cueID: UUID, listID: UUID,
+                           to output: Int?) {
+        editCue(cueID, list: listID) { cue in
+            guard let i = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[i].ltcOutputChannel = output
+        }
+    }
+
+    func setTimecodeMuted(_ elementID: UUID, in cueID: UUID, listID: UUID,
+                          to muted: Bool) {
+        editCue(cueID, list: listID) { cue in
+            guard let i = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[i].muted = muted
+        }
+    }
+
     func setTimecodeFrameRate(_ elementID: UUID, in cueID: UUID, listID: UUID, to fps: Int) {
         guard [24, 25, 30].contains(fps),
               let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID }) else { return }
-        guard CueElement.isValidTimecode(element.timecodeStart, frameRate: fps) else {
+        guard CueElement.isValidTimecode(element.timecodeStart, frameRate: fps,
+                                          dropFrame: element.timecodeDropFrame && fps == 30) else {
             errorMessage = "Current timecode frame exceeds the selected FPS. Change the timecode first."
             return
         }
@@ -423,7 +460,7 @@ final class ShowStore: ObservableObject {
     func fireSelected(in listID: UUID, using playback: PlaybackEngine) {
         guard let list = show.cueLists.first(where: { $0.id == listID }),
               let cue = selectedCue(in: listID) ?? list.cues.first(where: { $0.enabled }),
-              playback.play(cue) else { return }
+              playback.play(cue, restartPaused: true) else { return }
         selectedListID = listID
         if advanceAfterGO, let next = show.followingCue(after: cue.id) {
             select(next.id, in: listID)

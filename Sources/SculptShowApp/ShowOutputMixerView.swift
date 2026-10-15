@@ -121,6 +121,7 @@ private struct OutputChannelStrip: View {
         VStack(spacing: 3) {
             Text(String(format: "%02d", channel))
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(playback.generatedLTC?.output == channel ? .orange : .primary)
             signalMeter
             Text(hold >= 1 ? "CLIP" :
                 String(format: "%.0f", max(-90, OutputMeterLevels.dBFS(hold))))
@@ -138,7 +139,14 @@ private struct OutputChannelStrip: View {
                     playback.toggleOutputSolo(channel)
                 }
             }
-            labelView
+            if playback.generatedLTC?.output == channel {
+                Text("LTC")
+                    .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                    .foregroundColor(.orange)
+                    .help("This output is carrying SMPTE LTC, not program audio")
+            } else {
+                labelView
+            }
         }
         .frame(width: 51)
         .padding(.vertical, 8)

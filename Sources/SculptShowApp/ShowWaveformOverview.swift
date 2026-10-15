@@ -99,20 +99,8 @@ struct ShowWaveformOverview: View {
             if let cue = store.selectedCue, let listID = store.selectedListID {
                 HStack(spacing: 8) {
                     Image(systemName: "scope").foregroundColor(.cyan)
-                    Text("PLAY FROM " + CueClock.format(playback.cuePlayCursor(cue.id)))
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .monospacedDigit()
-                    Button("ZERO") { playback.setCuePlayCursor(cue.id, to: 0) }
-                        .controlSize(.small)
-                        .help("Reset audition cursor; GO always starts at zero")
-                    Button {
-                        _ = playback.playCueLocally(cue)
-                    } label: {
-                        Label("PLAY CUE", systemImage: "play.fill")
-                    }
-                    .controlSize(.small)
-                    .disabled(!cue.enabled)
-                    .help("Local cue playback from blue cursor; GO always starts at zero")
+                    CuePlayFromEditor(cue: cue)
+                        .environmentObject(playback)
                     Spacer(minLength: 3)
                     Button("+ MARK") {
                         let current = playback.snapshots[cue.id]?.elapsed ?? playback.cuePlayCursor(cue.id)
@@ -497,5 +485,68 @@ private struct WaveformMarkerLine: View {
                     selectedMarkerID = marker.id
                 })
             .help("Drag \(marker.name) on the waveform; edit its Rules in Inspector")
+    }
+}
+
+/// Writable audition address, intentionally NOT part of the .scshow format.
+/// Commit before local PLAY so the editor works even without pressing Return.
+private struct CuePlayFromEditor: View {
+    @EnvironmentObject private var playback: PlaybackEngine
+    let cue: Cue
+    @State private var typed = ""
+    @State private var invalid = false
+    @FocusState private var hasFocus: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("PLAY FROM")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            TextField("HH:MM:SS:MMM", text: $typed)
+                .font(.system(size: 11, design: .monospaced))
+                .monospacedDigit()
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 138)
+                .focused($hasFocus)
+                .foregroundColor(invalid ? .orange : .primary)
+                .onSubmit { commit() }
+                .onChange(of: hasFocus) { focused in
+                    if !focused { commit() }
+                }
+                .onChange(of: playback.cuePlayCursor(cue.id)) { seconds in
+                    if !hasFocus { typed = CueClock.format(seconds); invalid = false }
+                }
+            Button("ZERO") {
+                playback.setCuePlayCursor(cue.id, to: 0)
+                typed = CueClock.format(0)
+                invalid = false
+            }
+            .controlSize(.small)
+            Button {
+                guard commit() else { return }
+                _ = playback.playCueLocally(cue)
+            } label: {
+                Label("PLAY CUE", systemImage: "play.fill")
+            }
+            .controlSize(.small)
+            .disabled(!cue.enabled)
+            .help("PLAY uses this editable location; GLOBAL GO always starts at 00:00:00:000")
+        }
+        .onAppear { typed = CueClock.format(playback.cuePlayCursor(cue.id)) }
+        .onChange(of: cue.id) { _ in
+            typed = CueClock.format(playback.cuePlayCursor(cue.id))
+            invalid = false
+        }
+    }
+
+    @discardableResult private func commit() -> Bool {
+        guard let seconds = CueClock.parse(typed),
+              cue.durationMode != .fixed || seconds < cue.durationSeconds else {
+            invalid = true
+            return false
+        }
+        playback.setCuePlayCursor(cue.id, to: seconds)
+        typed = CueClock.format(seconds)
+        invalid = false
+        return true
     }
 }

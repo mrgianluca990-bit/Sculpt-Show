@@ -119,8 +119,8 @@ struct CueContentsEditor: View {
                             }.font(.caption)
                         }
                         TimecodeEntry(element: element, cueID: cue.id, listID: listID)
-                        Text("Timecode metadata only · LTC/MTC transmission not implemented.")
-                            .font(.caption).foregroundColor(.orange)
+                        Text("SMPTE LTC is generated on a dedicated mono Core Audio output. Output must be assigned explicitly; settings take effect at the next GO or PLAY.")
+                            .font(.caption).foregroundColor(.secondary)
                     }
                 }
                 .padding(10)
@@ -156,28 +156,65 @@ struct CueContentsEditor: View {
 
 private struct TimecodeEntry: View {
     @EnvironmentObject private var store: ShowStore
+    @EnvironmentObject private var playback: PlaybackEngine
     let element: CueElement
     let cueID: UUID
     let listID: UUID
     @State private var value = ""
 
+    private var current: CueElement {
+        store.show.cue(cueID)?.elements.first(where: { $0.id == element.id }) ?? element
+    }
+
     var body: some View {
-        TextField("HH:MM:SS:FF", text: $value)
-            .font(.system(size: 12, design: .monospaced))
-            .textFieldStyle(.roundedBorder)
-            .onAppear { value = element.timecodeStart }
-            .onSubmit { store.setTimecode(element.id, in: cueID, listID: listID, to: value) }
-        Picker("FPS", selection: Binding(
-            get: { store.show.cue(cueID)?.elements.first(where: { $0.id == element.id })?.frameRate ?? element.frameRate },
-            set: { store.setTimecodeFrameRate(element.id, in: cueID, listID: listID, to: $0) }
-        )) {
-            Text("24").tag(24)
-            Text("25").tag(25)
-            Text("30").tag(30)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text("LTC START")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                TextField("HH:MM:SS:FF", text: $value)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textFieldStyle(.roundedBorder)
+                    .onAppear { value = current.timecodeStart }
+                    .onSubmit { store.setTimecode(element.id, in: cueID, listID: listID, to: value) }
+                Button("SET") { store.setTimecode(element.id, in: cueID, listID: listID, to: value) }
+                    .controlSize(.small)
+            }
+            Picker("LTC FPS", selection: Binding(
+                get: { LTCFrameRate(fps: current.frameRate, drop: current.timecodeDropFrame) },
+                set: { store.setTimecodeLTCFrameRate(element.id, in: cueID, listID: listID, to: $0) }
+            )) {
+                ForEach(LTCFrameRate.allCases, id: \.rawValue) { rate in
+                    Text(rate.label).tag(rate)
+                }
+            }
+            .pickerStyle(.segmented)
+            HStack(spacing: 8) {
+                Text("DEDICATED LTC OUT")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { current.ltcOutputChannel ?? 0 },
+                    set: { store.setTimecodeOutput(element.id, in: cueID, listID: listID,
+                                                    to: $0 == 0 ? nil : $0) }
+                )) {
+                    Text("Not assigned").tag(0)
+                    ForEach(1...max(1, playback.routingOutputCount), id: \.self) { output in
+                        Text("OUT \(output)").tag(output)
+                    }
+                }
+                .frame(width: 156)
+            }
+            Toggle("LTC ENABLED", isOn: Binding(
+                get: { !current.muted },
+                set: { store.setTimecodeMuted(element.id, in: cueID, listID: listID, to: !$0) }
+            ))
+            .toggleStyle(.checkbox)
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            if current.ltcOutputChannel == nil && !current.muted {
+                Label("Select an LTC output before playback", systemImage: "exclamationmark.triangle")
+                    .font(.caption2).foregroundColor(.orange)
+            }
         }
-        .pickerStyle(.segmented)
-        Button("Apply timecode") {
-            store.setTimecode(element.id, in: cueID, listID: listID, to: value)
-        }.buttonStyle(.plain).font(.caption)
+        .onChange(of: element.timecodeStart) { _ in value = current.timecodeStart }
     }
 }

@@ -7,12 +7,13 @@ var products: [Product] = [
 
 var targets: [Target] = [
     .target(name: "SculptShowCore"),
-    .testTarget(name: "SculptShowCoreTests", dependencies: ["SculptShowCore"])
+    .target(name: "SculptLTCCore", publicHeadersPath: "include", linkerSettings: [.linkedLibrary("m")]),
+    .testTarget(name: "SculptShowCoreTests", dependencies: ["SculptShowCore", "SculptLTCCore"])
 ]
 
 #if os(macOS)
 products.append(.executable(name: "SculptShow", targets: ["SculptShowApp"]))
-targets.append(.executableTarget(name: "SculptShowApp", dependencies: ["SculptShowCore"]))
+targets.append(.executableTarget(name: "SculptShowApp", dependencies: ["SculptShowCore", "SculptLTCCore"], exclude: ["TimecodeGenerator.swift"]))
 #endif
 
 let package = Package(

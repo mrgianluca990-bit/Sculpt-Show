@@ -52,7 +52,7 @@ public enum ShowPreflight {
                 cueID: cue?.id, cueName: cue?.name ?? "SHOW",
                 mediaPath: path, message: message))
         }
-        if outputChannels <= 0 && !stems.isEmpty {
+        if outputChannels <= 0 && (!stems.isEmpty || cues.contains(where: { $0.elements.contains(where: { $0.kind == .timecode && !$0.muted }) })) {
             add(.blocking, "no-device", nil, nil,
                 "No active Core Audio output. Configure an output device before GO.")
         }
@@ -64,6 +64,30 @@ public enum ShowPreflight {
             if cue.audioElements.count > voiceLimit {
                 add(.blocking, "voices", cue, nil,
                     "\(cue.audioElements.count) simultaneous stems in this cue exceed the \(voiceLimit)-voice limit.")
+            }
+            let ltcs = cue.elements.filter { $0.kind == .timecode && !$0.muted }
+            if ltcs.count > 1 {
+                add(.blocking, "ltc-multiple", cue, nil,
+                    "Only one LTC generator can run in one cue.")
+            }
+            for tc in ltcs {
+                if tc.ltcOutputChannel == nil || tc.ltcOutputChannel! > outputChannels {
+                    add(.blocking, "ltc-output", cue, nil,
+                        "LTC requires an explicitly assigned, connected physical output.")
+                }
+                let rate = LTCFrameRate(fps: tc.frameRate, drop: tc.timecodeDropFrame)
+                if LTCTimecode(text: tc.timecodeStart, rate: rate) == nil {
+                    add(.blocking, "ltc-start", cue, nil,
+                        "Invalid SMPTE timecode for \(rate.label).")
+                }
+                if cue.durationMode == .fixed && tc.startSeconds >= cue.durationSeconds {
+                    add(.warning, "ltc-unreachable", cue, nil,
+                        "LTC offset is not inside the cue duration.")
+                }
+                if cue.durationMode == .mediaEnd && cue.audioElements.isEmpty {
+                    add(.blocking, "ltc-duration", cue, nil,
+                        "LTC-only cue requires a FIXED container duration.")
+                }
             }
             for element in cue.audioElements {
                 let path = element.sourcePath
@@ -80,6 +104,13 @@ public enum ShowPreflight {
                 if !info.duration.isFinite || info.duration <= 0 || info.sampleRate <= 0 {
                     add(.blocking, "invalid-media", cue, path,
                         "\(element.name): invalid source duration or sample rate.")
+                }
+                for tc in ltcs {
+                    if let out = tc.ltcOutputChannel,
+                       (element.outputStartChannel..<(element.outputStartChannel + info.channelCount)).contains(out) {
+                        add(.blocking, "ltc-route-collision", cue, path,
+                            "LTC OUT \(out) overlaps a music stem; select a dedicated output.")
+                    }
                 }
                 if outputChannels > 0 &&
                     (element.outputStartChannel < 1 || element.outputStartChannel + info.channelCount - 1 > outputChannels) {

@@ -222,9 +222,12 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     /// Non-destructive region inside the audio source.
     public var inSeconds: Double
     public var outSeconds: Double?
-    /// Timecode metadata, not yet an LTC/MTC output stream.
+    /// Per-cue LTC generator configuration. No physical output until explicitly assigned.
     public var timecodeStart: String
     public var frameRate: Int
+    public var timecodeDropFrame: Bool
+    /// The dedicated one-based LTC physical output; nil disables LTC for old projects.
+    public var ltcOutputChannel: Int?
     /// Independent level per audio element (linear gain, 1.0 = unity).
     public var gain: Double
     /// Muting an element never stops its transport or affects other elements.
@@ -237,6 +240,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
                 sourcePath: String = "", startSeconds: Double = 0,
                 inSeconds: Double = 0, outSeconds: Double? = nil,
                 timecodeStart: String = "00:00:00:00", frameRate: Int = 25,
+                timecodeDropFrame: Bool = false, ltcOutputChannel: Int? = nil,
                 gain: Double = 1.0, muted: Bool = false, outputStartChannel: Int = 1) {
         self.id = id
         self.kind = kind
@@ -247,6 +251,8 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
         self.outSeconds = outSeconds.map { max(0, $0) }
         self.timecodeStart = timecodeStart
         self.frameRate = [24, 25, 30].contains(frameRate) ? frameRate : 25
+        self.timecodeDropFrame = self.frameRate == 30 && timecodeDropFrame
+        self.ltcOutputChannel = ltcOutputChannel.flatMap { (1...64).contains($0) ? $0 : nil }
         self.gain = gain.isFinite ? min(max(gain, 0), 1) : 1
         self.muted = muted
         self.outputStartChannel = min(64, max(1, outputStartChannel))
@@ -256,7 +262,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     // Decode these two settings with safe defaults so old projects still open.
     private enum CodingKeys: String, CodingKey {
         case id, kind, name, sourcePath, startSeconds, inSeconds, outSeconds
-        case timecodeStart, frameRate, gain, muted, outputStartChannel
+        case timecodeStart, frameRate, timecodeDropFrame, ltcOutputChannel, gain, muted, outputStartChannel
     }
 
     public init(from decoder: Decoder) throws {
@@ -271,6 +277,8 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
             outSeconds: try c.decodeIfPresent(Double.self, forKey: .outSeconds),
             timecodeStart: try c.decodeIfPresent(String.self, forKey: .timecodeStart) ?? "00:00:00:00",
             frameRate: try c.decodeIfPresent(Int.self, forKey: .frameRate) ?? 25,
+            timecodeDropFrame: try c.decodeIfPresent(Bool.self, forKey: .timecodeDropFrame) ?? false,
+            ltcOutputChannel: try c.decodeIfPresent(Int.self, forKey: .ltcOutputChannel),
             gain: try c.decodeIfPresent(Double.self, forKey: .gain) ?? 1,
             muted: try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false,
             outputStartChannel: try c.decodeIfPresent(Int.self, forKey: .outputStartChannel) ?? 1
@@ -285,7 +293,12 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
         CueElement(kind: .timecode, name: "Timecode")
     }
 
-    public static func isValidTimecode(_ value: String, frameRate: Int) -> Bool {
+    public static func isValidTimecode(_ value: String, frameRate: Int, dropFrame: Bool = false) -> Bool {
+        guard LTCTimecode(text: value, rate: LTCFrameRate(fps: frameRate, drop: dropFrame)) != nil else { return false }
+        return true
+    }
+
+    private static func legacyIsValidTimecode(_ value: String, frameRate: Int) -> Bool {
         let components = value.split(separator: ":", omittingEmptySubsequences: false)
         guard components.count == 4,
               components.allSatisfy({ $0.count == 2 && $0.allSatisfy(\.isNumber) }),

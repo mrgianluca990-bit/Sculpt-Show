@@ -1,37 +1,47 @@
-# Sculpt Show 0.13.0 — Named Waveform Markers, Local Cue Playback, MTC Generator
+# Sculpt Show 0.14.0 — Native LTC audio generation and reception
 
-**Built on the user's hardware-tested 0.12.0 show engine.** Routing, cue marker Rules, mixer, preflight, MIDI Learn, cue storage, and audio devices are intentionally untouched.
+**Based on Sculpt Show 0.13.0, hardware-tested by the operator.** This is a cumulative native audio/timecode update; the existing multitrack MatrixMixer, live routing, mixer, Rules, marker editing, playback and MTC-controlled transport commands are not rewritten.
 
-## Changes
+## What's new
 
-### Marker labels
-- Each marker is displayed by name on the waveform marker ruler **and** at its position on the audio lanes.
-- Marker click also sets the non-destructive local audition cursor. Marker rename, precise HH:MM:SS:MMM, and Interaction Rules remain in the Inspector.
-- Existing draggable waveform marker positions retain the 0.12.0 single-commit-on-release behavior.
+### PLAY FROM is a real text field
+- Enter an exact `HH:MM:SS:MMM` address and press Return or PLAY CUE. Clicking the waveform still sets the local preview cursor.
+- Per-cue PLAY begins at that location. **Global GO always starts at zero, including when the selected cue had been paused.**
+- The audition cursor is not a destructive trim and isn't persisted to `.scshow`.
 
-### Local PLAY vs Global GO
-- Click in the audio waveform to set the **blue audition cursor**, even before a cue is running. If the cue is active, a click also seeks as before.
-- The cue row's ▶ PLAY and the waveform's PLAY CUE launch the corresponding cue at the blue cursor.
-- ZERO resets the local audition position, which is displayed as HH:MM:SS:MMM and lives only in memory.
-- **Global GO, list playback, next-cue Rules and triggers explicitly continue using position ZERO**, independent of the blue audition cursor.
-- Audio timeline and stored media are never trimmed; no additional stem offsets are added to the .scshow schema.
+### SMPTE LTC audio **per cue**, not CoreMIDI MTC
+- Attach **Timecode +** to any cue. In the Inspector configure SMPTE start `HH:MM:SS:FF`, `24 / 25 / 29.97 drop-frame / 30 fps`, independent offset and **explicitly assigned physical LTC OUT**.
+- No output is assigned by default. A cue with an enabled LTC element and no safe output assignment is blocked before GO.
+- A dedicated **AVAudioSourceNode** joins the existing Core Audio `AVAudioEngine` through an extra bus of the **same** matrix; ordinary audio still has all 16 preexisting stem voices and up to 64 hardware outputs.
+- SMPTE ST 12-style 80-bit binary-coded time addresses, fixed 16-bit sync, even-zero polarity correction, biphase-mark waveform at ~-12 dBFS. The PCM signal is computed in the audio render callback from the device's host clock, with no timers or UI dependency.
+- LTC follows the cue's play/GO, timeline offset, pause/resume, local PLAY FROM, seek, loop and stop. New cue playback schedules audio and LTC against the **same Core Audio host timestamp**.
+- **One LTC source at a time**, to avoid collisions on a physical line. More than one unmuted timecode element per cue and simultaneous LTC cues are rejected. Overlapping LTC/program-audio routes are blocked both by Preflight and at playback/repatch time.
+- **Audio LTC output is a line-level control signal, not program audio. Never assign it to a loudspeaker or monitor feed.**
 
-### MTC GENERATOR — Phase 1
-- The lower **TIMECODE** dock contains separate READER and GENERATOR tabs. They don't replace the Mixer or Waveform docking controls.
-- Manual generator sends MIDI Time Code quarter-frame messages through a chosen CoreMIDI destination at 24, 25, 29.97 drop-frame, or 30 fps.
-- User enters HH:MM:SS:FF (frames, not milliseconds); LOCATE transmits universal real-time MIDI Full Frame SysEx.
-- START first sends Full Frame Locate, then streams 8 QF pieces per two video frames on a dedicated queue. STOP cancels the output timer; preferred MIDI destination is remembered locally.
-- A coherent 8-nibble frame is kept throughout each group, avoiding mixed fields at second/minute transitions. Pure Swift encoder tests validate QF, DF and Full Frame data.
-- **Not LTC, not sample-accurate, not audio-clock-locked and not yet tied to individual cue timecode elements.** This is a functional first-stage MIDI output generator. Synchronization/chase will follow subsequent hardware tests.
+### LTC IN and LTC OUT in the same dock
+- **Generated LTC** shows the current cue, SMPTE address, frame rate, output and active status.
+- **Received LTC** is a real audio LTC decoder, not the previous MIDI/MTC reader. Choose a Core Audio input device/channel and matching frame rate, then start the input **before GO**. The receiver displays the SMPTE address and lock state. The default input is OFF and must be explicitly started; macOS may request microphone/input access.
+- The encoder/decoder were validated together against the **actual generated PCM samples**. A 5-second demo file is included: `Samples/LTC_25fps_01h_demo.wav`. Send it to a dedicated virtual/physical input (never a speaker) to verify the reader.
+- The **manual MTC generator is removed from the UI and excluded from the app target**. The previous MTC/MIDI input reader is replaced in the timecode dock by the LTC audio receiver. MIDI Learn for cue transport is preserved.
 
-## macOS acceptance checklist
-1. Open a cue containing stereo audio; select WAVEFORMS; marker names should appear on waveform/ruler, remain draggable, and still have Rules in Inspector.
-2. With that cue STOPPED, click at e.g. 00:00:10.000. Confirm cyan cursor and PLAY FROM. Press its row ▶ PLAY: audio should start at 10 s. Stop; press GLOBAL GO: audio should start from zero.
-3. Test clicking an existing marker, then ▶ PLAY. Check previous/next and ZERO.
-4. Open TIMECODE, choose GENERATOR, select an actual CoreMIDI destination (IAC is useful for testing). LOCATE should send Full Frame; START should stream QF at selected fps; STOP must cease transmission.
-5. Check audio playback, routing changes, marker Rules and mixer continue uninterrupted while MTC generator is operating.
+## Compatibility and known limitations
+- Existing `.scshow` projects still open: older timecode elements decode with safe defaults (`ltcOutputChannel = nil`, LTC not routed until assigned). New LTC properties are written only when saving the updated show.
+- LTC-only cue containers need a fixed duration. Timecode offset is relative to the parent cue, not an audio stem trim.
+- 29.97 DF skips labels `;00` and `;01` at the start of each minute except every tenth; the underlying frame clock is 30000/1001 frames per second.
+- The **reader** expects a recognizable PCM biphase-mark LTC signal and the matching frame rate. Hardware device permissions, channel layout, line level, audio-loopback setup and actual lock stability **must be tested on macOS**.
+- Switching LTC capture devices while cues are playing is disabled. Changing the physical output device during live playback remains disabled as before.
+- No sample-accurate **external LTC chase**, automatic jam sync or re-clocking against an external device in this release. Cue loop re-arming continues to have the pre-existing transition latency; gapless loops are not claimed.
+- Do **not use this first LTC implementation for an unsupervised live show** before hardware verification.
 
-## Verification status
-- Linux `swift test`: 103 pure Core tests passed, including four MTC encoder tests.
-- `swiftc -frontend -parse` completed on the Swift sources.
-- **The new 0.13.0 app target has not yet been compiled on macOS.** GitHub Actions and subsequent Mac hardware validation are required.
+## macOS test sequence
+1. Verify the unchanged 0.13 audio routing, marker Rules, waveform, Mute/Solo and mixer.
+2. Open a stopped audio cue, type `00:00:10:000` into **PLAY FROM**; press PLAY CUE, then Stop and GLOBAL GO. PLAY must begin at 10 s; GO at zero.
+3. Add a timecode element in the Inspector; choose e.g. **25 fps**, start `01:00:00:00`, **OUT 16** (only if safely isolated). Keep music on other outputs and choose a fixed cue duration.
+4. Open TIMECODE to see **GENERATED LTC**. Start the cue, pause, seek, resume and stop. Check the counter and routing meter on the LTC output, with no audio playback interruption.
+5. Route LTC OUT 16 to an available Core Audio INPUT or loopback, choose that INPUT and its channel in TIMECODE, match 25 fps, press START INPUT **before GO**. Check **RECEIVED LTC** locks and advances. Alternatively play the included demo WAV to a routed input.
+6. Run Preflight with a missing LTC output and with LTC/audio routed to the same output; both should be blocked. Check older shows save and open.
+
+## Verification
+- 113 Linux Swift XCTest tests passed including SMPTE drop-frame, serialization, output collision, full 80-bit codeword/parity, generated PCM and PCM-to-LTC decoding at all four rates.
+- All Swift files passed `swiftc -frontend -parse`; C files passed syntax checking.
+- **macOS compilation and hardware LTC input/output tests remain pending.** Verify GitHub Actions and test on a non-PA line before treating 0.14 as stable.

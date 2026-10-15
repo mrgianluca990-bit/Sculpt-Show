@@ -86,9 +86,7 @@ struct WorkspaceView: View {
     @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var playback: PlaybackEngine
     @State private var rulesScope: RuleScope?
-    @StateObject private var timecodeReader = TimecodeReader()
-    @StateObject private var timecodeGenerator = TimecodeGenerator()
-    @State private var timecodeTab = 0
+    @StateObject private var timecodeReader = LTCInputReader()
     @State private var showingTimecodeReader = false
     @EnvironmentObject private var midi: MIDIControl
     @State private var showingOutputMixer = true
@@ -191,7 +189,7 @@ struct WorkspaceView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Mixer and MTC can run simultaneously or independently. The operator can
+    /// Mixer and the received/generated timecode monitor run independently. The operator can
     /// resize this dock with the VSplitView divider, without touching playback.
     private var bottomConsoles: some View {
         HStack(spacing: 0) {
@@ -203,21 +201,9 @@ struct WorkspaceView: View {
                 Divider().overlay(Skin.stroke)
             }
             if showingTimecodeReader {
-                VStack(spacing: 0) {
-                    Picker("TIMECODE", selection: $timecodeTab) {
-                        Text("READER").tag(0)
-                        Text("GENERATOR").tag(1)
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 8)
-                    if timecodeTab == 0 {
-                        TimecodeReaderView().environmentObject(timecodeReader)
-                    } else {
-                        TimecodeGeneratorView().environmentObject(timecodeGenerator)
-                    }
-                }
+                TimecodeReaderView()
+                    .environmentObject(timecodeReader)
+                    .environmentObject(playback)
                     .frame(width: (showingOutputMixer || showingWaveforms) ? 410 : nil)
                     .frame(maxWidth: (showingOutputMixer || showingWaveforms) ? nil : .infinity,
                            maxHeight: .infinity)
@@ -356,7 +342,7 @@ struct WorkspaceView: View {
                 Button {
                     withAnimation(.easeInOut(duration: 0.18)) { showingTimecodeReader.toggle() }
                 } label: {
-                    Label(timecodeGenerator.running ? "MTC OUT" : "TIMECODE", systemImage: "clock")
+                    Label(playback.generatedLTC != nil ? "LTC OUT" : "TIMECODE", systemImage: "clock")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 }
                 .buttonStyle(.borderedProminent)

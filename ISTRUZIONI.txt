@@ -1,24 +1,27 @@
-SCULPT SHOW 0.13.0 — INSTALLAZIONE SU GITHUB
+SCULPT SHOW 0.14.0 — LTC PER CUE + LTC IN/OUT + PLAY FROM DIGITABILE
 
+BASE VERIFICATA: Sculpt Show 0.13.0
 Repository: https://github.com/mrgianluca990-bit/Sculpt-Show
-Partenza: commit 33d5d03d7f5da317d08d7ad140b9a536f9c51095, versione 0.12.0.
+Commit di partenza: d865de35e221cc2fc08b210c8a607e2e2f92ebe1
 
-1) Estrai Sculpt-Show-v0.13.0-Marker-Play-MTC-Update.zip.
-2) Carica i seguenti file conservando le cartelle indicate:
+1. Estrai Sculpt-Show-v0.14.0-LTC-Cumulative-Update.zip.
+2. Apri il repository GitHub e scegli Add file > Upload files.
+3. Carica TUTTI i file dello ZIP conservando i rispettivi percorsi
+   (Sources/..., Tests/..., Scripts/..., Samples/..., Package.swift, README.md).
+4. Fai commit su main. GitHub Actions compilera' e pubblichera'
+   l'artefatto Sculpt-Show-macOS (Mac Intel + Apple Silicon).
+5. Scarica il risultato da Actions. NON utilizzare questa prima versione LTC
+   dal vivo prima del test delle uscite dedicate.
 
-Sources/SculptShowApp/ShowWaveformOverview.swift
-Sources/SculptShowApp/WorkspaceView.swift
-Sources/SculptShowApp/PlaybackEngine.swift
-Sources/SculptShowApp/TimecodeGenerator.swift                    NUOVO
-Sources/SculptShowCore/MTCGeneratorModel.swift                  NUOVO
-Tests/SculptShowCoreTests/MTCGeneratorTests.swift               NUOVO
-Scripts/Info.plist
-README.md
+MODIFICHE IMPORTANTI:
+- PLAYS FROM: campo editabile HH:MM:SS:MMM; GO globale parte da zero.
+- Timecode+: genera LTC SMPTE audio su un OUT mono scelto esplicitamente.
+- TIMECODE: mostra generated LTC e received LTC (Core Audio input).
+- Il generatore MIDI MTC e' escluso dal target app (nessun pulsante MTC).
+- Autorizzare ingresso/microfono se macOS lo richiede quando si avvia LTC IN.
+- E' incluso Samples/LTC_25fps_01h_demo.wav per i test del decoder.
 
-3) Commit su main. GitHub Actions avviera' swift test e la build macOS universale.
-4) Download del nuovo artifact Sculpt-Show-macOS dalla pagina Actions.
+SICUREZZA: LTC e' un segnale tecnico, non collegarlo mai a diffusori!
+Una sola sorgente LTC attiva per volta. Uscita LTC non sovrapposta agli stem.
 
-N.B. Non eliminare gli altri file del repository. Aggiornamento per GitHub,
-NON e' una app .app precompilata.
-MTC fase 1 = MIDI out, non LTC audio e non timecode chase. GO globale
-parte da 0 anche se la singola cue ha un cursore di ascolto impostato.
+Questa e' una patch con SORGENTI, non un file .app compilato.
