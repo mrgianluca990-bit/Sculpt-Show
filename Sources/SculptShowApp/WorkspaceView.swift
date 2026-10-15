@@ -85,6 +85,8 @@ struct WorkspaceView: View {
     @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var playback: PlaybackEngine
     @State private var rulesScope: RuleScope?
+    @StateObject private var timecodeReader = TimecodeReader()
+    @State private var showingTimecodeReader = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -128,6 +130,9 @@ struct WorkspaceView: View {
         }
         .sheet(item: $rulesScope) { scope in
             RulesEditor(scope: scope).environmentObject(store)
+        }
+        .sheet(isPresented: $showingTimecodeReader) {
+            TimecodeReaderView().environmentObject(timecodeReader)
         }
         .alert("Sculpt Show", isPresented: Binding(
             get: { store.errorMessage != nil || playback.errorMessage != nil },
@@ -221,6 +226,22 @@ struct WorkspaceView: View {
             .buttonStyle(.plain)
 
             Spacer()
+            Button {
+                showingTimecodeReader = true
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("MTC READER  \(timecodeReader.locked ? "LOCK" : "NO SIGNAL")")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(timecodeReader.locked ? Skin.green : Skin.soft)
+                    Text(timecodeReader.frame?.display ?? "--:--:--:--")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(Skin.gold)
+                }
+                .padding(8)
+                .background(Skin.raised, in: RoundedRectangle(cornerRadius: 7))
+            }
+            .buttonStyle(.plain)
+            .help("Select a CoreMIDI input and read incoming MIDI timecode")
             Toggle("AUTO NEXT", isOn: $store.advanceAfterGO)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .toggleStyle(.switch)
@@ -253,12 +274,15 @@ struct WorkspaceView: View {
                 Text("SELECTED CUE")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(Skin.soft)
-                TextField("Cue name", text: Binding(
-                    get: { store.show.cue(cue.id)?.name ?? cue.name },
-                    set: { store.renameCue(cue.id, in: listID, to: $0) }
-                ))
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 17, weight: .medium))
+                EditableTitle(
+                    title: cue.name,
+                    context: "Cue",
+                    fontSize: 17,
+                    fontWeight: .medium
+                ) { newName in
+                    store.renameCue(cue.id, in: listID, to: newName)
+                }
+                .help("Click to rename the cue")
 
                 Divider()
                 HStack {
@@ -406,7 +430,7 @@ struct WorkspaceView: View {
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.6.0")
+            Text("SCULPT SHOW 0.7.0")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -559,11 +583,11 @@ private struct CueListPanel: View {
                 }
                 .padding(10)
             }
-            .onDrop(of: [UTType.fileURL.identifier, UTType.utf8PlainText.identifier], isTargeted: nil) { providers in
-                // A drop on the list background appends a moved cue. Row drops insert before the row.
-                if CueDragDrop.accept(providers, in: list.id, before: nil, store: store, playback: playback) {
-                    return true
-                }
+            .dropDestination(for: CueDragPayload.self) { items, _ in
+                guard let item = items.first else { return false }
+                return store.relocateCue(item.cueID, to: list.id, before: nil, using: playback)
+            }
+            .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
                 let matching = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
                 for provider in matching {
                     _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -600,20 +624,39 @@ private struct CueRow: View {
     private var selected: Bool { store.cueSelection[listID] == cue.id }
     private var state: PlaybackEngine.Snapshot? { playback.snapshots[cue.id] }
     @State private var pendingSeek: Double?
+    @State private var editingName = false
+    @State private var editingCueRules = false
+    @State private var nameDraft = ""
+    @State private var dropHighlighted = false
 
     var body: some View {
         VStack(spacing: 0) {
             controlsRow
             progressBar
         }
-        .background(rowBackground, in: RoundedRectangle(cornerRadius: 5))
+        .background(dropHighlighted ? Skin.gold.opacity(0.30) : rowBackground,
+                    in: RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(rowOutline, lineWidth: 1))
         .opacity(cue.enabled ? 1 : 0.53)
-        .onDrag { CueDragDrop.provider(for: cue.id) }
-        .onDrop(of: [UTType.utf8PlainText.identifier, UTType.fileURL.identifier], isTargeted: nil) { providers in
-            if CueDragDrop.accept(providers, in: listID, before: cue.id, store: store, playback: playback) {
-                return true
+        .draggable(CueDragPayload(cueID: cue.id))
+        .dropDestination(for: CueDragPayload.self) { items, location in
+            guard let item = items.first, item.cueID != cue.id else { return false }
+            let target: UUID?
+            if location.y < 38 {
+                target = cue.id
+            } else {
+                let rows = store.show.cueLists.first(where: { $0.id == listID })?.cues ?? []
+                if let index = rows.firstIndex(where: { $0.id == cue.id }), index + 1 < rows.count {
+                    target = rows[index + 1].id
+                } else {
+                    target = nil
+                }
             }
+            return store.relocateCue(item.cueID, to: listID, before: target, using: playback)
+        } isTargeted: { targeted in
+            dropHighlighted = targeted
+        }
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
             // Dropping audio onto a cue adds it as content instead of creating another cue.
             let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
             for provider in files {
@@ -632,6 +675,47 @@ private struct CueRow: View {
             }
             return !files.isEmpty
         }
+        .contextMenu {
+            Button("Rename Cue…") {
+                nameDraft = cue.name
+                editingName = true
+            }
+            Button("Edit Cue Rules…") { editingCueRules = true }
+            Menu("Move to Cue List") {
+                ForEach(store.show.cueLists.filter { $0.id != listID }) { destination in
+                    Button(destination.name) {
+                        _ = store.relocateCue(cue.id, to: destination.id,
+                                              before: nil, using: playback)
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $editingCueRules) {
+            RulesEditor(scope: .cue(cue.id, in: listID)).environmentObject(store)
+        }
+        .sheet(isPresented: $editingName) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Rename Cue").font(.headline)
+                TextField("Cue name", text: $nameDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(saveName)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { editingName = false }
+                    Button("Save") { saveName() }
+                        .disabled(nameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(20)
+            .frame(width: 400)
+        }
+    }
+
+    private func saveName() {
+        let name = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        store.renameCue(cue.id, in: listID, to: name)
+        editingName = false
     }
 
     private var rowBackground: Color {
@@ -644,6 +728,9 @@ private struct CueRow: View {
 
     private var controlsRow: some View {
         HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundColor(Skin.soft)
+                .help("Drag this cue to reorder or move it to another cue list")
             selectionButton
             statusIndicator
             cueActions

@@ -1,47 +1,60 @@
-# Sculpt Show 0.6.0 — Cue containers & drag/drop
+# Sculpt Show 0.7.0 — Cue workflow + MIDI Time Code reader
 
-Sculpt Show is an independent native macOS show-control prototype, inspired by cue-container workflows in professional media servers, including Merging Ovation. It does **not** contain Ovation source code or proprietary assets.
+Independent macOS cue-playback/show-control application. **Not a Merging Technologies product.**
 
-## The v0.6 architectural change
+## Changes from 0.6.0
 
-**A cue is always one container with its own identity, timeline and Rules.** It does not have a permanent “audio cue” versus “empty cue” type. A newly created cue contains no media. Its contents are an ordered collection of elements:
+### Drag and drop
 
-- Zero elements: silent timed cue; Rules still fire at the start and end.
-- One audio element: audio starts at its assigned offset within the cue.
-- Multiple audio elements: parallel audio, each with its own cue-relative offset and non-destructive IN/OUT region; audio can stop while the cue continues.
-- Timecode element: saved timecode start, frame rate and cue-relative offset. **LTC/MTC physical output is not implemented yet**; playback still runs the container timer and its Rules.
-- Mixtures of audio and timecode metadata, or a group of audio elements within the same cue.
+- A cue is dragged as its own **native SwiftUI transferable type** (not arbitrary plain text).
+- Drag onto the **top half** of a cue to place before it, or the **bottom half** to place after it.
+- Drag into a cue list's blank area to append, including moving between lists.
+- Cue ID, contained media, settings and **cue-local Interaction Rules** stay intact.
+- Drag an **audio file** onto a cue to add it as another element (separate file-drop handling).
+- Fallback: right-click a cue > **Move to Cue List**. This uses the same relocation model.
+- A cue that is currently playing is stopped before moving to prevent an active Rule from referencing a changed playlist position. Previous/Next Rule targets naturally resolve relative to the *new* list/order. Rules inherited from a source cue list do not move because they belong to that list, not to the cue.
 
-The cue's LENGTH is separate from individual audio source lengths. When importing audio as new cues, their initial container durations are determined from their files. Previously saved `.scshow` projects that had audio tied to source duration retain that behavior until the user explicitly edits LENGTH. This is controlled by `durationMode`, which preserves backward compatibility.
+### Cue naming
 
-## Interaction changes
+- Click the Cue name in the Inspector to open a focused Rename window; Save/Return commits once. No model changes during typing.
+- Right-click a cue > Rename Cue... also works.
 
-- Click **NEW CUE** to insert a genuinely empty container. Use the new **CONTENTS** panel in the inspector to add multiple audio sources or a timecode element.
-- A cue is draggable using the row surface. Drop it **onto another cue** to insert before that cue; drop it **into a list's empty area** to append it. This works in the same list or another list.
-- Cue identity (UUID), Rules, properties and element data survive moves. Moving a cue currently playing stops that cue before relocating it, and cancels pending Rules targeted at it. PLAY LIST sequences in affected lists are cleared to avoid ambiguous live behavior.
-- All existing global and list FIRE / PLAY LIST / STOP / FADE / RULES controls remain.
+### Duration
 
-## Important limitations and test notes
+- Typed **HH:MM:SS:MMM** in the Cue Inspector, e.g. `00:01:30:250` for 90.25 s.
+- Last field is **milliseconds** (3 digits), not timecode frames.
+- Explicit duration belongs to the container, independent of attached media.
+- Range: `00:00:00:000` to `24:00:00:000`.
+- Time input is parsed and formatted without sub-millisecond rounding drift.
 
-- The engine remains `AVAudioPlayer` / macOS default output. Multiple elements are started close together but **not sample-accurately**. There is no multichannel output assignment, routing matrix or hot-backup system yet.
-- Timecode elements are an extensible data model and UI control, **not an actual LTC/MTC generator** in this version.
-- Loop operates on the cue's entire timeline, not on individual files. Fade-in/out and gain affect the cue's audio elements. IN/OUT and cue-relative offsets do not alter source media.
-- Legacy `.scshow` import is supported. The new format writes the `elements` array and `durationMode`; older Sculpt Show versions will not recognize these features. Back up existing show files before upgrading. Files are still referenced by **absolute path** and aren't embedded.
-- Only the model can be fully tested on Linux. A real macOS build through GitHub Actions and on-device drag/drop and multielement playback smoke tests are required before describing this as a verified build. Not suitable as the sole mission-critical playback system.
+### Incoming MTC reader
 
-### Smoke test checklist (macOS)
+- Click the **MTC READER** display in the transport to open the reader.
+- Refresh connected CoreMIDI sources, select one, and watch incoming MIDI Time Code quarter-frame messages.
+- Shows `HH:MM:SS:FF`, nominal FPS (24, 25, 29.97 drop-frame, 30), and signal/lock indication.
+- MTC output is the frame count provided by the source; this initial reader does **not** interpolate missing frames, compensate transport latency, chase the cue-playback engine, or trigger Rules.
+- **Audio LTC input is not implemented** in 0.7. This will require a separate decoder and input routing UI.
 
-1. Create a show, insert three **NEW CUE** containers, name them and set different LENGTH values.
-2. Add two audio files into one cue using the inspector **Audio +** button. Change the second file's OFFSET and trim its IN/OUT.
-3. Play that cue. Confirm the first audio starts at 0 and the second starts at the specified OFFSET, and that the entire cue ends at the specified LENGTH.
-4. Make a Rules-only empty cue. Set `Starting → Fire → Specific Cue` and confirm the target starts.
-5. Add a timecode element, set text and FPS, save/reopen and verify settings persist. No LTC/MTC output is expected yet.
-6. Drag a cue over a row to insert before it, then drag that cue to a second list. Save/reopen, confirm its UUID-dependent rules and contents survive.
-7. Open an old `.scshow`, change a cue's LENGTH and ensure its original media is not modified.
-8. Verify STOP LIST, STOP ALL, PLAY LIST and per-cue fade still function as before.
+## Build / tests
 
-## Build
+- On macOS: `bash Scripts/build-macos.sh` or push source updates to GitHub Actions.
+- Model tests: 45 passing on Swift/Linux, including cue transfer and timecode decoding.
+- macOS app and CoreMIDI input require GitHub Actions build / manual verification; not verified by Linux model tests.
+- All prior `.scshow` project data formats remain unchanged (formatVersion 1). Do not delete your existing show files.
 
-After uploading the modified sources to `main`, GitHub Actions runs `Scripts/build-macos.sh`, executes model tests, compiles a universal app (Apple Silicon + Intel), ad-hoc signs it and uploads an artifact called `Sculpt-Show-macOS`.
+## Suggested verification after GitHub build
 
-This repo is a functional reimplementation and does not claim file-format or source compatibility with proprietary Merging Ovation show projects.
+1. Create 3 cues in List A and 1 in List B. Drag a cue over the top/bottom halves of a row; check the new order.
+2. Drag the cue from List A to List B's blank area. Verify contents and cue-local Rules remain present; check Save/Close/Open.
+3. Right-click a cue and try **Move to Cue List** if drag-and-drop fails. This distinguishes data relocation from drag handling.
+4. Click a cue title in the Inspector and rename to several words. Press Save, then save/reopen the show.
+5. Type `01:02:03:004` in the duration field and confirm it survives save/reopen.
+6. Open MTC Reader; select an actual CoreMIDI source transmitting MTC. Confirm FPS and HH:MM:SS:FF update and lose lock when the external source stops.
+
+## Existing 0.6 features retained
+
+Cue containers with independently assigned audio elements or timecode *metadata*, cue-level / list-level / show-level Interaction Rules, dual audio playback per cue, play lists, delays, fades, seek and saved shows.
+
+## Limitations
+
+Not tested for production-critical live use. Audio playback still goes to the default system output, not yet a per-element multichannel routing matrix. Timecode reader displays external MIDI Time Code only. No LTC decode, timecode-chased playback, OSC or guaranteed sample-accurate scheduling yet.

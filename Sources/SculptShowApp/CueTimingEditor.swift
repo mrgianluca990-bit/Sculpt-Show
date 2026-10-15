@@ -1,12 +1,16 @@
 import SwiftUI
 import SculptShowCore
 
-/// A cue has one timeline duration regardless of what content it contains.
+/// Edit HH:MM:SS:milliseconds in isolation; never rewrite the field on every keystroke.
 struct CueTimingEditor: View {
     @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var playback: PlaybackEngine
     let cue: Cue
     let listID: UUID
+
+    @State private var draft = ""
+    @State private var invalid = false
+    @FocusState private var editing: Bool
 
     private var displayedLength: Double {
         if cue.durationMode == .fixed { return cue.durationSeconds }
@@ -22,29 +26,49 @@ struct CueTimingEditor: View {
         VStack(alignment: .leading, spacing: 9) {
             Text("CUE CONTAINER · DURATION")
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-            Stepper(value: Binding(
-                get: { max(0.1, displayedLength) },
-                set: { store.setCueDuration(cue.id, in: listID, to: $0) }
-            ), in: 0.1...86400, step: 0.5) {
-                HStack {
-                    Text("LENGTH")
-                    Spacer()
-                    Text(String(format: "%.1f s", displayedLength)).monospacedDigit()
-                }
+            HStack(spacing: 8) {
+                TextField("HH:MM:SS:MMM", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 16, design: .monospaced))
+                    .monospacedDigit()
+                    .focused($editing)
+                    .onSubmit(commit)
+                    .onChange(of: editing) { focused in
+                        if !focused { commit() }
+                    }
+                Button("Set") { commit() }
+                    .disabled(CueClock.parse(draft) == nil)
+            }
+            if invalid {
+                Text("Use HH:MM:SS:MMM, e.g. 00:01:30:250 (max 24:00:00:000).")
+                    .font(.caption)
+                    .foregroundColor(.orange)
             }
             if cue.durationMode == .mediaEnd {
-                Text("Imported show: currently follows source duration. Change LENGTH to give this cue its own independent timeline.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if cue.hasAudio {
-                Text("Audio beyond this duration is cut off. Shorter audio ends without stopping the cue timeline.")
+                Text("Legacy cue: change LENGTH to give it its own independent duration.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("This container runs for its own duration, even with no audio or only Rules.")
+                Text("Independent container length. Audio beyond its end is cut off.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+        .onAppear { draft = CueClock.format(displayedLength) }
+        .onChange(of: cue.id) { _ in
+            editing = false
+            invalid = false
+            draft = CueClock.format(displayedLength)
+        }
+        .onChange(of: cue.durationSeconds) { value in
+            if !editing && cue.durationMode == .fixed { draft = CueClock.format(value) }
+        }
+    }
+
+    private func commit() {
+        guard let value = CueClock.parse(draft) else { invalid = true; return }
+        invalid = false
+        store.setCueDuration(cue.id, in: listID, to: value)
+        draft = CueClock.format(value)
     }
 }

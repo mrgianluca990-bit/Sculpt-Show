@@ -211,7 +211,7 @@ final class ShowStore: ObservableObject {
     /// An explicit container duration is independent of the attached media.
     func setCueDuration(_ id: UUID, in list: UUID, to seconds: Double) {
         editCue(id, list: list) {
-            $0.durationSeconds = min(max(0.1, seconds), 86400)
+            $0.durationSeconds = min(max(0, seconds), 86400)
             $0.durationMode = .fixed
         }
     }

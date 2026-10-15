@@ -1,35 +1,32 @@
-SCULPT SHOW 0.6.0 - CUE CONTAINERS & DRAG AND DROP
+SCULPT SHOW 0.7.0 - AGGIORNAMENTO
 
-The archive includes changed source files, not a compiled Mac application.
-Upload these files to mrgianluca990-bit/Sculpt-Show on GitHub, branch main.
+1. Estrarre Sculpt-Show-v0.7-update.zip.
+2. Aprire il repository:
+   https://github.com/mrgianluca990-bit/Sculpt-Show
+3. Caricare i file alle stesse posizioni indicate nello ZIP, sostituendo quelli esistenti.
+   (GitHub web: entrare nella cartella corretta > Add file > Upload files > Commit changes.)
 
-1) Open https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowCore
-   Replace Show.swift (Add file > Upload files > Commit changes).
+FILE NUOVI:
+- Sources/SculptShowCore/CueClock.swift
+- Sources/SculptShowApp/TimecodeReader.swift
+- Tests/SculptShowCoreTests/CueClockTests.swift
 
-2) Open https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowApp
-   Upload/replace PlaybackEngine.swift, ShowStore.swift, WorkspaceView.swift,
-   CueTimingEditor.swift; add CueContentsEditor.swift and CueDragDrop.swift.
+FILE SOSTITUITI:
+- Sources/SculptShowApp/CueDragDrop.swift
+- Sources/SculptShowApp/CueTimingEditor.swift
+- Sources/SculptShowApp/WorkspaceView.swift
+- Sources/SculptShowApp/ShowStore.swift
+- Scripts/Info.plist
+- README.md (solo documentazione, facoltativo)
 
-3) Open https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Tests/SculptShowCoreTests
-   Add ContainerTests.swift.
+ATTENZIONE: completare il caricamento di TUTTI i file prima di giudicare un eventuale errore
+GitHub Actions: con upload intermedi alcune compilazioni possono fallire perche' mancano i nuovi file.
 
-4) Open https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Scripts
-   Replace Info.plist.
+4. Verificare la build su:
+   https://github.com/mrgianluca990-bit/Sculpt-Show/actions
+5. Dalla build VERDE scaricare Artifacts > Sculpt-Show-macOS.
 
-5) From repository root, replace README.md (optional documentation).
+TEST: rinomina cue; durata 01:02:03:004; drag entro e fra liste; Move to Cue List dal
+menu destro; Rules della cue prima e dopo lo spostamento; ingresso MTC reale su CoreMIDI.
 
-GitHub Actions starts the build automatically for every commit. Use the
-LAST successful build AFTER uploading ALL files. A partially uploaded
-combination of 0.5 and 0.6 sources is not expected to compile.
-
-Get the macOS app after a successful build:
-https://github.com/mrgianluca990-bit/Sculpt-Show/actions
-
-PREP: back up .scshow files before reopening them in 0.6. 0.6 can migrate
-0.5 projects, but the new container format cannot be read by old builds.
-
-TEST: 38/38 portable Swift model tests passed on Linux. Swift sources
-passed syntax parsing. Native macOS UI/audio compilation is not verified yet.
-
-IMPORTANT: timecode is stored and edited, but does not output LTC/MTC yet.
-The playback engine uses AVAudioPlayer and is not sample-accurate.
+Timecode reader 0.7: INPUT MIDI MTC. Non legge ancora LTC audio.
