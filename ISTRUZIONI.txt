@@ -1,31 +1,24 @@
-SCULPT SHOW 0.12.0 — MARKER / PERFORMANCE / DOCK
+SCULPT SHOW 0.13.0 — INSTALLAZIONE SU GITHUB
 
-Basato esattamente sulla release 0.11.0 collaudata su macOS.
+Repository: https://github.com/mrgianluca990-bit/Sculpt-Show
+Partenza: commit 33d5d03d7f5da317d08d7ad140b9a536f9c51095, versione 0.12.0.
 
-1) Apri https://github.com/mrgianluca990-bit/Sculpt-Show
-2) Carica i file della patch nelle cartelle corrispondenti del repository. Non caricare la cartella esterna: i percorsi DEVONO essere Sources/... , Tests/... e Scripts/...
-3) GitHub Actions crea automaticamente la build macOS universal; scarica l'artifact Sculpt-Show-macOS.
-4) Conserva la precedente applicazione 0.11.0 come fallback durante i test.
+1) Estrai Sculpt-Show-v0.13.0-Marker-Play-MTC-Update.zip.
+2) Carica i seguenti file conservando le cartelle indicate:
 
-FILE MODIFICATI/NUOVI:
-  README.md
-  Scripts/Info.plist
-  Sources/SculptShowApp/CueMarkersEditor.swift
-  Sources/SculptShowApp/OutputMeterMonitor.swift
-  Sources/SculptShowApp/PlaybackEngine.swift
-  Sources/SculptShowApp/ShowOutputMixerView.swift
-  Sources/SculptShowApp/ShowWaveformOverview.swift
-  Sources/SculptShowApp/WorkspaceView.swift
-  Sources/SculptShowCore/MarkerTimelineGeometry.swift
-  Tests/SculptShowCoreTests/MarkerTimelineGeometryTests.swift
+Sources/SculptShowApp/ShowWaveformOverview.swift
+Sources/SculptShowApp/WorkspaceView.swift
+Sources/SculptShowApp/PlaybackEngine.swift
+Sources/SculptShowApp/TimecodeGenerator.swift                    NUOVO
+Sources/SculptShowCore/MTCGeneratorModel.swift                  NUOVO
+Tests/SculptShowCoreTests/MTCGeneratorTests.swift               NUOVO
+Scripts/Info.plist
+README.md
 
-TEST DI ACCETTAZIONE:
-- WAVEFORMS chiude automaticamente MIXER; MIXER chiude WAVEFORMS. MTC funziona in parallelo.
-- Doppio click sulla barra MARKERS della waveform aggiunge un marker.
-- Trascina il marker sulla barra o su una linea sopra un'onda; il tempo nell'Inspector cambia al rilascio.
-- Rinomina il marker, cambia HH:MM:SS:MMM, collega una Rule e salva lo show. Riapri e verifica.
-- Provare snap 1ms, 100ms, 1s, pulsanti marker precedente/successivo e FIT.
-- Prova durante playback: metering, marker Rules, routing a caldo, M/S, riproduzione multistem e Timecode Reader.
+3) Commit su main. GitHub Actions avviera' swift test e la build macOS universale.
+4) Download del nuovo artifact Sculpt-Show-macOS dalla pagina Actions.
 
-NOTA: Test Linux e sintassi Swift verificati. Una build GitHub macOS completa e la prova reale sul Mac sono ancora necessari.
-Non cambia l'audio graph, la serializzazione .scshow o la temporizzazione 50ms delle Rules.
+N.B. Non eliminare gli altri file del repository. Aggiornamento per GitHub,
+NON e' una app .app precompilata.
+MTC fase 1 = MIDI out, non LTC audio e non timecode chase. GO globale
+parte da 0 anche se la singola cue ha un cursore di ascolto impostato.

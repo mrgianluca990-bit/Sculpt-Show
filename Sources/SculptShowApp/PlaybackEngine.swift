@@ -36,6 +36,22 @@ final class PlaybackEngine: ObservableObject {
     }
 
     @Published private(set) var snapshots: [UUID: Snapshot] = [:]
+    /// Non-destructive audition cursor for each cue. GLOBAL GO ignores it.
+    /// Kept only in memory: the .scshow show format and Rules are unchanged.
+    @Published private(set) var cuePlayCursors: [UUID: Double] = [:]
+
+    func setCuePlayCursor(_ id: UUID, to seconds: Double) {
+        guard seconds.isFinite else { return }
+        cuePlayCursors[id] = max(0, seconds)
+    }
+
+    func cuePlayCursor(_ id: UUID) -> Double { cuePlayCursors[id] ?? 0 }
+
+    @discardableResult
+    func playCueLocally(_ cue: Cue) -> Bool {
+        play(cue, from: cuePlayCursor(cue.id))
+    }
+
     @Published var errorMessage: String?
     var onNaturalFinish: ((UUID) -> Void)?
     var onStarted: ((UUID) -> Void)?
@@ -333,7 +349,7 @@ final class PlaybackEngine: ObservableObject {
             elapsedAtStart[cue.id] = position
             lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
             startedAt[cue.id] = Date().addingTimeInterval(lead)
-            snapshots[cue.id] = Snapshot(phase: .playing, elapsed: 0, duration: length)
+            snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length)
             onStarted?(cue.id)
             return true
         } catch {

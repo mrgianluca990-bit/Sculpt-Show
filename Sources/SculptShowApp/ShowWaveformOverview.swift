@@ -95,18 +95,31 @@ struct ShowWaveformOverview: View {
                 }
                 .pickerStyle(.menu)
                 .frame(width: 110)
-                if let cue = store.selectedCue, let listID = store.selectedListID {
+            }
+            if let cue = store.selectedCue, let listID = store.selectedListID {
+                HStack(spacing: 8) {
+                    Image(systemName: "scope").foregroundColor(.cyan)
+                    Text("PLAY FROM " + CueClock.format(playback.cuePlayCursor(cue.id)))
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .monospacedDigit()
+                    Button("ZERO") { playback.setCuePlayCursor(cue.id, to: 0) }
+                        .controlSize(.small)
+                        .help("Reset audition cursor; GO always starts at zero")
+                    Button {
+                        _ = playback.playCueLocally(cue)
+                    } label: {
+                        Label("PLAY CUE", systemImage: "play.fill")
+                    }
+                    .controlSize(.small)
+                    .disabled(!cue.enabled)
+                    .help("Local cue playback from blue cursor; GO always starts at zero")
+                    Spacer(minLength: 3)
                     Button("+ MARK") {
-                        let current = playback.snapshots[cue.id]?.elapsed ?? 0
-                        addMarker(cue, listID: listID,
-                                  at: min(timelineDuration(cue), current))
+                        let current = playback.snapshots[cue.id]?.elapsed ?? playback.cuePlayCursor(cue.id)
+                        addMarker(cue, listID: listID, at: min(timelineDuration(cue), current))
                     }.controlSize(.small)
-                    Button("‹") { seekAdjacent(cue, forward: false) }
-                        .help("Previous marker")
-                        .disabled(playback.snapshots[cue.id] == nil)
-                    Button("›") { seekAdjacent(cue, forward: true) }
-                        .help("Next marker")
-                        .disabled(playback.snapshots[cue.id] == nil)
+                    Button("‹") { seekAdjacent(cue, forward: false) }.help("Previous marker")
+                    Button("›") { seekAdjacent(cue, forward: true) }.help("Next marker")
                 }
             }
             if let cue = store.selectedCue, let listID = store.selectedListID {
@@ -135,6 +148,7 @@ struct ShowWaveformOverview: View {
                             duration: timelineDuration(cue), snap: snap,
                             selectedMarkerID: $selectedMarkerID)
                             .environmentObject(store)
+                            .environmentObject(playback)
                     }
                     .frame(height: 52)
                     if cue.alignedAudioElements.isEmpty {
@@ -148,6 +162,7 @@ struct ShowWaveformOverview: View {
                             failed: cache.failed.contains(element.sourcePath),
                             duration: timelineDuration(cue),
                             playhead: playback.snapshots[cue.id]?.elapsed,
+                            auditionCursor: playback.cuePlayCursor(cue.id),
                             listID: listID, snap: snap,
                             selectedMarkerID: $selectedMarkerID)
                             .environmentObject(playback)
@@ -171,11 +186,14 @@ struct ShowWaveformOverview: View {
     }
 
     private func seekAdjacent(_ cue: Cue, forward: Bool) {
-        let position = playback.snapshots[cue.id]?.elapsed ?? 0
+        let position = playback.snapshots[cue.id]?.elapsed ?? playback.cuePlayCursor(cue.id)
         if let marker = MarkerTimelineGeometry.adjacent(to: position, markers: cue.markers,
                                                         forward: forward) {
             selectedMarkerID = marker.id
-            playback.seek(cue.id, toSeconds: marker.positionSeconds)
+            playback.setCuePlayCursor(cue.id, to: marker.positionSeconds)
+            if playback.snapshots[cue.id] != nil {
+                playback.seek(cue.id, toSeconds: marker.positionSeconds)
+            }
         }
     }
 
@@ -194,6 +212,7 @@ struct ShowWaveformOverview: View {
 /// on release. The active audio engine is never paused or rescheduled.
 private struct MarkerWaveformRuler: View {
     @EnvironmentObject private var store: ShowStore
+    @EnvironmentObject private var playback: PlaybackEngine
     let cue: Cue
     let listID: UUID
     let duration: Double
@@ -247,12 +266,25 @@ private struct MarkerWaveformRuler: View {
         }
         .foregroundColor(selectedMarkerID == marker.id ? .yellow : .orange)
         .frame(width: 29, height: 43)
+        .overlay(alignment: .topLeading) {
+            Text(marker.name.isEmpty ? "Marker" : marker.name)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 115, alignment: .leading)
+                .foregroundColor(selectedMarkerID == marker.id ? .yellow : .orange)
+                .offset(x: 27, y: 12)
+                .allowsHitTesting(false)
+        }
         .background(selectedMarkerID == marker.id
                     ? Color.orange.opacity(0.16) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 4))
         .contentShape(Rectangle())
         .position(x: min(max(15, x), max(15, width - 15)), y: 26)
-        .onTapGesture { selectedMarkerID = marker.id }
+        .onTapGesture {
+            selectedMarkerID = marker.id
+            playback.setCuePlayCursor(cue.id, to: marker.positionSeconds)
+        }
         .gesture(DragGesture(minimumDistance: 3,
                              coordinateSpace: .named("waveform-marker-ruler"))
             .onChanged { move in
@@ -284,6 +316,7 @@ private struct WaveformStemLane: View {
     let failed: Bool
     let duration: Double
     let playhead: Double?
+    let auditionCursor: Double
     let listID: UUID
     let snap: Double
     @Binding var selectedMarkerID: UUID?
@@ -321,6 +354,15 @@ private struct WaveformStemLane: View {
                                 selectedMarkerID: $selectedMarkerID)
                         }
                     }
+                    if playhead == nil {
+                        // Blue = an idle audition location, not the live cue playhead.
+                        Rectangle().fill(Color.cyan.opacity(0.95))
+                            .frame(width: 2)
+                            .offset(x: CGFloat(MarkerTimelineGeometry.x(
+                                time: auditionCursor, width: Double(geometry.size.width),
+                                duration: duration)))
+                            .allowsHitTesting(false)
+                    }
                     if let playhead {
                         Rectangle().fill(Color.white)
                             .frame(width: 2)
@@ -334,13 +376,17 @@ private struct WaveformStemLane: View {
                 .coordinateSpace(name: "waveform-marker-lane")
                 .contentShape(Rectangle())
                 .gesture(SpatialTapGesture().onEnded { tap in
-                    guard playback.snapshots[cue.id] != nil else { return }
                     let seconds = MarkerTimelineGeometry.clampedTime(
                         x: Double(tap.location.x), width: Double(geometry.size.width),
-                        duration: duration)
-                    playback.seek(cue.id, toSeconds: seconds)
+                        duration: duration, snap: snap)
+                    // A click locates the local audition cursor even if no cue
+                    // is currently playing. The real SHOW GO ignores it.
+                    playback.setCuePlayCursor(cue.id, to: seconds)
+                    if playback.snapshots[cue.id] != nil {
+                        playback.seek(cue.id, toSeconds: seconds)
+                    }
                 })
-                .help("Click to seek live. Marker handles above the waveform can be dragged.")
+                .help("Click to set blue local PLAY cursor. If playing, also seek live. Global GO always starts at zero.")
             }
             .frame(height: (envelope?.peaks.count ?? 1) > 1 ? 104 : 68)
         }
@@ -393,6 +439,7 @@ private struct StaticWaveformDrawing: View, Equatable {
 /// actual waveform. Position preview stays local until release.
 private struct WaveformMarkerLine: View {
     @EnvironmentObject private var store: ShowStore
+    @EnvironmentObject private var playback: PlaybackEngine
     let cueID: UUID
     let listID: UUID
     let marker: CueMarker
@@ -415,9 +462,23 @@ private struct WaveformMarkerLine: View {
             }
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
+            .overlay(alignment: .topLeading) {
+                Text(marker.name.isEmpty ? "Marker" : marker.name)
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundColor(selectedMarkerID == marker.id ? .yellow : .orange)
+                    .lineLimit(1)
+                    .frame(width: 106, alignment: .leading)
+                    .padding(.horizontal, 3)
+                    .background(Color.black.opacity(0.70), in: RoundedRectangle(cornerRadius: 2))
+                    .offset(x: 13, y: 0)
+                    .allowsHitTesting(false)
+            }
             .offset(x: CGFloat(MarkerTimelineGeometry.x(time: seconds,
                       width: Double(width), duration: duration)) - 9)
-            .onTapGesture { selectedMarkerID = marker.id }
+            .onTapGesture {
+                selectedMarkerID = marker.id
+                playback.setCuePlayCursor(cueID, to: marker.positionSeconds)
+            }
             .gesture(DragGesture(minimumDistance: 3,
                                 coordinateSpace: .named("waveform-marker-lane"))
                 .onChanged { move in
