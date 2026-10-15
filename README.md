@@ -2,7 +2,22 @@
 
 Independent macOS audio cue player and show-control workbench inspired by professional cue-list workflows. **Not a Merging Technologies product**; no Ovation source code or assets are included.
 
-## Version 0.1.0 — technical prototype
+## Version 0.2.0 — cue control update
+
+Added in 0.2:
+
+- **Auto Next** switch: pressing GO or list FIRE starts the selected cue, then selects the following enabled cue (never wraps automatically).
+- **Auto-follow** per cue: when its file finishes naturally, starts the next enabled cue in the same list. Loop takes priority over auto-follow.
+- **Loop** per cue: repeats indefinitely until STOP or FADE. Can toggle during playback.
+- **Fade-in** per cue (0 to 30 seconds) in addition to the existing fade-out.
+- **Seek**: click/drag each active cue's progress slider; works when paused, disabled during fade-out.
+- **Time remaining** shown in each playing row and the inspector.
+- **Move cue Up/Down** in the inspector. Keeps the cue's identity and saved settings.
+- Compatibility with `.scshow` files created in 0.1: missing new keys default to disabled/zero. Existing formatVersion remains 1.
+
+The 0.2 UI and playback engine must be compiled and tested on macOS through GitHub Actions before being considered a verified build. The Core model passes tests on Linux.
+
+## Previous 0.1.0 foundation
 
 - Native **SwiftUI** interface for macOS 13+ (universal arm64 + x86_64 build on a Mac).
 - Multiple cue lists visible side by side.
@@ -38,8 +53,13 @@ After pushing to `main`, open **GitHub > Actions > Build Sculpt Show for macOS >
 1. Run Sculpt Show, click **ADD AUDIO**, and select both files from `Samples/`.
 2. Press **Space** to GO the selected cue, then select the second cue and GO again: both should play simultaneously.
 3. Try Pause, Fade and Stop. Adjust cue gain and fade time in the inspector.
-4. Use **Save** to create a `.scshow` file, reopen it, and check that settings survive.
-5. Disconnect one referenced audio file: the inspector warns that the media is missing.
+4. Set Fade In on a cue, enable Loop on another, and check that GO uses the new values.
+5. With AUTO NEXT on, GO should advance the selection without interrupting audio already playing.
+6. Enable Auto-follow on a short cue, then verify it starts the following enabled cue only when it ends normally.
+7. Seek and pause using the progress slider; use the Up/Down buttons to reorder the selected cue.
+8. Use **Save** to create a `.scshow` file, reopen it, and check that settings survive.
+9. Open an older 0.1 `.scshow`; the three new cue options should safely default to off/0.
+10. Disconnect one referenced audio file: the inspector warns that the media is missing.
 
 The included WAV tones are synthetic test signals, not third-party content.
 
@@ -58,15 +78,15 @@ The included WAV tones are synthetic test signals, not third-party content.
 
 ## Structure
 
-- `Sources/SculptShowCore/Show.swift`: versioned Codable show model and format validation.
+- `Sources/SculptShowCore/Show.swift`: Codable show model, legacy compatibility, cue reordering, and next-cue selection.
 - `Sources/SculptShowApp/`: SwiftUI main window, show store, AVFAudio playback engine.
 - `Tests/SculptShowCoreTests/`: model round-trip and editing tests.
 - `.github/workflows/macos-build.yml`: builds/tests on a macOS runner and uploads an app ZIP.
 
 ## Near-term roadmap
 
-1. CI verification on macOS; fix any Xcode 15+ compile/runtime issues; introduce UI tests.
-2. Non-destructive cue ordering, auto-follow and timing controls.
+1. CI verification of 0.2 on macOS and real playback tests; introduce UI tests.
+2. Cue delay and automatic start triggers, cue group actions and per-list STOP commands.
 3. Audio engine redesign around `AVAudioEngine` and Core Audio with per-cue routing, metering, and buffering.
 4. Portable projects, media relinking and validation.
 5. MIDI/OSC commands and external GO, with emergency stop.

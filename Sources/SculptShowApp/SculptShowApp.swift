@@ -33,7 +33,7 @@ struct SculptShowApp: App {
             }
             CommandMenu("Cues") {
                 Button("GO: Fire Selected Cue") {
-                    if let cue = showStore.selectedCue { playback.play(cue) }
+                    showStore.fireSelected(using: playback)
                 }
                 .keyboardShortcut(.space, modifiers: [])
 

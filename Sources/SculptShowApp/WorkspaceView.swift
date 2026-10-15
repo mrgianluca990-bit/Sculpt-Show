@@ -41,6 +41,12 @@ struct WorkspaceView: View {
             statusBar
         }
         .background(Skin.base)
+        .onAppear {
+            playback.onNaturalFinish = { [weak store, weak playback] id in
+                guard let store, let playback else { return }
+                store.didFinishNaturally(id, using: playback)
+            }
+        }
         .alert("Sculpt Show", isPresented: Binding(
             get: { store.errorMessage != nil || playback.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil; playback.errorMessage = nil } }
@@ -95,7 +101,7 @@ struct WorkspaceView: View {
     private var transport: some View {
         HStack(spacing: 16) {
             Button {
-                if let cue = store.selectedCue { playback.play(cue) }
+                store.fireSelected(using: playback)
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "play.fill")
@@ -130,6 +136,11 @@ struct WorkspaceView: View {
             .buttonStyle(.plain)
 
             Spacer()
+            Toggle("AUTO NEXT", isOn: $store.advanceAfterGO)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .help("After GO, select the next enabled cue in the current list")
             VStack(alignment: .trailing, spacing: 5) {
                 Text("ACTIVE CUES")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -146,7 +157,8 @@ struct WorkspaceView: View {
     }
 
     private var inspector: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 16) {
             Text("CUE INSPECTOR")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .tracking(1.1)
@@ -192,6 +204,35 @@ struct WorkspaceView: View {
                 ), in: 0...30, step: 0.5)
                 .tint(Skin.gold)
 
+                HStack {
+                    Text("FADE IN")
+                    Spacer()
+                    Text("\(cue.fadeInSeconds, specifier: "%.1f") s")
+                        .monospacedDigit()
+                        .foregroundColor(Skin.gold)
+                }
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                Slider(value: Binding(
+                    get: { store.show.cue(cue.id)?.fadeInSeconds ?? cue.fadeInSeconds },
+                    set: { store.setFadeIn(cue.id, in: listID, to: $0) }
+                ), in: 0...30, step: 0.5)
+                .tint(Skin.gold)
+
+                Toggle("Loop until STOP", isOn: Binding(
+                    get: { store.show.cue(cue.id)?.loop ?? cue.loop },
+                    set: { store.setLoop(cue.id, in: listID, to: $0); playback.setLoop($0, for: cue.id) }
+                ))
+                .toggleStyle(.switch)
+                .help("Repeatedly play this audio file until stopped manually")
+
+                Toggle("Auto-follow next cue", isOn: Binding(
+                    get: { store.show.cue(cue.id)?.followOnFinish ?? cue.followOnFinish },
+                    set: { store.setFollow(cue.id, in: listID, to: $0) }
+                ))
+                .toggleStyle(.switch)
+                .disabled(cue.loop)
+                .help("At natural end, start the next enabled cue in this list; loop overrides follow")
+
                 Toggle("Cue enabled", isOn: Binding(
                     get: { store.show.cue(cue.id)?.enabled ?? cue.enabled },
                     set: { store.setEnabled(cue.id, in: listID, to: $0) }
@@ -213,7 +254,24 @@ struct WorkspaceView: View {
                         .foregroundColor(.orange)
                         .font(.caption)
                 }
-                Spacer()
+                if let active = playback.snapshots[cue.id] {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("REMAINING")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(Skin.soft)
+                        Text("−" + clock(active.remaining))
+                            .font(.system(size: 24, weight: .bold, design: .monospaced))
+                            .foregroundColor(Skin.green)
+                    }
+                }
+                HStack {
+                    Button { store.moveCue(cue.id, in: listID, by: -1) } label: {
+                        Label("Up", systemImage: "arrow.up")
+                    }
+                    Button { store.moveCue(cue.id, in: listID, by: 1) } label: {
+                        Label("Down", systemImage: "arrow.down")
+                    }
+                }
                 Button(role: .destructive) {
                     playback.stop(cue.id)
                     store.removeCue(cue.id, from: listID)
@@ -221,15 +279,14 @@ struct WorkspaceView: View {
                     Label("Remove Cue", systemImage: "trash")
                 }
             } else {
-                Spacer()
                 Text("Select a cue to edit its properties.")
                     .foregroundColor(Skin.soft)
                     .multilineTextAlignment(.center)
-                Spacer()
             }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Skin.panel)
     }
 
@@ -242,13 +299,18 @@ struct WorkspaceView: View {
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.1.0")
+            Text("SCULPT SHOW 0.2.0")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
         .padding(.horizontal, 20)
         .frame(height: 34)
         .background(Skin.raised)
+    }
+
+    private func clock(_ seconds: TimeInterval) -> String {
+        let total = Int(max(seconds, 0))
+        return String(format: "%02d:%02d", total / 60, total % 60)
     }
 
     private func headerButton(_ symbol: String, _ title: String, action: @escaping () -> Void) -> some View {
@@ -301,7 +363,7 @@ private struct CueListPanel: View {
 
             HStack(spacing: 8) {
                 Button {
-                    if let cue = store.selectedCue(in: list.id) ?? list.cues.first { playback.play(cue) }
+                    store.fireSelected(in: list.id, using: playback)
                 } label: {
                     Label("FIRE", systemImage: "play.fill")
                         .foregroundColor(Skin.green)
@@ -378,6 +440,7 @@ private struct CueRow: View {
 
     private var selected: Bool { store.cueSelection[listID] == cue.id }
     private var state: PlaybackEngine.Snapshot? { playback.snapshots[cue.id] }
+    @State private var pendingSeek: Double?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -443,7 +506,7 @@ private struct CueRow: View {
 
     private var playbackLabel: String {
         guard let state else { return "AUDIO" }
-        return "\(clock(state.elapsed)) / \(clock(state.duration))"
+        return "\(clock(state.elapsed))  •  −\(clock(state.remaining))"
     }
 
     private var statusIndicator: some View {
@@ -475,13 +538,21 @@ private struct CueRow: View {
     }
 
     private var progressBar: some View {
-        GeometryReader { geometry in
-            Rectangle()
-                .fill(Skin.green)
-                .frame(width: geometry.size.width * (state?.fraction ?? 0))
-        }
-        .frame(height: 3)
-        .background(Skin.stroke)
+        Slider(value: Binding(
+            get: { pendingSeek ?? state?.fraction ?? 0 },
+            set: { pendingSeek = $0 }
+        ), in: 0...1, onEditingChanged: { isEditing in
+            if !isEditing, let value = pendingSeek {
+                playback.seek(cue.id, to: value)
+                pendingSeek = nil
+            }
+        })
+        .controlSize(.mini)
+        .tint(Skin.green)
+        .disabled(state == nil || state?.phase == .fading)
+        .padding(.horizontal, 10)
+        .frame(height: 17)
+        .help("Click or drag to seek within a playing or paused cue")
     }
 
     private func clock(_ seconds: TimeInterval) -> String {

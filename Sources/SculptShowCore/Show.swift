@@ -50,6 +50,24 @@ public struct Show: Codable, Equatable, Sendable {
         update(&cueLists[listIndex].cues[cueIndex])
     }
 
+    /// Move a cue within its list, preserving its ID and every saved setting.
+    public mutating func moveCue(_ cueID: UUID, in listID: UUID, by offset: Int) {
+        guard let listIndex = cueLists.firstIndex(where: { $0.id == listID }),
+              let index = cueLists[listIndex].cues.firstIndex(where: { $0.id == cueID }),
+              offset != 0 else { return }
+        let destination = index + offset
+        guard cueLists[listIndex].cues.indices.contains(destination) else { return }
+        let cue = cueLists[listIndex].cues.remove(at: index)
+        cueLists[listIndex].cues.insert(cue, at: destination)
+    }
+
+    /// Find the next enabled cue in the same list (never wraps into another list).
+    public func followingCue(after cueID: UUID) -> Cue? {
+        guard let list = cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }),
+              let index = list.cues.firstIndex(where: { $0.id == cueID }) else { return nil }
+        return list.cues.dropFirst(index + 1).first(where: { $0.enabled })
+    }
+
     public func cue(_ id: UUID) -> Cue? {
         cueLists.lazy.flatMap(\.cues).first { $0.id == id }
     }
@@ -75,14 +93,44 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     public var fadeOutSeconds: Double
     public var enabled: Bool
 
+    // v2 capabilities: new keys decode with defaults so v1 shows remain readable.
+    public var fadeInSeconds: Double
+    public var loop: Bool
+    public var followOnFinish: Bool
+
     public init(id: UUID = UUID(), name: String, mediaPath: String,
-                gain: Double = 1.0, fadeOutSeconds: Double = 2.0, enabled: Bool = true) {
+                gain: Double = 1.0, fadeOutSeconds: Double = 2.0,
+                enabled: Bool = true, fadeInSeconds: Double = 0,
+                loop: Bool = false, followOnFinish: Bool = false) {
         self.id = id
         self.name = name
         self.mediaPath = mediaPath
         self.gain = min(max(gain, 0), 1)
         self.fadeOutSeconds = max(fadeOutSeconds, 0)
         self.enabled = enabled
+        self.fadeInSeconds = max(fadeInSeconds, 0)
+        self.loop = loop
+        self.followOnFinish = followOnFinish
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, mediaPath, gain, fadeOutSeconds, enabled
+        case fadeInSeconds, loop, followOnFinish
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try values.decode(UUID.self, forKey: .id),
+            name: try values.decode(String.self, forKey: .name),
+            mediaPath: try values.decode(String.self, forKey: .mediaPath),
+            gain: try values.decode(Double.self, forKey: .gain),
+            fadeOutSeconds: try values.decode(Double.self, forKey: .fadeOutSeconds),
+            enabled: try values.decode(Bool.self, forKey: .enabled),
+            fadeInSeconds: try values.decodeIfPresent(Double.self, forKey: .fadeInSeconds) ?? 0,
+            loop: try values.decodeIfPresent(Bool.self, forKey: .loop) ?? false,
+            followOnFinish: try values.decodeIfPresent(Bool.self, forKey: .followOnFinish) ?? false
+        )
     }
 }
 

@@ -11,6 +11,8 @@ final class ShowStore: ObservableObject {
     @Published var selectedListID: UUID?
     @Published var cueSelection: [UUID: UUID] = [:]
     @Published var errorMessage: String?
+    /// A manual GO advances the selected cue to the next enabled row in that list.
+    @Published var advanceAfterGO = true
 
     init() {
         selectedListID = show.cueLists.first?.id
@@ -105,6 +107,54 @@ final class ShowStore: ObservableObject {
         editCue(id, list: list) { $0.fadeOutSeconds = max(seconds, 0) }
     }
 
+    func setFadeIn(_ id: UUID, in list: UUID, to seconds: Double) {
+        editCue(id, list: list) { $0.fadeInSeconds = max(seconds, 0) }
+    }
+
+    func setLoop(_ id: UUID, in list: UUID, to enabled: Bool) {
+        editCue(id, list: list) { $0.loop = enabled }
+    }
+
+    func setFollow(_ id: UUID, in list: UUID, to enabled: Bool) {
+        editCue(id, list: list) { $0.followOnFinish = enabled }
+    }
+
+    func moveCue(_ cueID: UUID, in list: UUID, by offset: Int) {
+        var updated = show
+        updated.moveCue(cueID, in: list, by: offset)
+        guard updated != show else { return }
+        commit(updated)
+    }
+
+    func fireSelected(using playback: PlaybackEngine) {
+        guard let selectedListID else { return }
+        fireSelected(in: selectedListID, using: playback)
+    }
+
+    func fireSelected(in listID: UUID, using playback: PlaybackEngine) {
+        guard let list = show.cueLists.first(where: { $0.id == listID }),
+              let cue = selectedCue(in: listID) ?? list.cues.first(where: { $0.enabled }),
+              playback.play(cue) else { return }
+        selectedListID = listID
+        if advanceAfterGO, let next = show.followingCue(after: cue.id) {
+            select(next.id, in: listID)
+        } else {
+            select(cue.id, in: listID)
+        }
+    }
+
+    /// Called only for a naturally finished file, not Stop, Fade Out or Pause.
+    func didFinishNaturally(_ cueID: UUID, using playback: PlaybackEngine) {
+        guard let finished = show.cue(cueID), finished.followOnFinish,
+              let next = show.followingCue(after: cueID) else { return }
+        if playback.play(next), let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == next.id }) }) {
+            select(next.id, in: list.id)
+            if advanceAfterGO, let following = show.followingCue(after: next.id) {
+                select(following.id, in: list.id)
+            }
+        }
+    }
+
     func setEnabled(_ id: UUID, in list: UUID, to enabled: Bool) {
         editCue(id, list: list) { $0.enabled = enabled }
     }
@@ -122,7 +172,9 @@ final class ShowStore: ObservableObject {
         guard let list = show.cueLists.first(where: { $0.id == listID }), !list.cues.isEmpty else { return }
         let current = cueSelection[listID]
         let next = list.cues.firstIndex(where: { $0.id == current }).map { ($0 + 1) % list.cues.count } ?? 0
-        select(list.cues[next].id, in: listID)
+        // Navigation is cyclic, but skips disabled cues where possible.
+        let candidates = (0..<list.cues.count).map { list.cues[(next + $0) % list.cues.count] }
+        if let cue = candidates.first(where: { $0.enabled }) { select(cue.id, in: listID) }
     }
 
     func save() {
