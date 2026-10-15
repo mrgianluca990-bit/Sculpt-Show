@@ -1,22 +1,18 @@
-# Sculpt Show 0.8.2 — Cue Duration Enter + Element Mixer
+# Sculpt Show 0.8.3 — Finder Documents + Aligned Audio Stems
 
-Incremental update based on working 0.8.1 macOS build. All existing cue-list, rules, MIDI, synchronized playback, drag-and-drop and global transport functionality is preserved.
+Incremental update based on 0.8.2. The cue container model, per-element volume/mute, Rules, routing and MIDI controls remain unchanged.
 
 ## Changes
 
-- **Cue duration**: press **Return / Enter** in the `HH:MM:SS:MMM` field to confirm and leave editing; no `Set` button. Invalid values show validation text and remain editable.
-- **New: per-element mixer**: every **audio element** inside a cue has a level fader (0–100%, 100% = unity) and a Mute switch. The cue's own gain control and fade/dim behavior remain independent, stacking with these controls.
-- You can adjust audio-element level/mute while the cue is playing, without stopping or rescheduling audio.
-- The independent audio-element settings persist in `.scshow` projects and survive duplicate, drag-and-drop, save/reopen.
-- Older `.scshow` projects load with each element at unity (100%) and not muted by default.
-- **MIDI remains unchanged**, awaiting hardware testing.
+- **Multitrack**: Every audio element begins at the first sample (t=0) and uses its full source duration. No per-track OFFSET / IN / OUT widgets; fixed container duration remains editable. Existing project trim/offset metadata is preserved in the file for compatibility, but deliberately ignored for audio playback. Timecode offset is still configurable.
+- **Finder `.scshow` support**: Registered exported UTType and CFBundleDocumentTypes in the actual packaged Info.plist; SwiftUI onOpenURL hands incoming file URLs to the same ShowStore document decoder used by File > Open. Unsaved changes confirmation still applies, and successful loads stop previous playback.
+- **No changes** to MIDI controller features; synchronized scheduling and element faders/mute remain.
 
 ## Validation
 
-- `swift test --disable-sandbox --jobs 2`: 60 tests passed (including five new ElementMix tests).
-- `swiftc -frontend -parse`: all application, core and test Swift files passed syntax check.
-- **macOS build not yet verified**. Run the existing GitHub Actions workflow after uploading.
+- macOS SwiftUI and LaunchServices integration requires a fresh macOS GitHub Actions build and a Finder double-click test on an installed/registered app.
+- Run `swift test` and `swiftc -frontend -parse` to check core tests and syntax.
 
-## Known audio engine limitations
+## Installing file association
 
-Sculpt Show currently uses multiple synchronized AVAudioPlayer instances, not a single sample-accurate multichannel AVAudioEngine graph. Per-element faders and mute work on the existing synchronized player objects; this patch does not add audio-output routing, truly gapless loops or sample-accurate trim points.
+Copy the new Sculpt Show.app into /Applications, replacing the old copy. To make it the default for an already saved project: select any `.scshow` in Finder > Get Info > Open with > Sculpt Show > Change All. Then double-click. Note that unzipping successive copies to Downloads may leave macOS launching an older copy of the app.

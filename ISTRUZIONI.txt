@@ -1,41 +1,61 @@
-SCULPT SHOW 0.8.2 — AGGIORNAMENTO
-===================================
+SCULPT SHOW 0.8.3 — AGGIORNAMENTO DA 0.8.2
+================================================
 
-Parti dal repository Sculpt-Show versione 0.8.1, compilata correttamente.
+CORREZIONI
 
-NOVITÀ:
-- Durata cue: premi Invio per confermare e chiudere il campo. Pulsante Set rimosso.
-- Mixer per file audio all'interno di ogni cue: LEVEL (0-100%) e MUTE per elemento.
-- I livelli e mute vengono salvati con lo show; le vecchie sessioni sono compatibili.
-- Audio multitraccia sincronizzato e MIDI: nessuna modifica alla logica 0.8.1.
+1. In ogni cue, i file audio partono dall'inizio (t=0), sincronizzati fra loro.
+   Eliminati OFFSET, IN e OUT dai controlli dei singoli elementi audio.
+   Restano LEVEL e MUTE indipendenti, e la durata della CUE rimane digitabile.
+   Le vecchie impostazioni trim/offset presenti in .scshow vengono conservate nei dati
+   per compatibilita', ma ignorate durante la riproduzione dei file audio.
+   Gli elementi TIMECODE conservano il loro offset indipendente.
 
-CARICAMENTO GITHUB (Add file > Upload files):
+2. Un progetto .scshow si apre con doppio clic dal Finder (nuova associazione macOS),
+   attraverso lo stesso caricamento gia' funzionante da File > Open Show.
+   Rispettata la conferma prima di scartare modifiche non salvate.
 
-Cartella "Sources/SculptShowCore":
-  Sources/SculptShowCore/Show.swift
-  https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowCore
+PERCORSI DI CARICAMENTO SU GITHUB
 
-Cartella "Sources/SculptShowApp":
-  Sources/SculptShowApp/CueTimingEditor.swift
-  Sources/SculptShowApp/CueContentsEditor.swift
-  Sources/SculptShowApp/ShowStore.swift
-  Sources/SculptShowApp/PlaybackEngine.swift
-  https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowApp
+A) Cartella Sources/SculptShowApp
+   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowApp
+   - SculptShowApp.swift
+   - CueContentsEditor.swift
+   - CueTimingEditor.swift
+   - PlaybackEngine.swift
+   - ShowStore.swift
 
-Cartella "Tests/SculptShowCoreTests":
-  Tests/SculptShowCoreTests/ElementMixTests.swift (NUOVO)
-  https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Tests/SculptShowCoreTests
+B) Cartella Sources/SculptShowCore
+   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowCore
+   - Show.swift
 
-Cartella "Scripts":
-  Scripts/Info.plist
-  https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Scripts
+C) Cartella Scripts
+   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Scripts
+   - Info.plist  (ESSENZIALE per riconoscere il doppio clic del Finder)
 
-Nella radice del repository:
-  README.md
-  https://github.com/mrgianluca990-bit/Sculpt-Show
+D) Cartella Tests/SculptShowCoreTests
+   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Tests/SculptShowCoreTests
+   - StemPlaybackTests.swift  (NUOVO)
 
-IMPORTANTE: carica TUTTI i file, poi attendi il completamento della compilazione GitHub Actions:
+E) Radice repo (facoltativo ma consigliato)
+   https://github.com/mrgianluca990-bit/Sculpt-Show
+   - README.md
+
+Scegli ogni cartella nel browser di GitHub, poi Add file > Upload files,
+carica i file corrispondenti e conferma il commit.
+Completati i commit, scarica l'artefatto macOS dalla build verde:
 https://github.com/mrgianluca990-bit/Sculpt-Show/actions
 
-TEST: 60/60 test automatici superati; sintassi Swift validata.
-La build macOS 0.8.2 deve ancora essere verificata sul runner Mac.
+TEST DOPPIO CLIC
+1. Estrai Sculpt Show.app dal nuovo artefatto e copia l'app in /Applications,
+   sostituendo la vecchia versione. NON continuare a usare una copia precedente.
+2. In Finder scegli un progetto .scshow > Ottieni informazioni > Apri con > Sculpt Show.
+   Scegli Cambia tutto... per renderla l'app predefinita.
+3. Doppio clic su un file .scshow con Sculpt Show chiuso e poi con Sculpt Show aperto.
+   Deve mostrare lo stesso progetto di File > Open Show, compresi cue, Rules e livelli.
+
+VERIFICHE
+- 65 test Swift eseguiti con successo su Linux.
+- Tutti i file Swift superano swiftc -frontend -parse.
+- Tipo .scshow verificato in Info.plist con Python plistlib.
+- NON ancora compilato/testato nel Finder macOS: serve la build Actions.
+- Nessuna modifica alla gestione MIDI.

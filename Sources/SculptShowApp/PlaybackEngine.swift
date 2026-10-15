@@ -113,20 +113,20 @@ final class PlaybackEngine: ObservableObject {
     private func playImmediately(_ cue: Cue) -> Bool {
         var prepared: [AudioTrack] = []
         do {
-            for element in cue.audioElements {
+            for element in cue.alignedAudioElements {
                 let player = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: element.sourcePath))
-                let start = min(max(element.inSeconds, 0), player.duration)
-                let end = max(start, min(element.outSeconds ?? player.duration, player.duration))
-                guard end > start + 0.001 else {
-                    errorMessage = "Invalid IN/OUT region in ‘\(element.name)’ of cue ‘\(cue.name)’."
+                guard player.duration > 0.001 else {
+                    errorMessage = "Audio source ‘\(element.name)’ is empty."
                     return false
                 }
+                // Every stem plays from sample zero at the same device deadline.
+                // Its effective OUT is the earlier of source end or cue end.
                 player.numberOfLoops = 0 // The *container*, not each file, controls looping.
-                player.currentTime = start
+                player.currentTime = 0
                 player.volume = cue.fadeInSeconds > 0 || element.muted ? 0 : Float(cue.gain * element.gain)
                 player.prepareToPlay()
                 prepared.append(AudioTrack(elementID: element.id, player: player,
-                    start: max(0, element.startSeconds), sourceIn: start, sourceOut: end))
+                    start: 0, sourceIn: 0, sourceOut: player.duration))
             }
         } catch {
             errorMessage = "Cannot prepare audio for ‘\(cue.name)’: \(error.localizedDescription)"
@@ -177,8 +177,8 @@ final class PlaybackEngine: ObservableObject {
     }
 
     /// Schedule the ENTIRE cue at once using one AVAudioPlayer device timestamp.
-    /// A later element is scheduled in advance at (shared time + its offset),
-    /// instead of being started by the 50 ms UI refresh timer.
+    /// All audio stems share the same scheduled start (device clock).
+    /// Never start individual stems from the UI refresh timer.
     private func armAudio(for id: UUID, from elapsed: Double, leadOverride: Double? = nil) {
         guard var list = tracks[id], let cue = activeCues[id] else { return }
         // Empty containers keep their existing immediate timeline behavior.

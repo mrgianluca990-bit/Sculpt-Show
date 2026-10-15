@@ -35,16 +35,6 @@ struct CueContentsEditor: View {
                             .help("Remove content from container")
                     }
                     .font(.system(size: 11, weight: .semibold))
-                    Stepper(value: Binding(
-                        get: { store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.startSeconds ?? element.startSeconds },
-                        set: { store.setElementStart(element.id, in: cue.id, listID: listID, to: $0) }
-                    ), in: 0...86400, step: 0.5) {
-                        HStack {
-                            Text("OFFSET")
-                            Spacer()
-                            Text(String(format: "%.1f s", element.startSeconds)).monospacedDigit()
-                        }.font(.caption)
-                    }
                     if element.kind == .audio {
                         HStack {
                             Text("ELEMENT LEVEL")
@@ -71,31 +61,23 @@ struct CueContentsEditor: View {
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(.secondary)
                             .textSelection(.enabled)
-                        if let duration = playback.mediaDuration(for: Cue(name: element.name, mediaPath: element.sourcePath)), duration > 0.11 {
-                            let start = min(element.inSeconds, max(0, duration - 0.1))
-                            let end = max(start + 0.1, min(element.outSeconds ?? duration, duration))
-                            Stepper(value: Binding(
-                                get: { start },
-                                set: { store.setElementTrim(element.id, in: cue.id, listID: listID, start: min($0, end - 0.1)) }
-                            ), in: 0...max(0, end - 0.1), step: 0.1) {
-                                HStack { Text("IN"); Spacer(); Text(String(format: "%.1f", start)) }
-                                    .font(.caption).monospacedDigit()
-                            }
-                            Stepper(value: Binding(
-                                get: { end },
-                                set: { store.setElementTrim(element.id, in: cue.id, listID: listID, end: max(start + 0.1, $0)) }
-                            ), in: min(duration, start + 0.1)...duration, step: 0.1) {
-                                HStack { Text("OUT"); Spacer(); Text(String(format: "%.1f", end)) }
-                                    .font(.caption).monospacedDigit()
-                            }
-                            Button("Reset IN / OUT") {
-                                store.setElementTrim(element.id, in: cue.id, listID: listID, start: 0, resetEnd: true)
-                            }.buttonStyle(.plain).font(.caption)
-                        } else {
+                        if !FileManager.default.fileExists(atPath: element.sourcePath) {
                             Label("Audio not found", systemImage: "exclamationmark.triangle")
                                 .font(.caption).foregroundColor(.orange)
                         }
                     } else {
+                        // Timecode elements can still have an independent offset;
+                        // audio stems always start together at the cue's zero point.
+                        Stepper(value: Binding(
+                            get: { store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.startSeconds ?? element.startSeconds },
+                            set: { store.setElementStart(element.id, in: cue.id, listID: listID, to: $0) }
+                        ), in: 0...86400, step: 0.5) {
+                            HStack {
+                                Text("TIMECODE OFFSET")
+                                Spacer()
+                                Text(String(format: "%.1f s", element.startSeconds)).monospacedDigit()
+                            }.font(.caption)
+                        }
                         TimecodeEntry(element: element, cueID: cue.id, listID: listID)
                         Text("Timecode metadata only · LTC/MTC transmission not implemented.")
                             .font(.caption).foregroundColor(.orange)
@@ -103,6 +85,12 @@ struct CueContentsEditor: View {
                 }
                 .padding(10)
                 .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+            }
+            if cue.hasAudio {
+                Text("Audio stems: START 00:00 · FULL SOURCE · aligned within the cue. Only the container duration limits playback.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 10) {
                 Button {

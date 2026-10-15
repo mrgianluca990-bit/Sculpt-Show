@@ -14,11 +14,8 @@ struct CueTimingEditor: View {
 
     private var displayedLength: Double {
         if cue.durationMode == .fixed { return cue.durationSeconds }
-        return max(0.1, cue.audioElements.compactMap { element -> Double? in
-            guard let source = playback.mediaDuration(for: Cue(name: element.name, mediaPath: element.sourcePath)) else { return nil }
-            let start = min(max(0, element.inSeconds), source)
-            let end = max(start, min(element.outSeconds ?? source, source))
-            return element.startSeconds + end - start
+        return max(0.1, cue.alignedAudioElements.compactMap { element -> Double? in
+            playback.mediaDuration(for: Cue(name: element.name, mediaPath: element.sourcePath))
         }.max() ?? cue.durationSeconds)
     }
 

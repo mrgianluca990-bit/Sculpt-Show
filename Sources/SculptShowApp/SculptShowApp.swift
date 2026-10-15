@@ -11,6 +11,11 @@ struct SculptShowApp: App {
                 .environmentObject(showStore)
                 .environmentObject(playback)
                 .preferredColorScheme(.dark)
+                .onOpenURL { documentURL in
+                    if showStore.openShow(at: documentURL) {
+                        showStore.stopAll(using: playback)
+                    }
+                }
         }
         .defaultSize(width: 1300, height: 790)
         .commands {

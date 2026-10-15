@@ -478,8 +478,19 @@ final class ShowStore: ObservableObject {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return false }
+        return openShow(at: url)
+    }
+
+    /// Called by File > Open and by macOS onOpenURL when a .scshow is opened
+    /// directly in Finder. The same decoder and unsaved-changes guard apply.
+    @discardableResult
+    func openShow(at url: URL) -> Bool {
+        guard url.isFileURL, url.pathExtension.lowercased() == "scshow" else {
+            errorMessage = "Only Sculpt Show .scshow documents can be opened."
+            return false
+        }
         do {
-            let next = try ShowCodec.decode(Data(contentsOf: url))
+            let next = try ShowCodec.decode(contentsOf: url)
             guard confirmDiscard() else { return false }
             cancelPendingRules()
             playingLists.removeAll()

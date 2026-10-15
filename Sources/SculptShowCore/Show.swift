@@ -295,6 +295,20 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     public var isEmpty: Bool { elements.isEmpty }
     public var hasAudio: Bool { elements.contains { $0.kind == .audio } }
     public var audioElements: [CueElement] { elements.filter { $0.kind == .audio } }
+
+    /// The multitrack playout view of audio elements. Individual source edits
+    /// remain in the legacy project payload for compatibility but do not alter
+    /// stem playback: all tracks start at t=0 and play from their first sample.
+    /// Timecode elements retain their separate timeline offset.
+    public var alignedAudioElements: [CueElement] {
+        audioElements.map { element in
+            var aligned = element
+            aligned.startSeconds = 0
+            aligned.inSeconds = 0
+            aligned.outSeconds = nil
+            return aligned
+        }
+    }
     public var hasTimecode: Bool { elements.contains { $0.kind == .timecode } }
 
     /// Compatibility accessors for existing callers and projects. New edits should use elements.
@@ -428,6 +442,11 @@ public enum ShowFormatError: LocalizedError {
 }
 
 public enum ShowCodec {
+    /// Shared by the File > Open panel and Finder/LaunchServices document opens.
+    public static func decode(contentsOf url: URL) throws -> Show {
+        try decode(Data(contentsOf: url))
+    }
+
     public static func encode(_ show: Show) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
