@@ -1,0 +1,43 @@
+name: Build Sculpt Show for macOS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    name: Build and package macOS app
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Display the build environment
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Run tests and build the universal app
+        run: bash Scripts/build-macos.sh
+
+      - name: Verify the app bundle and archive
+        run: |
+          test -x "dist/Sculpt Show.app/Contents/MacOS/SculptShow"
+          test -s "dist/Sculpt-Show-macOS.zip"
+          codesign --verify --verbose=2 "dist/Sculpt Show.app"
+          file "dist/Sculpt Show.app/Contents/MacOS/SculptShow"
+
+      - name: Upload macOS application
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sculpt-Show-macOS
+          path: dist/Sculpt-Show-macOS.zip
+          if-no-files-found: error
+          retention-days: 30
