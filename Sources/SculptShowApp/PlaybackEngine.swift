@@ -1,5 +1,6 @@
 import AVFAudio
 import Foundation
+import SculptShowCore
 
 @MainActor
 final class PlaybackEngine: ObservableObject {

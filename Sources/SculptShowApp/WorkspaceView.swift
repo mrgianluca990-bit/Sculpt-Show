@@ -381,63 +381,107 @@ private struct CueRow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Button {
-                    store.select(cue.id, in: listID)
-                } label: {
-                    HStack(alignment: .center, spacing: 9) {
-                        Text(String(format: "%03d", cueNumber))
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
-                            .foregroundColor(selected ? Skin.gold : Skin.soft)
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(cue.name)
-                                .font(.system(size: 13, weight: .semibold))
-                                .lineLimit(1)
-                                .foregroundColor(cue.enabled ? .white : Skin.soft)
-                            HStack(spacing: 6) {
-                                Image(systemName: "waveform")
-                                Text(state.map { clock($0.elapsed) + " / " + clock($0.duration) } ?? "AUDIO")
-                            }
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(state == nil ? Skin.soft : Skin.green)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Image(systemName: state == nil ? "circle" : state?.phase == .paused ? "pause.circle.fill" : "circle.fill")
-                    .foregroundColor(state == nil ? Skin.soft : Skin.green)
-                    .font(.system(size: 11))
-                Button { playback.play(cue) } label: { Image(systemName: "play.fill") }
-                    .disabled(!cue.enabled)
-                    .help("Fire cue")
-                Button { playback.togglePause(cue.id) } label: { Image(systemName: "pause.fill") }
-                    .disabled(state == nil)
-                    .help("Pause / resume cue")
-                Button { playback.fadeOut(cue) } label: { Image(systemName: "arrow.down.right") }
-                    .disabled(state == nil)
-                    .help("Fade out cue")
-                Button { playback.stop(cue.id) } label: { Image(systemName: "stop.fill") }
-                    .disabled(state == nil)
-                    .help("Stop cue")
-            }
-            .buttonStyle(.borderless)
-            .font(.system(size: 12))
-            .tint(Skin.soft)
-            .padding(.horizontal, 11)
-            .frame(minHeight: 62)
-
-            GeometryReader { geometry in
-                Rectangle().fill(Skin.green)
-                    .frame(width: geometry.size.width * (state?.fraction ?? 0))
-            }
-            .frame(height: 3)
-            .background(Skin.stroke)
+            controlsRow
+            progressBar
         }
-        .background(selected ? Skin.gold.opacity(0.15) : Skin.raised, in: RoundedRectangle(cornerRadius: 5))
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(selected ? Skin.gold.opacity(0.55) : .clear, lineWidth: 1))
+        .background(rowBackground, in: RoundedRectangle(cornerRadius: 5))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(rowOutline, lineWidth: 1))
         .opacity(cue.enabled ? 1 : 0.53)
+    }
+
+    private var rowBackground: Color {
+        selected ? Skin.gold.opacity(0.15) : Skin.raised
+    }
+
+    private var rowOutline: Color {
+        selected ? Skin.gold.opacity(0.55) : .clear
+    }
+
+    private var controlsRow: some View {
+        HStack(spacing: 8) {
+            selectionButton
+            statusIndicator
+            cueActions
+        }
+        .buttonStyle(.borderless)
+        .font(.system(size: 12))
+        .tint(Skin.soft)
+        .padding(.horizontal, 11)
+        .frame(minHeight: 62)
+    }
+
+    private var selectionButton: some View {
+        Button {
+            store.select(cue.id, in: listID)
+        } label: {
+            HStack(alignment: .center, spacing: 9) {
+                Text(String(format: "%03d", cueNumber))
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(selected ? Skin.gold : Skin.soft)
+                cueDetails
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var cueDetails: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(cue.name)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+                .foregroundColor(cue.enabled ? .white : Skin.soft)
+            HStack(spacing: 6) {
+                Image(systemName: "waveform")
+                Text(playbackLabel)
+            }
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundColor(state == nil ? Skin.soft : Skin.green)
+        }
+    }
+
+    private var playbackLabel: String {
+        guard let state else { return "AUDIO" }
+        return "\(clock(state.elapsed)) / \(clock(state.duration))"
+    }
+
+    private var statusIndicator: some View {
+        Image(systemName: statusSymbol)
+            .foregroundColor(state == nil ? Skin.soft : Skin.green)
+            .font(.system(size: 11))
+    }
+
+    private var statusSymbol: String {
+        guard let state else { return "circle" }
+        return state.phase == .paused ? "pause.circle.fill" : "circle.fill"
+    }
+
+    private var cueActions: some View {
+        Group {
+            Button { playback.play(cue) } label: { Image(systemName: "play.fill") }
+                .disabled(!cue.enabled)
+                .help("Fire cue")
+            Button { playback.togglePause(cue.id) } label: { Image(systemName: "pause.fill") }
+                .disabled(state == nil)
+                .help("Pause / resume cue")
+            Button { playback.fadeOut(cue) } label: { Image(systemName: "arrow.down.right") }
+                .disabled(state == nil)
+                .help("Fade out cue")
+            Button { playback.stop(cue.id) } label: { Image(systemName: "stop.fill") }
+                .disabled(state == nil)
+                .help("Stop cue")
+        }
+    }
+
+    private var progressBar: some View {
+        GeometryReader { geometry in
+            Rectangle()
+                .fill(Skin.green)
+                .frame(width: geometry.size.width * (state?.fraction ?? 0))
+        }
+        .frame(height: 3)
+        .background(Skin.stroke)
     }
 
     private func clock(_ seconds: TimeInterval) -> String {
