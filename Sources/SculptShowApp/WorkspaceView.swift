@@ -122,6 +122,7 @@ struct WorkspaceView: View {
             }
             playback.onStopped = { [weak store, weak playback] id in
                 guard let store, let playback else { return }
+                store.didStopCue(id)
                 store.handleRuleEvent(.stopping, source: id, using: playback)
             }
         }
@@ -290,6 +291,8 @@ struct WorkspaceView: View {
                 .tint(Skin.gold)
                 .help("Delay before a cue starts after GO. STOP cancels a waiting cue.")
 
+                CueTimingEditor(cue: cue, listID: listID)
+
                 Divider()
                 HStack {
                     Text("FADE OUT")
@@ -347,13 +350,24 @@ struct WorkspaceView: View {
                 Text("MEDIA FILE")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(Skin.soft)
-                Text(cue.mediaPath)
+                Text(cue.isEmpty ? "EMPTY CUE · no audio file" : cue.mediaPath)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(Skin.soft)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
 
-                if !FileManager.default.fileExists(atPath: cue.mediaPath) {
+                HStack {
+                    Button(cue.isEmpty ? "Attach Audio…" : "Replace Audio…") {
+                        store.chooseMedia(for: cue.id, in: listID, using: playback)
+                    }
+                    if !cue.isEmpty {
+                        Button("Clear Audio") {
+                            store.clearMedia(for: cue.id, in: listID, using: playback)
+                        }
+                    }
+                }
+                .buttonStyle(.borderless)
+                if !cue.isEmpty && !FileManager.default.fileExists(atPath: cue.mediaPath) {
                     Label("Media file is missing", systemImage: "exclamationmark.triangle.fill")
                         .foregroundColor(.orange)
                         .font(.caption)
@@ -415,7 +429,7 @@ struct WorkspaceView: View {
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.4.0")
+            Text("SCULPT SHOW 0.5.0")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -487,37 +501,59 @@ private struct CueListPanel: View {
             .padding(14)
             .background(Skin.raised)
 
-            HStack(spacing: 8) {
-                Button {
-                    store.fireSelected(in: list.id, using: playback)
-                } label: {
-                    Label("FIRE", systemImage: "play.fill")
-                        .foregroundColor(Skin.green)
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    Button {
+                        store.playList(list.id, using: playback)
+                    } label: {
+                        Label("PLAY LIST", systemImage: "play.rectangle.fill")
+                            .foregroundColor(Skin.green)
+                    }
+                    .help("Play cues sequentially from the current selection")
+                    .disabled(store.playingLists[list.id] != nil)
+                    Button {
+                        store.fireSelected(in: list.id, using: playback)
+                    } label: {
+                        Label("FIRE", systemImage: "play.fill")
+                    }
+                    .help("Fire only the selected cue")
+                    Spacer(minLength: 2)
+                    Button {
+                        store.fadeList(list.id, using: playback)
+                    } label: {
+                        Label("FADE", systemImage: "arrow.down.right")
+                    }
+                    Button {
+                        store.stopList(list.id, using: playback)
+                    } label: {
+                        Label("STOP", systemImage: "stop.fill")
+                            .foregroundColor(.red)
+                    }
+                    .help("Stop this list and cancel its pending starts")
                 }
-                .buttonStyle(.plain)
-                Button {
-                    store.importAudio(to: list.id)
-                } label: {
-                    Label("ADD AUDIO", systemImage: "plus")
+                HStack(spacing: 10) {
+                    Button {
+                        store.importAudio(to: list.id)
+                    } label: {
+                        Label("AUDIO", systemImage: "waveform.badge.plus")
+                    }
+                    Button {
+                        store.addEmptyCue(to: list.id)
+                    } label: {
+                        Label("EMPTY", systemImage: "plus.square.dashed")
+                    }
+                    .help("Insert a silent timed cue after the selected cue")
+                    Spacer(minLength: 2)
+                    Button {
+                        editingRules = true
+                    } label: {
+                        Label("RULES (\(list.rules.count))", systemImage: "arrow.triangle.branch")
+                            .foregroundColor(Skin.gold)
+                    }
+                    .help("Open the rules for this cue list")
                 }
-                .buttonStyle(.plain)
-                Spacer()
-                Button {
-                    store.fadeList(list.id, using: playback)
-                } label: {
-                    Label("FADE", systemImage: "arrow.down.right")
-                }
-                .buttonStyle(.plain)
-                .help("Fade all active cues in this list and cancel pending starts")
-                Button {
-                    store.stopList(list.id, using: playback)
-                } label: {
-                    Label("STOP", systemImage: "stop.fill")
-                        .foregroundColor(.red)
-                }
-                .buttonStyle(.plain)
-                .help("Stop playing cues and cancel waiting cues in this list")
             }
+            .buttonStyle(.plain)
             .font(.system(size: 11, weight: .semibold, design: .monospaced))
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -638,7 +674,7 @@ private struct CueRow: View {
                 .lineLimit(1)
                 .foregroundColor(cue.enabled ? .white : Skin.soft)
             HStack(spacing: 6) {
-                Image(systemName: "waveform")
+                Image(systemName: cue.isEmpty ? "timer" : "waveform")
                 Text(playbackLabel)
             }
             .font(.system(size: 10, design: .monospaced))
@@ -647,7 +683,10 @@ private struct CueRow: View {
     }
 
     private var playbackLabel: String {
-        guard let state else { return "AUDIO" }
+        guard let state else {
+            if cue.isEmpty { return "EMPTY  ·  \(String(format: "%.1f", cue.durationSeconds))s" }
+            return cue.inPointSeconds > 0 || cue.outPointSeconds != nil ? "AUDIO  ·  TRIMMED" : "AUDIO"
+        }
         if state.phase == .waiting { return "WAIT  −\(clock(state.remaining))" }
         return "\(clock(state.elapsed))  •  −\(clock(state.remaining))"
     }

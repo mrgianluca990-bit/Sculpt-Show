@@ -13,6 +13,8 @@ final class ShowStore: ObservableObject {
     @Published var errorMessage: String?
     /// A manual GO advances the selected cue to the next enabled row in that list.
     @Published var advanceAfterGO = true
+    /// When PLAY LIST is active, map each list to its currently expected cue.
+    @Published private(set) var playingLists: [UUID: UUID] = [:]
     private var pendingRuleTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingRuleTargets: [UUID: Set<UUID>] = [:]
     private var eventGeneration = UUID()
@@ -42,6 +44,7 @@ final class ShowStore: ObservableObject {
     func newShow() -> Bool {
         guard confirmDiscard() else { return false }
         cancelPendingRules()
+        playingLists.removeAll()
         show = Show()
         documentURL = nil
         dirty = false
@@ -70,6 +73,7 @@ final class ShowStore: ObservableObject {
         updated.removeList(id)
         commit(updated)
         cueSelection.removeValue(forKey: id)
+        playingLists.removeValue(forKey: id)
         selectedListID = updated.cueLists.first?.id
     }
 
@@ -98,6 +102,55 @@ final class ShowStore: ObservableObject {
         commit(updated)
         cueSelection[listID] = newIDs[0]
         selectedListID = listID
+    }
+
+    func addEmptyCue(to listID: UUID) {
+        var updated = show
+        let after = cueSelection[listID]
+        guard let newID = updated.addEmptyCue(to: listID, after: after) else { return }
+        commit(updated)
+        select(newID, in: listID)
+    }
+
+    func chooseMedia(for cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        let panel = NSOpenPanel()
+        panel.title = "Attach Audio to Cue"
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        playback.stop(cueID)
+        editCue(cueID, list: listID) {
+            $0.mediaPath = url.path
+            $0.inPointSeconds = 0
+            $0.outPointSeconds = nil
+        }
+    }
+
+    func clearMedia(for cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        playback.stop(cueID)
+        editCue(cueID, list: listID) {
+            $0.mediaPath = ""
+            $0.inPointSeconds = 0
+            $0.outPointSeconds = nil
+        }
+    }
+
+    func setTrimIn(_ id: UUID, in list: UUID, to seconds: Double) {
+        editCue(id, list: list) { $0.inPointSeconds = max(0, seconds) }
+    }
+
+    func setTrimOut(_ id: UUID, in list: UUID, to seconds: Double) {
+        editCue(id, list: list) { $0.outPointSeconds = max(0, seconds) }
+    }
+
+    func resetTrim(_ id: UUID, in list: UUID) {
+        editCue(id, list: list) { $0.inPointSeconds = 0; $0.outPointSeconds = nil }
+    }
+
+    func setEmptyDuration(_ id: UUID, in list: UUID, to seconds: Double) {
+        editCue(id, list: list) { $0.durationSeconds = min(max(0, seconds), 86400) }
     }
 
     func renameCue(_ id: UUID, in list: UUID, to name: String) {
@@ -136,17 +189,20 @@ final class ShowStore: ObservableObject {
     }
 
     func stopAll(using playback: PlaybackEngine) {
+        playingLists.removeAll()
         cancelPendingRules()
         playback.stopAll()
     }
 
     func stopList(_ listID: UUID, using playback: PlaybackEngine) {
+        playingLists.removeValue(forKey: listID)
         guard let list = show.cueLists.first(where: { $0.id == listID }) else { return }
         cancelPendingRules(targeting: Set(list.cues.map(\.id)))
         for cue in list.cues { playback.stop(cue.id, notifyRules: false) }
     }
 
     func fadeList(_ listID: UUID, using playback: PlaybackEngine) {
+        playingLists.removeValue(forKey: listID)
         guard let list = show.cueLists.first(where: { $0.id == listID }) else { return }
         for cue in list.cues { playback.fadeOut(cue) }
     }
@@ -175,9 +231,37 @@ final class ShowStore: ObservableObject {
         }
     }
 
+    /// PLAY LIST starts from the selected cue (or first enabled cue) and continues on natural endings.
+    func playList(_ listID: UUID, using playback: PlaybackEngine) {
+        guard playingLists[listID] == nil else { return }
+        guard let list = show.cueLists.first(where: { $0.id == listID }),
+              let cue = selectedCue(in: listID).flatMap({ $0.enabled ? $0 : nil })
+                     ?? list.cues.first(where: { $0.enabled }) else { return }
+        guard playback.play(cue) else { return }
+        playingLists[listID] = cue.id
+        select(cue.id, in: listID)
+    }
+
+    func didStopCue(_ cueID: UUID) {
+        if let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }),
+           playingLists[list.id] == cueID {
+            playingLists.removeValue(forKey: list.id)
+        }
+    }
+
     /// Called only for a naturally finished file, not Stop, Fade Out or Pause.
     func didFinishNaturally(_ cueID: UUID, using playback: PlaybackEngine) {
         handleRuleEvent(.ending, source: cueID, using: playback)
+        if let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }),
+           playingLists[list.id] == cueID {
+            if let next = show.followingCue(after: cueID), playback.play(next) {
+                playingLists[list.id] = next.id
+                select(next.id, in: list.id)
+            } else {
+                playingLists.removeValue(forKey: list.id)
+            }
+            return
+        }
         guard let finished = show.cue(cueID), finished.followOnFinish,
               let next = show.followingCue(after: cueID) else { return }
         if playback.play(next), let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == next.id }) }) {
@@ -196,6 +280,7 @@ final class ShowStore: ObservableObject {
         var updated = show
         updated.removeCue(id, from: list)
         commit(updated)
+        if playingLists[list] == id { playingLists.removeValue(forKey: list) }
         if cueSelection[list] == id {
             cueSelection[list] = updated.cueLists.first(where: { $0.id == list })?.cues.first?.id
         }
@@ -236,6 +321,7 @@ final class ShowStore: ObservableObject {
             let next = try ShowCodec.decode(Data(contentsOf: url))
             guard confirmDiscard() else { return false }
             cancelPendingRules()
+            playingLists.removeAll()
             show = next
             documentURL = url
             cueSelection = [:]

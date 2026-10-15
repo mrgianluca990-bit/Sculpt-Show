@@ -51,6 +51,18 @@ public struct Show: Codable, Equatable, Sendable {
         return newCues.map(\.id)
     }
 
+    /// Create a silent/timed cue, optionally after the selected row.
+    @discardableResult
+    public mutating func addEmptyCue(to listID: UUID, after previousID: UUID? = nil) -> UUID? {
+        guard let index = cueLists.firstIndex(where: { $0.id == listID }) else { return nil }
+        let cue = Cue(name: "Empty Cue", mediaPath: "", durationSeconds: 5)
+        let destination = previousID.flatMap { previous in
+            cueLists[index].cues.firstIndex(where: { $0.id == previous }).map { $0 + 1 }
+        } ?? cueLists[index].cues.count
+        cueLists[index].cues.insert(cue, at: destination)
+        return cue.id
+    }
+
     public mutating func removeCue(_ cueID: UUID, from listID: UUID) {
         guard let index = cueLists.firstIndex(where: { $0.id == listID }) else { return }
         cueLists[index].cues.removeAll { $0.id == cueID }
@@ -145,12 +157,33 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     public var preWaitSeconds: Double
     public var rules: [InteractionRule]
     public var ignoreParentRules: Bool
+    /// Non-destructive region in the original media (seconds).
+    public var inPointSeconds: Double
+    /// Nil means the source file's natural end.
+    public var outPointSeconds: Double?
+    /// Timeline duration for empty cues (no media file).
+    public var durationSeconds: Double
+
+    public var isEmpty: Bool { mediaPath.isEmpty }
+
+    public func playbackWindow(sourceDuration: Double) -> (start: Double, end: Double, duration: Double) {
+        if isEmpty {
+            let length = max(0, min(durationSeconds, 86400))
+            return (0, length, length)
+        }
+        let source = max(0, sourceDuration)
+        let start = min(max(0, inPointSeconds), source)
+        let end = max(start, min(max(0, outPointSeconds ?? source), source))
+        return (start, end, end - start)
+    }
 
     public init(id: UUID = UUID(), name: String, mediaPath: String,
                 gain: Double = 1.0, fadeOutSeconds: Double = 2.0,
                 enabled: Bool = true, fadeInSeconds: Double = 0,
                 loop: Bool = false, followOnFinish: Bool = false,
-                preWaitSeconds: Double = 0) {
+                preWaitSeconds: Double = 0,
+                inPointSeconds: Double = 0, outPointSeconds: Double? = nil,
+                durationSeconds: Double = 5) {
         self.id = id
         self.name = name
         self.mediaPath = mediaPath
@@ -163,11 +196,15 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         self.preWaitSeconds = min(max(preWaitSeconds, 0), 600)
         self.rules = []
         self.ignoreParentRules = false
+        self.inPointSeconds = max(0, inPointSeconds)
+        self.outPointSeconds = outPointSeconds.map { max(0, $0) }
+        self.durationSeconds = min(max(0, durationSeconds), 86400)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, mediaPath, gain, fadeOutSeconds, enabled
         case fadeInSeconds, loop, followOnFinish, preWaitSeconds, rules, ignoreParentRules
+        case inPointSeconds, outPointSeconds, durationSeconds
     }
 
     public init(from decoder: Decoder) throws {
@@ -182,7 +219,10 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
             fadeInSeconds: try values.decodeIfPresent(Double.self, forKey: .fadeInSeconds) ?? 0,
             loop: try values.decodeIfPresent(Bool.self, forKey: .loop) ?? false,
             followOnFinish: try values.decodeIfPresent(Bool.self, forKey: .followOnFinish) ?? false,
-            preWaitSeconds: try values.decodeIfPresent(Double.self, forKey: .preWaitSeconds) ?? 0
+            preWaitSeconds: try values.decodeIfPresent(Double.self, forKey: .preWaitSeconds) ?? 0,
+            inPointSeconds: try values.decodeIfPresent(Double.self, forKey: .inPointSeconds) ?? 0,
+            outPointSeconds: try values.decodeIfPresent(Double.self, forKey: .outPointSeconds),
+            durationSeconds: try values.decodeIfPresent(Double.self, forKey: .durationSeconds) ?? 5
         )
         rules = try values.decodeIfPresent([InteractionRule].self, forKey: .rules) ?? []
         ignoreParentRules = try values.decodeIfPresent(Bool.self, forKey: .ignoreParentRules) ?? false

@@ -1,59 +1,40 @@
-# Sculpt Show 0.4.0 — Interaction Rules
+# Sculpt Show 0.5.0 — Cue vuote, IN/OUT e PLAY LIST
 
-Independent macOS cue player (macOS 13+, Intel and Apple Silicon). This is an independently authored functional reimplementation, **not** Merging Ovation and **not** compatible with its proprietary project files.
+Software macOS nativo (13+, Apple Silicon e Intel) indipendente, ispirato a workflow professionali show-control. Non e' un prodotto Merging Technologies e non apre ancora file Ovation `.ovs`/`.ovl`.
 
-## Novita della 0.4
+## Novita'
 
-Un nuovo editor **Interaction Rules** implementa i trigger **Starting**, **Ending** e **Stopping** con azioni sui target seguenti:
+- **EMPTY** in ogni cue list: inserisce una cue silenziosa dopo quella selezionata. Durata iniziale 5 s, modificabile nell'inspector (0–3600 s). Il silenzio e' un vero evento: parte con GO, puo' andare in pausa, essere fermato, andare in loop, usare Auto Follow e attivare Rules Starting/Ending/Stopping.
+- Nell'inspector: **Attach Audio** trasforma una cue vuota in cue audio senza perderne ID e Rules; **Clear Audio** esegue l'operazione inversa; **Replace Audio** permette di sostituire il file senza ricreare la cue.
+- **IN / OUT / DURATION** delle cue audio: regione di lettura non distruttiva. Per esempio, un file lungo 60 s con IN=10 e OUT=25 suona per 15 s. Modificare DURATION aggiorna automaticamente OUT. Reset IN/OUT riporta alla durata integrale del file.
+- Nuovi countdown e cursori di avanzamento fanno riferimento alla **durata effettiva** della regione, non necessariamente alla durata del file.
+- **PLAY LIST**: inizia dalla cue selezionata (o dalla prima abilitata) e riproduce automaticamente le successive della **stessa lista**, una dopo l'altra. **FIRE** continua a lanciare soltanto la cue scelta. STOP LIST annulla PLAY LIST e le partenze in attesa.
+- **RULES (N)** e' ora un pulsante sempre visibile nella testata della cue list; non serve entrare nel menu `...`.
+- Le nuove impostazioni si salvano in `.scshow` e sono compatibili con show salvati nelle versioni 0.1–0.4 (vecchi campi mancanti assumono valori predefiniti).
 
-- **Fire**, **Stop**, **Pause**, **Fade Out**, **Select**, **Dim**, **Restore Gain**.
-- Target **Next Cue**, **Previous Cue**, **Itself**, **Specific Cue**, **Cue List**, **All Cues**.
-- Ritardo per regola 0–30 s dall'interfaccia (modello fino a 600 s).
-- Condizioni opzionali sullo stato di un'altra cue: Playing, Paused, Waiting, Stopped.
-- Override per-rule di Fade In (azione Fire) e Fade Out (azione Fade); Dim in dB.
-- Regole definite separatamente a livello **Show**, **Cue List** e **Cue**; flag **Ignore Show and Cue List rules** nelle singole cue.
-- Editor Rules: crea, modifica, riordina, rimuovi, attiva/disattiva e salva le regole.
-- Le regole vengono incluse nel file `.scshow` e i vecchi show senza regole restano leggibili.
-- Protezioni: Anti-runaway a 64 eventi al secondo; STOP ALL annulla cue in attesa e regole temporizzate; STOP LIST annulla regole temporizzate che puntano alla lista.
+## Test rapido sul Mac
 
-### Apertura editor
+1. Usa **EMPTY**, imposta 3.0 s e aggiungi una regola `Ending -> Fire -> Next Cue`: dopo tre secondi la cue successiva deve partire.
+2. Seleziona un audio di 30 s, imposta IN 5 s e OUT 12 s (durata 7 s). Premendo FIRE deve iniziare a 5 s e terminare a 12 s. Il file originale resta intatto.
+3. Sulla medesima cue prova il loop con regione IN/OUT: la ripetizione della regione e' gestita da un timer di circa 100 ms e puo' produrre un piccolo salto; **non e' ancora sample accurate**.
+4. Aggiungi almeno tre cue, seleziona la prima, premi **PLAY LIST** e controlla l'avanzamento sequenziale. Premi STOP e verifica che non partano altre cue.
+5. Apri **RULES (N)** direttamente nella testata, crea una regola, salva e riapri lo show.
+6. Apri uno show `.scshow` creato con Sculpt Show 0.4.0: deve mantenere media, regole e parametri.
 
-- **Show Rules** nella barra in alto: regole globali.
-- Menu `...` nell'intestazione di una Cue List > **Edit List Rules...**.
-- Seleziona una cue > Cue Inspector > **Edit Interaction Rules**.
+## Limitazioni tecniche della 0.5
 
-**Importante:** in un editor vuoto, configura la regola e premi **Add Rule**, quindi **Save Rules**. Su una regola esistente modifica i parametri e premi **Update Rule** o direttamente **Save Rules**. Cambiare selezione senza aggiornare scarta solo la bozza.
+- Non e' ancora un motore audio per applicazioni show-critical: clip boundaries e sequenze dipendono da refresh a 100 ms e da callback di fine file. Per tagli e loop senza artefatti servira' un motore AVAudioEngine/Core Audio con scheduler.
+- Regole Ending e PLAY LIST possono voler avviare la stessa cue: il motore evita una seconda partenza se la cue e' gia' attiva, ma per uno show prevedibile e' meglio scegliere **uno dei due metodi** per la sequenza.
+- I fade per file tagliati non sono sample-accurate; il fade audio funziona come nella 0.4.
+- L'uscita audio e' sempre il dispositivo predefinito; niente routing per-cue multicanale in questa release.
+- `.scshow` mantiene riferimenti a percorsi audio assoluti. Non spostare i media senza aggiornare i percorsi.
+- Non ci sono ancora timecode, MIDI/OSC, backup ridondante e importazione di show Ovation.
+- La build GitHub e' firmata ad-hoc per sviluppo, non notarizzata. Compilare su GitHub prima del test live.
 
-### Esempi pratici
+## Compilazione GitHub
 
-1. Cue di apertura: `When Ending → Fire Next Cue` (eventuale fade-in dell'altra cue).
-2. Cue annuncio: `When Starting → Dim All Cues` a -18 dB; un'altra cue puo' usare `Restore Gain`.
-3. Passaggio scena: `When Starting → Fade Out Specific Cue`, fade-out 3 s.
-4. Cue lancio: `When Starting → Fire Cue List` (la prima cue abilitata della lista scelta), eventualmente After 2 s.
-5. Condizione: `Only if` una cue scelta e' `Paused`, allora `Fire Next Cue`.
+Un push su `main` avvia il workflow `.github/workflows/macos-build.yml`, che esegue `swift test`, compila per arm64 e x86_64, crea il bundle `.app` e produce l'artifact **Sculpt-Show-macOS**.
 
-### Semantica degli eventi
+Gli eseguibili devono essere collaudati realmente su macOS: i test del core superati su Linux e il controllo di sintassi Swift non provano che la GUI macOS compili e si comporti correttamente.
 
-- **Starting:** nel momento in cui parte davvero l'audio (dopo un eventuale Pre-Wait).
-- **Ending:** solo al termine naturale del file non in loop.
-- **Stopping:** a seguito dello STOP manuale o all'avvio del Fade Out, **non** durante STOP ALL / STOP LIST di emergenza.
-- Le regole globali e di lista vengono valutate insieme alle regole della singola cue; il flag Ignore Parents esclude globali e lista. Non e' un clone 1:1 della precedenza di Ovation.
-- Le regole con ritardo vengono eseguite con timer di sistema (`Task.sleep`) e **non sono sample-accurate**. Non sono ancora implementate regole sui marker, riferimenti a timecode, controlli MIDI/OSC, automazione snapshot o routing fisico multicanale.
-- L'opzione legacy **Auto-follow next cue** resta operativa; disattivala se usi una regola Ending → Fire Next Cue per evitare configurazioni ridondanti.
-
-## Compilazione
-
-GitHub Actions su push di `main` esegue `bash Scripts/build-macos.sh`, lancia i test e crea l'artifact `Sculpt-Show-macOS` che contiene un'app `.app` ZIP.
-
-Oppure apri `Package.swift` in Xcode 15+ e avvia `SculptShow` su My Mac.
-
-**Build 0.4:** il modello ha superato i test su Linux, e i sorgenti macOS sono stati controllati sintatticamente; il bundle SwiftUI e il playback devono ancora essere validati sulla build GitHub/macOS.
-
-## Stesse limitazioni delle versioni precedenti
-
-- Output del dispositivo audio predefinito (non c'e' routing per-cue sulle uscite Core Audio).
-- Gli show `.scshow` salvano percorsi media assoluti; tenere i WAV/AIFF/MP3 in posizioni stabili.
-- Prototipo non notarizzato, non raccomandato come unico riproduttore per show critici.
-- Gli show Ovation `.ovs`/`.ovl` non sono importabili nella 0.4.
-
-Il codice non include software o asset proprietari di Merging Technologies.
+© Sculpt Show — implementazione indipendente. Nessun asset o codice proprietario Merging Technologies incluso.

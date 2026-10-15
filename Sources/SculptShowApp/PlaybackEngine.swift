@@ -43,6 +43,20 @@ final class PlaybackEngine: ObservableObject {
     private var dimFactors: [UUID: Float] = [:]
     private var fadeTokens: [UUID: UUID] = [:]
     private var updateTimer: Timer?
+    private var clipWindows: [UUID: (start: Double, end: Double)] = [:]
+    private var activeLoops: [UUID: Bool] = [:]
+    private var silentStartedAt: [UUID: Date] = [:]
+    private var silentElapsedAtStart: [UUID: Double] = [:]
+    private var silentLoopIDs: Set<UUID> = []
+    private var durationCache: [String: Double] = [:]
+
+    func mediaDuration(for cue: Cue) -> Double? {
+        guard !cue.isEmpty, FileManager.default.fileExists(atPath: cue.mediaPath) else { return nil }
+        if let cached = durationCache[cue.mediaPath] { return cached }
+        guard let player = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: cue.mediaPath)) else { return nil }
+        durationCache[cue.mediaPath] = player.duration
+        return player.duration
+    }
 
     init() {
         updateTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -57,6 +71,13 @@ final class PlaybackEngine: ObservableObject {
         if let overrideFadeInSeconds { cue.fadeInSeconds = max(0, min(600, overrideFadeInSeconds)) }
         // Already queued or playing cues never receive a duplicate start.
         guard pendingTokens[cue.id] == nil else { return false }
+        if cue.isEmpty, let state = snapshots[cue.id] {
+            if state.phase == .paused {
+                resumeSilent(cue.id)
+                return true
+            }
+            return false
+        }
         // A repeated GO on a paused cue resumes it. A running cue does not restart.
         if let player = players[cue.id] {
             if snapshots[cue.id]?.phase == .paused {
@@ -69,7 +90,7 @@ final class PlaybackEngine: ObservableObject {
             return false
         }
         // Reject missing files before creating a countdown.
-        guard FileManager.default.fileExists(atPath: cue.mediaPath) else {
+        guard cue.isEmpty || FileManager.default.fileExists(atPath: cue.mediaPath) else {
             errorMessage = "Cannot open ‘\(cue.name)’: media file is missing."
             return false
         }
@@ -92,12 +113,27 @@ final class PlaybackEngine: ObservableObject {
 
     @discardableResult
     private func playImmediately(_ cue: Cue) -> Bool {
+        if cue.isEmpty {
+            let length = cue.playbackWindow(sourceDuration: 0).duration
+            silentElapsedAtStart[cue.id] = 0
+            silentStartedAt[cue.id] = Date()
+            if cue.loop { silentLoopIDs.insert(cue.id) }
+            else { silentLoopIDs.remove(cue.id) }
+            snapshots[cue.id] = Snapshot(phase: .playing, elapsed: 0, duration: length)
+            onStarted?(cue.id)
+            return true
+        }
         do {
             let url = URL(fileURLWithPath: cue.mediaPath)
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw CocoaError(.fileNoSuchFile)
             }
             let player = try AVAudioPlayer(contentsOf: url)
+            let region = cue.playbackWindow(sourceDuration: player.duration)
+            guard region.duration > 0.001 else {
+                errorMessage = "The IN/OUT region for ‘\(cue.name)’ is empty. Adjust its trim points."
+                return false
+            }
             let delegate = AudioFinishDelegate()
             delegate.didFinish = { [weak self, cueID = cue.id] didSucceed in
                 Task { @MainActor [weak self] in
@@ -106,10 +142,13 @@ final class PlaybackEngine: ObservableObject {
             }
             player.delegate = delegate
             finishDelegates[cue.id] = delegate
-            player.numberOfLoops = cue.loop ? -1 : 0
+            let fullFile = region.start <= 0.001 && region.end >= player.duration - 0.001
+            player.numberOfLoops = (cue.loop && fullFile) ? -1 : 0
             player.volume = cue.fadeInSeconds > 0 ? 0 : Float(cue.gain)
             player.prepareToPlay()
+            player.currentTime = region.start
             guard player.play() else {
+                finishDelegates.removeValue(forKey: cue.id)
                 errorMessage = "Could not start audio playback for \(cue.name)."
                 return false
             }
@@ -117,8 +156,10 @@ final class PlaybackEngine: ObservableObject {
                 player.setVolume(Float(cue.gain), fadeDuration: cue.fadeInSeconds)
             }
             players[cue.id] = player
+            clipWindows[cue.id] = (region.start, region.end)
+            activeLoops[cue.id] = cue.loop
             cueGains[cue.id] = Float(cue.gain)
-            snapshots[cue.id] = Snapshot(phase: .playing, elapsed: 0, duration: player.duration)
+            snapshots[cue.id] = Snapshot(phase: .playing, elapsed: 0, duration: region.duration)
             onStarted?(cue.id)
             return true
         } catch {
@@ -128,7 +169,16 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func togglePause(_ id: UUID) {
-        guard let player = players[id], let current = snapshots[id] else { return }
+        guard let current = snapshots[id] else { return }
+        if silentElapsedAtStart[id] != nil {
+            switch current.phase {
+            case .playing: pauseSilent(id)
+            case .paused: resumeSilent(id)
+            case .waiting, .fading: break
+            }
+            return
+        }
+        guard let player = players[id] else { return }
         switch current.phase {
         case .waiting:
             return
@@ -145,9 +195,26 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func pause(_ id: UUID) {
-        guard let state = snapshots[id], state.phase == .playing, let player = players[id] else { return }
+        guard let state = snapshots[id], state.phase == .playing else { return }
+        if silentElapsedAtStart[id] != nil { pauseSilent(id); return }
+        guard let player = players[id] else { return }
         player.pause()
         snapshots[id]?.phase = .paused
+    }
+
+    private func pauseSilent(_ id: UUID) {
+        guard let start = silentStartedAt[id], let base = silentElapsedAtStart[id] else { return }
+        let elapsed = min(base + Date().timeIntervalSince(start), snapshots[id]?.duration ?? 0)
+        silentElapsedAtStart[id] = elapsed
+        silentStartedAt.removeValue(forKey: id)
+        snapshots[id]?.elapsed = elapsed
+        snapshots[id]?.phase = .paused
+    }
+
+    private func resumeSilent(_ id: UUID) {
+        guard silentElapsedAtStart[id] != nil else { return }
+        silentStartedAt[id] = Date()
+        snapshots[id]?.phase = .playing
     }
 
     func stop(_ id: UUID, notifyRules: Bool = true) {
@@ -158,6 +225,11 @@ final class PlaybackEngine: ObservableObject {
         fadeTokens.removeValue(forKey: id)
         players[id]?.stop()
         players.removeValue(forKey: id)
+        clipWindows.removeValue(forKey: id)
+        activeLoops.removeValue(forKey: id)
+        silentStartedAt.removeValue(forKey: id)
+        silentElapsedAtStart.removeValue(forKey: id)
+        silentLoopIDs.remove(id)
         finishDelegates.removeValue(forKey: id)
         cueGains.removeValue(forKey: id)
         dimFactors.removeValue(forKey: id)
@@ -168,6 +240,7 @@ final class PlaybackEngine: ObservableObject {
     func fadeOut(_ cue: Cue, overrideSeconds: Double? = nil) {
         // A queued cue has not produced audio, so Fade behaves as cancel.
         if pendingTokens[cue.id] != nil { stop(cue.id); return }
+        if cue.isEmpty { stop(cue.id); return }
         guard let player = players[cue.id] else { return }
         let seconds = overrideSeconds.map { max(0, min($0, 600)) } ?? cue.fadeOutSeconds
         guard seconds > 0 else { stop(cue.id); return }
@@ -206,16 +279,28 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func seek(_ id: UUID, to fraction: Double) {
-        guard let player = players[id], player.duration > 0,
-              snapshots[id]?.phase != .fading else { return }
-        // Keep the seek position strictly before EOF, preventing an accidental natural completion.
-        let position = min(max(fraction, 0), 0.9999) * player.duration
-        player.currentTime = position
-        snapshots[id]?.elapsed = player.currentTime
+        guard let state = snapshots[id], state.phase != .fading, state.phase != .waiting else { return }
+        let position = min(max(fraction, 0), 0.9999) * state.duration
+        if silentElapsedAtStart[id] != nil {
+            silentElapsedAtStart[id] = position
+            if silentStartedAt[id] != nil { silentStartedAt[id] = Date() }
+            snapshots[id]?.elapsed = position
+            return
+        }
+        guard let player = players[id], let region = clipWindows[id] else { return }
+        player.currentTime = region.start + position
+        snapshots[id]?.elapsed = position
     }
 
     func setLoop(_ enabled: Bool, for id: UUID) {
-        players[id]?.numberOfLoops = enabled ? -1 : 0
+        if silentElapsedAtStart[id] != nil {
+            if enabled { silentLoopIDs.insert(id) } else { silentLoopIDs.remove(id) }
+        }
+        activeLoops[id] = enabled
+        if let player = players[id], let region = clipWindows[id] {
+            let fullFile = region.start <= 0.001 && region.end >= player.duration - 0.001
+            player.numberOfLoops = (enabled && fullFile) ? -1 : 0
+        }
     }
 
     func stopAll() {
@@ -223,7 +308,18 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func handleCompletion(_ id: UUID, success: Bool) {
-        guard players[id] != nil, snapshots[id]?.phase == .playing else { return }
+        guard let player = players[id], snapshots[id]?.phase == .playing else { return }
+        if success, activeLoops[id] == true, let region = clipWindows[id] {
+            player.currentTime = region.start
+            if player.play() {
+                snapshots[id]?.elapsed = 0
+                return
+            }
+        }
+        finishNaturally(id, success: success)
+    }
+
+    private func finishNaturally(_ id: UUID, success: Bool = true) {
         stop(id, notifyRules: false)
         if success { onNaturalFinish?(id) }
         else { errorMessage = "Audio playback could not finish successfully." }
@@ -236,16 +332,44 @@ final class PlaybackEngine: ObservableObject {
             snapshots[id] = state
         }
         for (id, player) in players {
-            guard var state = snapshots[id] else { continue }
+            guard var state = snapshots[id], let region = clipWindows[id] else { continue }
             if state.phase != .paused && !player.isPlaying {
-                // A completed file is handled by the delegate. Interrupted players
-                // must not remain stuck in a misleading PLAYING state.
+                // Natural EOF is delivered by AVAudioPlayerDelegate.
                 if state.phase == .fading { stop(id, notifyRules: false) }
                 continue
             }
-            state.elapsed = player.currentTime
-            state.duration = player.duration
+            // Check OUT while playing: the original audio file is never modified.
+            if state.phase == .playing && player.currentTime >= region.end - 0.005 {
+                if activeLoops[id] == true {
+                    player.currentTime = region.start
+                    if !player.isPlaying { _ = player.play() }
+                    state.elapsed = 0
+                    snapshots[id] = state
+                } else {
+                    finishNaturally(id)
+                }
+                continue
+            }
+            state.elapsed = min(max(player.currentTime - region.start, 0), state.duration)
             snapshots[id] = state
+        }
+        for id in Array(silentStartedAt.keys) {
+            guard let started = silentStartedAt[id], let base = silentElapsedAtStart[id],
+                  var state = snapshots[id], state.phase == .playing else { continue }
+            let elapsed = base + Date().timeIntervalSince(started)
+            if elapsed >= state.duration {
+                if silentLoopIDs.contains(id) && state.duration > 0 {
+                    silentElapsedAtStart[id] = 0
+                    silentStartedAt[id] = Date()
+                    state.elapsed = 0
+                    snapshots[id] = state
+                } else {
+                    finishNaturally(id)
+                }
+            } else {
+                state.elapsed = elapsed
+                snapshots[id] = state
+            }
         }
     }
 }
