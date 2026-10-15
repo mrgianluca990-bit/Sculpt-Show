@@ -106,7 +106,7 @@ struct WorkspaceView: View {
 
                 Divider().overlay(Skin.stroke)
                 inspector
-                    .frame(width: 292)
+                    .frame(width: 346)
             }
             statusBar
         }
@@ -347,31 +347,8 @@ struct WorkspaceView: View {
                 .toggleStyle(.switch)
 
                 Divider()
-                Text("MEDIA FILE")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(Skin.soft)
-                Text(cue.isEmpty ? "EMPTY CUE · no audio file" : cue.mediaPath)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(Skin.soft)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                CueContentsEditor(cue: cue, listID: listID)
 
-                HStack {
-                    Button(cue.isEmpty ? "Attach Audio…" : "Replace Audio…") {
-                        store.chooseMedia(for: cue.id, in: listID, using: playback)
-                    }
-                    if !cue.isEmpty {
-                        Button("Clear Audio") {
-                            store.clearMedia(for: cue.id, in: listID, using: playback)
-                        }
-                    }
-                }
-                .buttonStyle(.borderless)
-                if !cue.isEmpty && !FileManager.default.fileExists(atPath: cue.mediaPath) {
-                    Label("Media file is missing", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundColor(.orange)
-                        .font(.caption)
-                }
                 if let active = playback.snapshots[cue.id] {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(active.phase == .waiting ? "START IN" : "REMAINING")
@@ -429,7 +406,7 @@ struct WorkspaceView: View {
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.5.0")
+            Text("SCULPT SHOW 0.6.0")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -540,9 +517,9 @@ private struct CueListPanel: View {
                     Button {
                         store.addEmptyCue(to: list.id)
                     } label: {
-                        Label("EMPTY", systemImage: "plus.square.dashed")
+                        Label("NEW CUE", systemImage: "plus.square.dashed")
                     }
-                    .help("Insert a silent timed cue after the selected cue")
+                    .help("Create an empty cue container after the selected cue")
                     Spacer(minLength: 2)
                     Button {
                         editingRules = true
@@ -569,7 +546,7 @@ private struct CueListPanel: View {
                             Text("NO CUES YET")
                                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                                 .foregroundColor(Skin.soft)
-                            Text("Import audio or drop audio files here")
+                            Text("Create a cue or drag a cue from another list")
                                 .font(.caption)
                                 .foregroundColor(Skin.soft)
                         }
@@ -582,7 +559,11 @@ private struct CueListPanel: View {
                 }
                 .padding(10)
             }
-            .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
+            .onDrop(of: [UTType.fileURL.identifier, UTType.utf8PlainText.identifier], isTargeted: nil) { providers in
+                // A drop on the list background appends a moved cue. Row drops insert before the row.
+                if CueDragDrop.accept(providers, in: list.id, before: nil, store: store, playback: playback) {
+                    return true
+                }
                 let matching = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
                 for provider in matching {
                     _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -628,6 +609,29 @@ private struct CueRow: View {
         .background(rowBackground, in: RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(rowOutline, lineWidth: 1))
         .opacity(cue.enabled ? 1 : 0.53)
+        .onDrag { CueDragDrop.provider(for: cue.id) }
+        .onDrop(of: [UTType.utf8PlainText.identifier, UTType.fileURL.identifier], isTargeted: nil) { providers in
+            if CueDragDrop.accept(providers, in: listID, before: cue.id, store: store, playback: playback) {
+                return true
+            }
+            // Dropping audio onto a cue adds it as content instead of creating another cue.
+            let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+            for provider in files {
+                _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    let url: URL?
+                    if let file = item as? URL { url = file }
+                    else if let file = item as? NSURL { url = file as URL }
+                    else if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
+                    else { url = nil }
+                    if let url, url.isFileURL {
+                        DispatchQueue.main.async {
+                            store.attachAudioURLs([url], to: cue.id, in: listID, using: playback)
+                        }
+                    }
+                }
+            }
+            return !files.isEmpty
+        }
     }
 
     private var rowBackground: Color {
@@ -674,7 +678,7 @@ private struct CueRow: View {
                 .lineLimit(1)
                 .foregroundColor(cue.enabled ? .white : Skin.soft)
             HStack(spacing: 6) {
-                Image(systemName: cue.isEmpty ? "timer" : "waveform")
+                Image(systemName: cue.hasAudio ? "waveform" : cue.hasTimecode ? "clock" : "square.dashed")
                 Text(playbackLabel)
             }
             .font(.system(size: 10, design: .monospaced))
@@ -684,8 +688,9 @@ private struct CueRow: View {
 
     private var playbackLabel: String {
         guard let state else {
-            if cue.isEmpty { return "EMPTY  ·  \(String(format: "%.1f", cue.durationSeconds))s" }
-            return cue.inPointSeconds > 0 || cue.outPointSeconds != nil ? "AUDIO  ·  TRIMMED" : "AUDIO"
+            let type = cue.isEmpty ? "RULES / EMPTY" : cue.hasAudio ? "AUDIO ×\(cue.audioElements.count)" : "TIMECODE"
+            let length = cue.durationMode == .fixed ? String(format: "%.1fs", cue.durationSeconds) : "SOURCE"
+            return "\(type)  ·  \(length)"
         }
         if state.phase == .waiting { return "WAIT  −\(clock(state.remaining))" }
         return "\(clock(state.elapsed))  •  −\(clock(state.remaining))"
@@ -735,7 +740,7 @@ private struct CueRow: View {
         .disabled(state == nil || state?.phase == .fading || state?.phase == .waiting)
         .padding(.horizontal, 10)
         .frame(height: 17)
-        .help("Click or drag to seek within a playing or paused cue")
+        .help("Click to seek in the cue container timeline")
     }
 
     private func clock(_ seconds: TimeInterval) -> String {

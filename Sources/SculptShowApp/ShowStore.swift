@@ -1,4 +1,5 @@
 import AppKit
+import AVFAudio
 import Foundation
 import SculptShowCore
 import UniformTypeIdentifiers
@@ -85,7 +86,7 @@ final class ShowStore: ObservableObject {
 
     func importAudio(to listID: UUID) {
         let panel = NSOpenPanel()
-        panel.message = "Choose one or more audio files to add as cues"
+        panel.message = "Import audio as new cue containers"
         panel.allowedContentTypes = [.audio]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
@@ -99,6 +100,15 @@ final class ShowStore: ObservableObject {
         var updated = show
         let newIDs = updated.addAudio(urls, to: listID)
         guard !newIDs.isEmpty else { return }
+        // Newly imported audio is still inside a normal, independently timed cue.
+        // Initial duration defaults to the media length where available.
+        for (id, url) in zip(newIDs, urls.filter(\.isFileURL)) {
+            let length = (try? AVAudioPlayer(contentsOf: url))?.duration ?? 5
+            updated.updateCue(id, in: listID) {
+                $0.durationSeconds = max(0.1, length)
+                $0.durationMode = .fixed
+            }
+        }
         commit(updated)
         cueSelection[listID] = newIDs[0]
         selectedListID = listID
@@ -113,28 +123,101 @@ final class ShowStore: ObservableObject {
     }
 
     func chooseMedia(for cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        attachAudio(to: cueID, in: listID, using: playback)
+    }
+
+    /// Audio is an element added to the cue container, not a cue type.
+    func attachAudio(to cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
         let panel = NSOpenPanel()
-        panel.title = "Attach Audio to Cue"
+        panel.title = "Add Audio to Cue Container"
         panel.allowedContentTypes = [.audio]
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        playback.stop(cueID)
-        editCue(cueID, list: listID) {
-            $0.mediaPath = url.path
-            $0.inPointSeconds = 0
-            $0.outPointSeconds = nil
+        guard panel.runModal() == .OK else { return }
+        playback.stop(cueID, notifyRules: false)
+        editCue(cueID, list: listID) { cue in
+            cue.elements.append(contentsOf: panel.urls.map(CueElement.audio))
+        }
+    }
+
+    func attachAudioURLs(_ urls: [URL], to cueID: UUID, in listID: UUID,
+                         using playback: PlaybackEngine) {
+        guard !urls.isEmpty else { return }
+        var updated = show
+        guard updated.appendAudio(urls, to: cueID) else { return }
+        playback.stop(cueID, notifyRules: false)
+        commit(updated)
+        select(cueID, in: listID)
+    }
+
+    func addTimecode(to cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        playback.stop(cueID, notifyRules: false)
+        editCue(cueID, list: listID) { $0.elements.append(.timecode()) }
+    }
+
+    func removeElement(_ elementID: UUID, from cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        playback.stop(cueID, notifyRules: false)
+        editCue(cueID, list: listID) { $0.elements.removeAll { $0.id == elementID } }
+    }
+
+    func setElementStart(_ elementID: UUID, in cueID: UUID, listID: UUID, to seconds: Double) {
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[index].startSeconds = max(0, seconds)
+        }
+    }
+
+    func setElementTrim(_ elementID: UUID, in cueID: UUID, listID: UUID,
+                        start: Double? = nil, end: Double? = nil, resetEnd: Bool = false) {
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            if let start { cue.elements[index].inSeconds = max(0, start) }
+            if let end { cue.elements[index].outSeconds = max(0, end) }
+            if resetEnd { cue.elements[index].outSeconds = nil }
+        }
+    }
+
+    func setTimecode(_ elementID: UUID, in cueID: UUID, listID: UUID, to value: String) {
+        let frameRate = show.cue(cueID)?.elements.first(where: { $0.id == elementID })?.frameRate ?? 25
+        guard CueElement.isValidTimecode(value, frameRate: frameRate) else {
+            errorMessage = "Use timecode HH:MM:SS:FF with frames below the selected FPS."
+            return
+        }
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[index].timecodeStart = value
+        }
+    }
+
+    func setTimecodeFrameRate(_ elementID: UUID, in cueID: UUID, listID: UUID, to fps: Int) {
+        guard [24, 25, 30].contains(fps),
+              let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID }) else { return }
+        guard CueElement.isValidTimecode(element.timecodeStart, frameRate: fps) else {
+            errorMessage = "Current timecode frame exceeds the selected FPS. Change the timecode first."
+            return
+        }
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[index].frameRate = fps
         }
     }
 
     func clearMedia(for cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
-        playback.stop(cueID)
-        editCue(cueID, list: listID) {
-            $0.mediaPath = ""
-            $0.inPointSeconds = 0
-            $0.outPointSeconds = nil
+        playback.stop(cueID, notifyRules: false)
+        editCue(cueID, list: listID) { $0.elements.removeAll { $0.kind == .audio } }
+    }
+
+    /// An explicit container duration is independent of the attached media.
+    func setCueDuration(_ id: UUID, in list: UUID, to seconds: Double) {
+        editCue(id, list: list) {
+            $0.durationSeconds = min(max(0.1, seconds), 86400)
+            $0.durationMode = .fixed
         }
+    }
+
+    func useSourceDuration(_ id: UUID, in list: UUID, enabled: Bool) {
+        editCue(id, list: list) { $0.durationMode = enabled ? .mediaEnd : .fixed }
     }
 
     func setTrimIn(_ id: UUID, in list: UUID, to seconds: Double) {
@@ -150,7 +233,7 @@ final class ShowStore: ObservableObject {
     }
 
     func setEmptyDuration(_ id: UUID, in list: UUID, to seconds: Double) {
-        editCue(id, list: list) { $0.durationSeconds = min(max(0, seconds), 86400) }
+        setCueDuration(id, in: list, to: seconds)
     }
 
     func renameCue(_ id: UUID, in list: UUID, to name: String) {
@@ -212,6 +295,27 @@ final class ShowStore: ObservableObject {
         updated.moveCue(cueID, in: list, by: offset)
         guard updated != show else { return }
         commit(updated)
+    }
+
+    /// Drag-and-drop can reorder inside a list or move a cue between lists.
+    /// The active cue is stopped before moving, to keep rules and PLAY LIST deterministic.
+    @discardableResult
+    func relocateCue(_ cueID: UUID, to listID: UUID, before targetID: UUID?,
+                     using playback: PlaybackEngine) -> Bool {
+        guard let origin = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }) else { return false }
+        var updated = show
+        guard updated.relocateCue(cueID, to: listID, before: targetID), updated != show else { return false }
+        // Cancel pending rules targeting the moved cue and avoid orphaning a list playback sequence.
+        cancelPendingRules(targeting: [cueID])
+        playingLists.removeValue(forKey: origin.id)
+        if origin.id != listID { playingLists.removeValue(forKey: listID) }
+        playback.stop(cueID, notifyRules: false)
+        commit(updated)
+        if origin.id != listID && cueSelection[origin.id] == cueID {
+            cueSelection[origin.id] = updated.cueLists.first(where: { $0.id == origin.id })?.cues.first?.id
+        }
+        select(cueID, in: listID)
+        return true
     }
 
     func fireSelected(using playback: PlaybackEngine) {

@@ -1,0 +1,35 @@
+SCULPT SHOW 0.6.0 - CUE CONTAINERS & DRAG AND DROP
+
+The archive includes changed source files, not a compiled Mac application.
+Upload these files to mrgianluca990-bit/Sculpt-Show on GitHub, branch main.
+
+1) Open https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowCore
+   Replace Show.swift (Add file > Upload files > Commit changes).
+
+2) Open https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowApp
+   Upload/replace PlaybackEngine.swift, ShowStore.swift, WorkspaceView.swift,
+   CueTimingEditor.swift; add CueContentsEditor.swift and CueDragDrop.swift.
+
+3) Open https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Tests/SculptShowCoreTests
+   Add ContainerTests.swift.
+
+4) Open https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Scripts
+   Replace Info.plist.
+
+5) From repository root, replace README.md (optional documentation).
+
+GitHub Actions starts the build automatically for every commit. Use the
+LAST successful build AFTER uploading ALL files. A partially uploaded
+combination of 0.5 and 0.6 sources is not expected to compile.
+
+Get the macOS app after a successful build:
+https://github.com/mrgianluca990-bit/Sculpt-Show/actions
+
+PREP: back up .scshow files before reopening them in 0.6. 0.6 can migrate
+0.5 projects, but the new container format cannot be read by old builds.
+
+TEST: 38/38 portable Swift model tests passed on Linux. Swift sources
+passed syntax parsing. Native macOS UI/audio compilation is not verified yet.
+
+IMPORTANT: timecode is stored and edited, but does not output LTC/MTC yet.
+The playback engine uses AVAudioPlayer and is not sample-accurate.
