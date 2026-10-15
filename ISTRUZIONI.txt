@@ -1,32 +1,27 @@
-SCULPT SHOW 0.7.0 - AGGIORNAMENTO
+SCULPT SHOW 0.8.0 — INSTALLAZIONE SU GITHUB (SENZA TERMINALE)
 
-1. Estrarre Sculpt-Show-v0.7-update.zip.
-2. Aprire il repository:
-   https://github.com/mrgianluca990-bit/Sculpt-Show
-3. Caricare i file alle stesse posizioni indicate nello ZIP, sostituendo quelli esistenti.
-   (GitHub web: entrare nella cartella corretta > Add file > Upload files > Commit changes.)
+Repository: https://github.com/mrgianluca990-bit/Sculpt-Show
 
-FILE NUOVI:
-- Sources/SculptShowCore/CueClock.swift
-- Sources/SculptShowApp/TimecodeReader.swift
-- Tests/SculptShowCoreTests/CueClockTests.swift
+I file sono organizzati nelle relative cartelle. Aggiungi/sostituisci:
 
-FILE SOSTITUITI:
-- Sources/SculptShowApp/CueDragDrop.swift
-- Sources/SculptShowApp/CueTimingEditor.swift
-- Sources/SculptShowApp/WorkspaceView.swift
-- Sources/SculptShowApp/ShowStore.swift
-- Scripts/Info.plist
-- README.md (solo documentazione, facoltativo)
+Sources/SculptShowCore/CueNavigator.swift
+Sources/SculptShowApp/ShowStore.swift
+Sources/SculptShowApp/WorkspaceView.swift
+Sources/SculptShowApp/MIDIControl.swift
+Sources/SculptShowApp/CueDragDrop.swift
+Sources/SculptShowApp/SculptShowApp.swift
+Tests/SculptShowCoreTests/NavigationTests.swift
+Scripts/Info.plist
+README.md
 
-ATTENZIONE: completare il caricamento di TUTTI i file prima di giudicare un eventuale errore
-GitHub Actions: con upload intermedi alcune compilazioni possono fallire perche' mancano i nuovi file.
+ISTRUZIONI:
+1. Apri la repository GitHub e la sottocartella indicata nel percorso (es. Sources/SculptShowApp).
+2. Con Add file > Upload files trascina i file corrispondenti, sostituendo gli esistenti.
+3. Conferma Commit changes su main. Ripeti per le altre cartelle.
+4. Carica TUTTI i file prima di considerare definitivo il risultato della build.
+5. Apri GitHub > Actions > ultima build verde > Artifacts > Sculpt-Show-macOS.
+6. Estrai il pacchetto due volte per arrivare a Sculpt Show.app.
 
-4. Verificare la build su:
-   https://github.com/mrgianluca990-bit/Sculpt-Show/actions
-5. Dalla build VERDE scaricare Artifacts > Sculpt-Show-macOS.
-
-TEST: rinomina cue; durata 01:02:03:004; drag entro e fra liste; Move to Cue List dal
-menu destro; Rules della cue prima e dopo lo spostamento; ingresso MTC reale su CoreMIDI.
-
-Timecode reader 0.7: INPUT MIDI MTC. Non legge ancora LTC audio.
+NOTA: non serve modificare .github/workflows/macos-build.yml.
+NOTA: non eliminare manualmente gli altri file.
+NOTA: non caricare solo README o .plist: la nuova funzionalità richiede tutti i file sorgenti indicati.

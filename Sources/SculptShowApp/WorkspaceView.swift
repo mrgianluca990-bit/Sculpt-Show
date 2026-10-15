@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import SculptShowCore
 import UniformTypeIdentifiers
 
@@ -87,6 +88,8 @@ struct WorkspaceView: View {
     @State private var rulesScope: RuleScope?
     @StateObject private var timecodeReader = TimecodeReader()
     @State private var showingTimecodeReader = false
+    @StateObject private var midi = MIDIControl()
+    @State private var showingMIDISettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -114,6 +117,20 @@ struct WorkspaceView: View {
         }
         .background(Skin.base)
         .onAppear {
+            midi.onCommand = { [weak store, weak playback] command in
+                guard let store, let playback else { return }
+                switch command {
+                case .go: store.fireSelected(using: playback)
+                case .pauseAll: store.togglePauseAll(using: playback)
+                case .stopAll: store.stopAll(using: playback)
+                case .fadeAll: store.fadeAll(using: playback)
+                case .previous:
+                    if let list = store.selectedListID { store.selectPrevious(in: list) }
+                case .next:
+                    if let list = store.selectedListID { store.selectNext(in: list) }
+                case .nextList: store.selectNextList()
+                }
+            }
             playback.onNaturalFinish = { [weak store, weak playback] id in
                 guard let store, let playback else { return }
                 store.didFinishNaturally(id, using: playback)
@@ -133,6 +150,9 @@ struct WorkspaceView: View {
         }
         .sheet(isPresented: $showingTimecodeReader) {
             TimecodeReaderView().environmentObject(timecodeReader)
+        }
+        .sheet(isPresented: $showingMIDISettings) {
+            MIDIControlSettings().environmentObject(midi)
         }
         .alert("Sculpt Show", isPresented: Binding(
             get: { store.errorMessage != nil || playback.errorMessage != nil },
@@ -189,77 +209,75 @@ struct WorkspaceView: View {
     }
 
     private var transport: some View {
-        HStack(spacing: 16) {
-            Button {
-                store.fireSelected(using: playback)
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "play.fill")
-                    Text("GO")
-                        .font(.system(size: 22, weight: .black, design: .rounded))
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Button { store.fireSelected(using: playback) } label: {
+                    Label("GO", systemImage: "play.fill")
+                        .font(.system(size: 21, weight: .black, design: .rounded))
+                        .foregroundColor(.black)
+                        .frame(width: 145, height: 53)
+                        .background(Skin.green, in: RoundedRectangle(cornerRadius: 7))
                 }
-                .foregroundColor(.black)
-                .frame(width: 142, height: 56)
-                .background(Skin.green, in: RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-            .help("Fire the selected cue • Space")
+                .buttonStyle(.plain)
+                .disabled(store.selectedCue == nil)
+                .help("GO · Space")
 
-            Button {
-                if let id = store.selectedListID { store.selectNext(in: id) }
-            } label: {
-                Label("NEXT", systemImage: "arrow.down")
-                    .font(.system(size: 13, weight: .bold))
-                    .frame(height: 56)
-                    .padding(.horizontal, 14)
-                    .background(Skin.raised, in: RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-
-            Button { store.stopAll(using: playback) } label: {
-                Label("STOP ALL", systemImage: "stop.fill")
-                    .font(.system(size: 13, weight: .bold))
-                    .frame(height: 56)
-                    .padding(.horizontal, 14)
-                    .background(Color.red.opacity(0.21), in: RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-            Button {
-                showingTimecodeReader = true
-            } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("MTC READER  \(timecodeReader.locked ? "LOCK" : "NO SIGNAL")")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(timecodeReader.locked ? Skin.green : Skin.soft)
-                    Text(timecodeReader.frame?.display ?? "--:--:--:--")
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(Skin.gold)
-                }
-                .padding(8)
-                .background(Skin.raised, in: RoundedRectangle(cornerRadius: 7))
-            }
-            .buttonStyle(.plain)
-            .help("Select a CoreMIDI input and read incoming MIDI timecode")
-            Toggle("AUTO NEXT", isOn: $store.advanceAfterGO)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .help("After GO, select the next enabled cue in the current list")
-            VStack(alignment: .trailing, spacing: 5) {
-                Text("ACTIVE CUES")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(Skin.soft)
-                Text("\(playback.snapshots.count)")
-                    .font(.system(size: 29, weight: .semibold, design: .monospaced))
+                globalTransportButton("PAUSE ALL", "pause.fill") { store.togglePauseAll(using: playback) }
+                globalTransportButton("STOP ALL", "stop.fill", red: true) { store.stopAll(using: playback) }
+                globalTransportButton("FADE ALL", "arrow.down.right") { store.fadeAll(using: playback) }
+                Spacer(minLength: 2)
+                Text("ACTIVE  \(playback.snapshots.count)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(Skin.gold)
             }
-            .padding(.trailing, 9)
+            HStack(spacing: 10) {
+                globalTransportButton("PREVIOUS", "chevron.up") {
+                    if let id = store.selectedListID { store.selectPrevious(in: id) }
+                }
+                globalTransportButton("NEXT", "chevron.down") {
+                    if let id = store.selectedListID { store.selectNext(in: id) }
+                }
+                globalTransportButton("NEXT LIST", "rectangle.stack") { store.selectNextList() }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("SELECTED: \(store.show.cueLists.first(where: { $0.id == store.selectedListID })?.name ?? "—")")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(Skin.soft)
+                        .lineLimit(1)
+                    Text(store.selectedCue?.name ?? "No cue selected")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(Skin.gold)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Toggle("AUTO NEXT", isOn: $store.advanceAfterGO)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                Button { showingMIDISettings = true } label: {
+                    Label(midi.selectedID == nil ? "MIDI SETUP" : "MIDI CONNECTED", systemImage: "pianokeys")
+                }
+                .help("Learn USB MIDI buttons for live transport and navigation")
+                Button { showingTimecodeReader = true } label: {
+                    Text(timecodeReader.frame?.display ?? "MTC READER")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                }
+            }
+            .font(.system(size: 11, weight: .semibold))
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 12)
+        .buttonStyle(.bordered)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 9)
         .background(Skin.panel)
+    }
+
+    private func globalTransportButton(_ name: String, _ symbol: String,
+                                       red: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(name, systemImage: symbol)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .frame(minHeight: 33)
+        }
+        .tint(red ? .red : Skin.soft)
     }
 
     private var inspector: some View {
@@ -430,7 +448,7 @@ struct WorkspaceView: View {
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.7.0")
+            Text("SCULPT SHOW 0.8.0")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -583,9 +601,8 @@ private struct CueListPanel: View {
                 }
                 .padding(10)
             }
-            .dropDestination(for: CueDragPayload.self) { items, _ in
-                guard let item = items.first else { return false }
-                return store.relocateCue(item.cueID, to: list.id, before: nil, using: playback)
+            .onDrop(of: [UTType.plainText.identifier], isTargeted: nil) { providers in
+                dropCueProviders(providers, to: list.id, before: nil)
             }
             .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
                 let matching = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
@@ -612,6 +629,18 @@ private struct CueListPanel: View {
             RulesEditor(scope: .cueList(list.id)).environmentObject(store)
         }
     }
+
+    private func dropCueProviders(_ providers: [NSItemProvider], to destinationID: UUID, before targetID: UUID?) -> Bool {
+        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
+        _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let text = object as? String,
+                  let id = CueDragDrop.decode(text) else { return }
+            DispatchQueue.main.async {
+                _ = store.relocateCue(id, to: destinationID, before: targetID, using: playback)
+            }
+        }
+        return true
+    }
 }
 
 private struct CueRow: View {
@@ -621,7 +650,7 @@ private struct CueRow: View {
     let listID: UUID
     let cueNumber: Int
 
-    private var selected: Bool { store.cueSelection[listID] == cue.id }
+    private var selected: Bool { store.selectedListID == listID && store.selectedCueID == cue.id }
     private var state: PlaybackEngine.Snapshot? { playback.snapshots[cue.id] }
     @State private var pendingSeek: Double?
     @State private var editingName = false
@@ -638,23 +667,21 @@ private struct CueRow: View {
                     in: RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(rowOutline, lineWidth: 1))
         .opacity(cue.enabled ? 1 : 0.53)
-        .draggable(CueDragPayload(cueID: cue.id))
-        .dropDestination(for: CueDragPayload.self) { items, location in
-            guard let item = items.first, item.cueID != cue.id else { return false }
+        .onDrop(of: [UTType.plainText.identifier], isTargeted: $dropHighlighted) { providers, location in
+            guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
+            let rows = store.show.cueLists.first(where: { $0.id == listID })?.cues ?? []
             let target: UUID?
-            if location.y < 38 {
-                target = cue.id
-            } else {
-                let rows = store.show.cueLists.first(where: { $0.id == listID })?.cues ?? []
-                if let index = rows.firstIndex(where: { $0.id == cue.id }), index + 1 < rows.count {
-                    target = rows[index + 1].id
-                } else {
-                    target = nil
+            if location.y < 38 { target = cue.id }
+            else if let index = rows.firstIndex(where: { $0.id == cue.id }), index + 1 < rows.count { target = rows[index + 1].id }
+            else { target = nil }
+            _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let text = object as? String,
+                      let id = CueDragDrop.decode(text) else { return }
+                DispatchQueue.main.async {
+                    _ = store.relocateCue(id, to: listID, before: target, using: playback)
                 }
             }
-            return store.relocateCue(item.cueID, to: listID, before: target, using: playback)
-        } isTargeted: { targeted in
-            dropHighlighted = targeted
+            return true
         }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
             // Dropping audio onto a cue adds it as content instead of creating another cue.
@@ -729,8 +756,11 @@ private struct CueRow: View {
     private var controlsRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "line.3.horizontal")
-                .foregroundColor(Skin.soft)
-                .help("Drag this cue to reorder or move it to another cue list")
+                .foregroundColor(Skin.gold)
+                .frame(width: 23, height: 39)
+                .contentShape(Rectangle())
+                .onDrag { CueDragDrop.provider(for: cue.id) }
+                .help("Drag this handle to reorder or move to another list")
             selectionButton
             statusIndicator
             cueActions

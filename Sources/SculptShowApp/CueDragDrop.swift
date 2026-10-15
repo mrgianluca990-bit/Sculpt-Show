@@ -1,18 +1,18 @@
+import AppKit
 import Foundation
-import SwiftUI
-import CoreTransferable
-import UniformTypeIdentifiers
 
-// Distinct native transfer type prevents audio-file drops and ordinary text
-// from being misidentified as a cue move.
-extension UTType {
-    static let sculptShowCue = UTType(exportedAs: "com.gianlucavergalito.sculptshow.cue", conformingTo: .data)
-}
+/// Native macOS clipboard transport for an internal cue drag.
+/// A tagged NSString works with NSItemProvider/SwiftUI .onDrop even when the app
+/// has not installed a custom uniform type declaration.
+enum CueDragDrop {
+    private static let prefix = "sculpt-cue:"
 
-struct CueDragPayload: Codable, Transferable {
-    let cueID: UUID
+    static func provider(for id: UUID) -> NSItemProvider {
+        NSItemProvider(object: (prefix + id.uuidString) as NSString)
+    }
 
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .sculptShowCue)
+    static func decode(_ raw: String) -> UUID? {
+        guard raw.hasPrefix(prefix) else { return nil }
+        return UUID(uuidString: String(raw.dropFirst(prefix.count)))
     }
 }

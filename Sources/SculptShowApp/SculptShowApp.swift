@@ -16,12 +16,12 @@ struct SculptShowApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Show") {
-                    if showStore.newShow() { playback.stopAll() }
+                    if showStore.newShow() { showStore.stopAll(using: playback) }
                 }
                 .keyboardShortcut("n", modifiers: .command)
 
                 Button("Open Show…") {
-                    if showStore.openShow() { playback.stopAll() }
+                    if showStore.openShow() { showStore.stopAll(using: playback) }
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }
@@ -42,7 +42,19 @@ struct SculptShowApp: App {
                 }
                 .keyboardShortcut(.downArrow, modifiers: [.command])
 
-                Button("Stop All") { playback.stopAll() }
+                Button("Previous Cue") {
+                    if let id = showStore.selectedListID { showStore.selectPrevious(in: id) }
+                }
+                .keyboardShortcut(.upArrow, modifiers: [.command])
+
+                Button("Next Cue List") { showStore.selectNextList() }
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+
+                Button("Pause / Resume All") { showStore.togglePauseAll(using: playback) }
+                    .keyboardShortcut("p", modifiers: [.command, .option])
+                Button("Fade All") { showStore.fadeAll(using: playback) }
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                Button("Stop All") { showStore.stopAll(using: playback) }
                     .keyboardShortcut(".", modifiers: .command)
             }
         }

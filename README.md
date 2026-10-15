@@ -1,60 +1,29 @@
-# Sculpt Show 0.7.0 — Cue workflow + MIDI Time Code reader
+# Sculpt Show 0.8.0 — Global Live Transport and MIDI Control
 
-Independent macOS cue-playback/show-control application. **Not a Merging Technologies product.**
+Native macOS application, Intel and Apple Silicon. Functional reimplementation for Sculpt Show; not Merging Ovation.
 
-## Changes from 0.6.0
+## Changes from 0.7
 
-### Drag and drop
+- **Exactly one selected cue across the entire show.** Selection is represented by a single selectedCueID and selectedListID, not a separate selection stored for every cue list.
+- **Global transport:** GO, Pause All / Resume All, Stop All, Fade All, Previous Cue, Next Cue, Next Cue List. Previous and Next skip disabled cues and stop at list boundaries; Next List cycles across lists, selecting the first enabled cue there. Existing per-list PLAY LIST / STOP / FIRE remain available.
+- **USB MIDI controller:** CoreMIDI source picker and MIDI Learn for the seven global commands. Supports MIDI Note On and CC (rising across 64); mapping stored in local UserDefaults, not in the show. Select the controller and press each hardware key once in Learn mode. Supports multiple MIDI sources being shown, but connects only the selected one.
+- **Cue drag:** drag the highlighted three-line grip on the left side of each cue; drop in the top or bottom half of a cue to place before or after, or in empty space in a list to append. Implemented with native `NSItemProvider` text payload tagged with `sculpt-cue:` instead of SwiftUI `Transferable` custom UTI, which failed in 0.7 on the user's Mac. Audio-file drops remain separate. Context menu **Move to Cue List** is also retained.
+- **Safety:** Stop All cancels pending Rules and cue starts; Fade All cancels pending Rules and suppresses STOP-triggered rule cascades. Pause All is toggled by a second press to Resume All.
+- **Existing cue name and HH:MM:SS:MMM time editor retained.** Original .scshow format is unchanged; source audio and Rules survive moving a cue.
 
-- A cue is dragged as its own **native SwiftUI transferable type** (not arbitrary plain text).
-- Drag onto the **top half** of a cue to place before it, or the **bottom half** to place after it.
-- Drag into a cue list's blank area to append, including moving between lists.
-- Cue ID, contained media, settings and **cue-local Interaction Rules** stay intact.
-- Drag an **audio file** onto a cue to add it as another element (separate file-drop handling).
-- Fallback: right-click a cue > **Move to Cue List**. This uses the same relocation model.
-- A cue that is currently playing is stopped before moving to prevent an active Rule from referencing a changed playlist position. Previous/Next Rule targets naturally resolve relative to the *new* list/order. Rules inherited from a source cue list do not move because they belong to that list, not to the cue.
+## Operator test (macOS)
 
-### Cue naming
-
-- Click the Cue name in the Inspector to open a focused Rename window; Save/Return commits once. No model changes during typing.
-- Right-click a cue > Rename Cue... also works.
-
-### Duration
-
-- Typed **HH:MM:SS:MMM** in the Cue Inspector, e.g. `00:01:30:250` for 90.25 s.
-- Last field is **milliseconds** (3 digits), not timecode frames.
-- Explicit duration belongs to the container, independent of attached media.
-- Range: `00:00:00:000` to `24:00:00:000`.
-- Time input is parsed and formatted without sub-millisecond rounding drift.
-
-### Incoming MTC reader
-
-- Click the **MTC READER** display in the transport to open the reader.
-- Refresh connected CoreMIDI sources, select one, and watch incoming MIDI Time Code quarter-frame messages.
-- Shows `HH:MM:SS:FF`, nominal FPS (24, 25, 29.97 drop-frame, 30), and signal/lock indication.
-- MTC output is the frame count provided by the source; this initial reader does **not** interpolate missing frames, compensate transport latency, chase the cue-playback engine, or trigger Rules.
-- **Audio LTC input is not implemented** in 0.7. This will require a separate decoder and input routing UI.
-
-## Build / tests
-
-- On macOS: `bash Scripts/build-macos.sh` or push source updates to GitHub Actions.
-- Model tests: 45 passing on Swift/Linux, including cue transfer and timecode decoding.
-- macOS app and CoreMIDI input require GitHub Actions build / manual verification; not verified by Linux model tests.
-- All prior `.scshow` project data formats remain unchanged (formatVersion 1). Do not delete your existing show files.
-
-## Suggested verification after GitHub build
-
-1. Create 3 cues in List A and 1 in List B. Drag a cue over the top/bottom halves of a row; check the new order.
-2. Drag the cue from List A to List B's blank area. Verify contents and cue-local Rules remain present; check Save/Close/Open.
-3. Right-click a cue and try **Move to Cue List** if drag-and-drop fails. This distinguishes data relocation from drag handling.
-4. Click a cue title in the Inspector and rename to several words. Press Save, then save/reopen the show.
-5. Type `01:02:03:004` in the duration field and confirm it survives save/reopen.
-6. Open MTC Reader; select an actual CoreMIDI source transmitting MTC. Confirm FPS and HH:MM:SS:FF update and lose lock when the external source stops.
-
-## Existing 0.6 features retained
-
-Cue containers with independently assigned audio elements or timecode *metadata*, cue-level / list-level / show-level Interaction Rules, dual audio playback per cue, play lists, delays, fades, seek and saved shows.
+1. Select cue in list 1; select cue in list 2; verify **only one** row is highlighted and inspector follows selection.
+2. Use PREVIOUS, NEXT, NEXT LIST; verify NEXT LIST selects its first enabled cue.
+3. GO multiple overlapping audio cues and test PAUSE ALL twice (pause/resume), FADE ALL, STOP ALL.
+4. In each cue list, **drag only the three-line grip** to reorder and to transfer to another list; after moving, open the cue RULES and check settings. The old custom UTI is no longer used. Test both populated lists and an empty destination list.
+5. Click MIDI SETUP, choose a CoreMIDI USB source, click Learn next to GO, press one controller button, verify the mapping appears; repeat for navigation and safety controls. CC button should transmit low value on release so it can trigger again on next press.
+6. Save and reopen a .scshow file; check that Rules, content, duration, name and cue order persist. MIDI preferences are stored on the Mac, not in the .scshow.
 
 ## Limitations
 
-Not tested for production-critical live use. Audio playback still goes to the default system output, not yet a per-element multichannel routing matrix. Timecode reader displays external MIDI Time Code only. No LTC decode, timecode-chased playback, OSC or guaranteed sample-accurate scheduling yet.
+The full macOS UI and MIDI callback must be compiled and exercised on a Mac through GitHub Actions and real hardware before this version can be considered verified. Current automated tests exercise the portable core model only. MIDI input does not send timecode; the independent MTC reader remains separate. Routing is still default audio output, not a channel matrix. Audio timing is not sample accurate. The build is ad-hoc signed, not notarized and must not be used as a sole live-show playback system before rehearsal / redundancy testing.
+
+## Build and download
+
+Push the changed files to `main`: [GitHub Actions](https://github.com/mrgianluca990-bit/Sculpt-Show/actions) will compile on macOS, run tests, build universal app and publish `Sculpt-Show-macOS` artifact. Unzip the artifact then `Sculpt-Show-macOS.zip` for the `.app`.

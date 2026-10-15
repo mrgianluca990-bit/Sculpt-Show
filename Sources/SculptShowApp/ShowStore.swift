@@ -10,7 +10,7 @@ final class ShowStore: ObservableObject {
     @Published private(set) var documentURL: URL?
     @Published private(set) var dirty = false
     @Published var selectedListID: UUID?
-    @Published var cueSelection: [UUID: UUID] = [:]
+    @Published private(set) var selectedCueID: UUID?
     @Published var errorMessage: String?
     /// A manual GO advances the selected cue to the next enabled row in that list.
     @Published var advanceAfterGO = true
@@ -20,25 +20,26 @@ final class ShowStore: ObservableObject {
     private var pendingRuleTargets: [UUID: Set<UUID>] = [:]
     private var eventGeneration = UUID()
     private var eventTimestamps: [Date] = []
+    private var suppressRuleEvents = false
 
     init() {
         selectedListID = show.cueLists.first?.id
     }
 
     var selectedCue: Cue? {
-        guard let listID = selectedListID,
-              let cueID = cueSelection[listID] else { return nil }
-        return show.cue(cueID)
+        guard let listID = selectedListID, let cueID = selectedCueID else { return nil }
+        return show.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == cueID })
     }
 
     func selectedCue(in listID: UUID) -> Cue? {
-        guard let cueID = cueSelection[listID] else { return nil }
+        guard selectedListID == listID, let cueID = selectedCueID else { return nil }
         return show.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == cueID })
     }
 
     func select(_ cueID: UUID, in listID: UUID) {
+        guard show.cueLists.first(where: { $0.id == listID })?.cues.contains(where: { $0.id == cueID }) == true else { return }
         selectedListID = listID
-        cueSelection[listID] = cueID
+        selectedCueID = cueID
     }
 
     @discardableResult
@@ -49,7 +50,7 @@ final class ShowStore: ObservableObject {
         show = Show()
         documentURL = nil
         dirty = false
-        cueSelection = [:]
+        selectedCueID = nil
         selectedListID = show.cueLists.first?.id
         return true
     }
@@ -66,6 +67,7 @@ final class ShowStore: ObservableObject {
         let newID = updated.addList()
         commit(updated)
         selectedListID = newID
+        selectedCueID = nil
     }
 
     func removeList(_ id: UUID) {
@@ -73,9 +75,11 @@ final class ShowStore: ObservableObject {
         var updated = show
         updated.removeList(id)
         commit(updated)
-        cueSelection.removeValue(forKey: id)
+        if selectedListID == id {
+            selectedListID = updated.cueLists.first?.id
+            selectedCueID = updated.cueLists.first?.cues.first(where: { $0.enabled })?.id
+        }
         playingLists.removeValue(forKey: id)
-        selectedListID = updated.cueLists.first?.id
     }
 
     func renameList(_ id: UUID, to text: String) {
@@ -110,13 +114,12 @@ final class ShowStore: ObservableObject {
             }
         }
         commit(updated)
-        cueSelection[listID] = newIDs[0]
-        selectedListID = listID
+        select(newIDs[0], in: listID)
     }
 
     func addEmptyCue(to listID: UUID) {
         var updated = show
-        let after = cueSelection[listID]
+        let after = selectedListID == listID ? selectedCueID : nil
         guard let newID = updated.addEmptyCue(to: listID, after: after) else { return }
         commit(updated)
         select(newID, in: listID)
@@ -311,9 +314,6 @@ final class ShowStore: ObservableObject {
         if origin.id != listID { playingLists.removeValue(forKey: listID) }
         playback.stop(cueID, notifyRules: false)
         commit(updated)
-        if origin.id != listID && cueSelection[origin.id] == cueID {
-            cueSelection[origin.id] = updated.cueLists.first(where: { $0.id == origin.id })?.cues.first?.id
-        }
         select(cueID, in: listID)
         return true
     }
@@ -385,18 +385,54 @@ final class ShowStore: ObservableObject {
         updated.removeCue(id, from: list)
         commit(updated)
         if playingLists[list] == id { playingLists.removeValue(forKey: list) }
-        if cueSelection[list] == id {
-            cueSelection[list] = updated.cueLists.first(where: { $0.id == list })?.cues.first?.id
+        if selectedCueID == id {
+            selectedCueID = updated.cueLists.first(where: { $0.id == list })?.cues.first(where: { $0.enabled })?.id
         }
     }
 
     func selectNext(in listID: UUID) {
-        guard let list = show.cueLists.first(where: { $0.id == listID }), !list.cues.isEmpty else { return }
-        let current = cueSelection[listID]
-        let next = list.cues.firstIndex(where: { $0.id == current }).map { ($0 + 1) % list.cues.count } ?? 0
-        // Navigation is cyclic, but skips disabled cues where possible.
-        let candidates = (0..<list.cues.count).map { list.cues[(next + $0) % list.cues.count] }
-        if let cue = candidates.first(where: { $0.enabled }) { select(cue.id, in: listID) }
+        selectNeighbor(in: listID, direction: 1)
+    }
+
+    func selectPrevious(in listID: UUID) {
+        selectNeighbor(in: listID, direction: -1)
+    }
+
+    private func selectNeighbor(in listID: UUID, direction: Int) {
+        let current = selectedListID == listID ? selectedCueID : nil
+        guard let id = CueNavigator.neighbor(in: show, listID: listID,
+                                             selectedCueID: current, direction: direction) else { return }
+        select(id, in: listID)
+    }
+
+    func selectNextList() {
+        guard let destination = CueNavigator.nextList(in: show, currentListID: selectedListID) else { return }
+        selectedListID = destination
+        selectedCueID = show.cueLists.first(where: { $0.id == destination })?.cues.first(where: { $0.enabled })?.id
+    }
+
+    /// Pauses every running cue; pressing again resumes all paused cues.
+    func togglePauseAll(using playback: PlaybackEngine) {
+        let snapshots = playback.snapshots
+        let hasPlaying = snapshots.values.contains { $0.phase == .playing }
+        for (id, state) in snapshots {
+            if hasPlaying && state.phase == .playing { playback.pause(id) }
+            else if !hasPlaying && state.phase == .paused { playback.togglePause(id) }
+        }
+    }
+
+    /// Fade-out is a global safety action: no STOP Rules or delayed Fire rules execute.
+    func fadeAll(using playback: PlaybackEngine) {
+        playingLists.removeAll()
+        cancelPendingRules()
+        suppressRuleEvents = true
+        for (id, state) in playback.snapshots where state.phase != .waiting {
+            if let cue = show.cue(id) { playback.fadeOut(cue) }
+        }
+        for (id, state) in playback.snapshots where state.phase == .waiting {
+            playback.stop(id, notifyRules: false)
+        }
+        suppressRuleEvents = false
     }
 
     func save() {
@@ -428,9 +464,8 @@ final class ShowStore: ObservableObject {
             playingLists.removeAll()
             show = next
             documentURL = url
-            cueSelection = [:]
             selectedListID = next.cueLists.first?.id
-            for list in next.cueLists { cueSelection[list.id] = list.cues.first?.id }
+            selectedCueID = next.cueLists.first?.cues.first(where: { $0.enabled })?.id
             dirty = false
             return true
         } catch {
@@ -472,6 +507,7 @@ final class ShowStore: ObservableObject {
     }
 
     func handleRuleEvent(_ event: RuleEvent, source cueID: UUID, using playback: PlaybackEngine) {
+        guard !suppressRuleEvents else { return }
         // Anti-runaway guard: a misconfigured chain cannot spawn unlimited events.
         let now = Date()
         eventTimestamps.removeAll { now.timeIntervalSince($0) > 1 }
