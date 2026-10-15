@@ -508,7 +508,7 @@ private struct CuePlayFromEditor: View {
                 .frame(width: 138)
                 .focused($hasFocus)
                 .foregroundColor(invalid ? .orange : .primary)
-                .onSubmit { commit() }
+                .onSubmit { if commit() { hasFocus = false } }
                 .onChange(of: hasFocus) { focused in
                     if !focused { commit() }
                 }

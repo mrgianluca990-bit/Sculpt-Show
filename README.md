@@ -1,9 +1,21 @@
+# Sculpt Show 0.14.2 — Editing & LTC offset workflow
+
+Based on the operator-confirmed, successfully macOS-built **v0.14.1** baseline.
+
+- New or missing LTC frame offset defaults to **-00:00:00:00**. Explicit saved positive non-zero trims are preserved. The UI presents old +zero as negative zero without changing the signal.
+- **LTC START** and **TC OFFSET**: no SET buttons; pressing **Return** validates, commits and exits the field. Invalid entries stay focused with a warning.
+- **PLAY FROM** and marker name: pressing **Return** finishes editing and drops focus.
+- **−1F / +1F / ZERO** quick LTC offset editing with frame-accurate conversions at 24/25/29.97 DF/30 FPS. These controls do not modify cue audio, playback, routing or LTC trim level.
+- **⌘D / Cues → Duplicate Selected Cue**: quick duplication of selected cue, including existing per-cue settings, media references, marker positions and Rules with unique IDs.
+- LTC engine, Core Audio routing, HOLD and readers remain unchanged.
+
+New or missing values use safe backward-compatible defaults, and 0.14.1 remains the hardware-tested fallback. This source still requires a GitHub Actions macOS build and operator test.
 # Sculpt Show 0.14.1 — LTC HOLD, trims, Delete cue
 
 Release cumulative based on **0.14.0**, verified working on macOS by the operator.
 
 - **Pause/HOLD:** the GENERATED LTC display freezes at the paused cue position; audio LTC goes silent during pause (safer for external LTC chase devices) and restarts at the held address when playback resumes. A seek while paused updates the held display without outputting LTC. STOP clears it.
-- **TC OFFSET:** signed `±HH:MM:SS:FF` frame address correction per timecode element (does not change musical audio or cue timeline), saved in `.scshow`. Default `+00:00:00:00` on legacy shows.
+- **TC OFFSET:** signed `±HH:MM:SS:FF` frame address correction per timecode element (does not change musical audio or cue timeline), saved in `.scshow`. Older saved shows can contain `+00:00:00:00`; in 0.14.2 this is displayed as negative zero without changing the audio.
 - **LTC LEVEL TRIM:** `−36…+12 dB` relative to nominal −12 dBFS generated PCM. Adjustable live. Gain is applied with an atomic control **inside the LTC DSP** (no device reconfigure, no music routing changes). A +12 dB trim reaches approximately 0 dBFS and should be used carefully.
 - **Delete cue:** select a cue in the list and use the macOS Delete/Backspace command; text editing in the Inspector must remain unaffected. A "Delete Cue" option is also available on the cue context menu. Deletes stop active playback without firing stop rules.
 - All new values have safe defaults when opening older shows. Mac-specific key handling and live Core Audio behavior require testing on a Mac.

@@ -243,7 +243,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     public init(id: UUID = UUID(), kind: CueElementKind, name: String,
                 sourcePath: String = "", startSeconds: Double = 0,
                 inSeconds: Double = 0, outSeconds: Double? = nil,
-                timecodeStart: String = "00:00:00:00", ltcTrim: String = "+00:00:00:00",
+                timecodeStart: String = "00:00:00:00", ltcTrim: String = "-00:00:00:00",
                 ltcLevelTrimDB: Double = 0, frameRate: Int = 25,
                 timecodeDropFrame: Bool = false, ltcOutputChannel: Int? = nil,
                 gain: Double = 1.0, muted: Bool = false, outputStartChannel: Int = 1) {
@@ -283,7 +283,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
             inSeconds: try c.decodeIfPresent(Double.self, forKey: .inSeconds) ?? 0,
             outSeconds: try c.decodeIfPresent(Double.self, forKey: .outSeconds),
             timecodeStart: try c.decodeIfPresent(String.self, forKey: .timecodeStart) ?? "00:00:00:00",
-            ltcTrim: try c.decodeIfPresent(String.self, forKey: .ltcTrim) ?? "+00:00:00:00",
+            ltcTrim: try c.decodeIfPresent(String.self, forKey: .ltcTrim) ?? "-00:00:00:00",
             ltcLevelTrimDB: try c.decodeIfPresent(Double.self, forKey: .ltcLevelTrimDB) ?? 0,
             frameRate: try c.decodeIfPresent(Int.self, forKey: .frameRate) ?? 25,
             timecodeDropFrame: try c.decodeIfPresent(Bool.self, forKey: .timecodeDropFrame) ?? false,

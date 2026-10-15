@@ -27,6 +27,29 @@ final class LTCFrameTrimTests: XCTestCase {
         XCTAssertEqual(LTCFrameTrim(text: "-00:01:00:00", rate: .fps2997DF)?.frames, -1798)
     }
 
+    func testNegativeOffsetByDefaultForNewTimecode() {
+        let cue = CueElement.timecode()
+        XCTAssertEqual(cue.ltcTrim, "-00:00:00:00")
+        XCTAssertEqual(LTCFrameTrim(text: cue.ltcTrim, rate: .fps25)?.frames, 0)
+        XCTAssertEqual(LTCFrameTrim.address(frames: 0, rate: .fps25), "-00:00:00:00")
+    }
+
+    func testFrameNudgeRoundTripIncludingDropFrame() {
+        for rate in LTCFrameRate.allCases {
+            for frames: Int64 in [-100_000, -1798, -75, -1, 0, 1, 29, 30, 75, 1798, 100_000] {
+                let rendered = LTCFrameTrim.address(frames: frames, rate: rate)
+                let parsed = LTCFrameTrim(text: rendered, rate: rate)
+                XCTAssertEqual(parsed?.frames, frames, "Rate \(rate) value \(frames) address \(rendered)")
+            }
+        }
+    }
+
+    func testExplicitPositiveExistingOffsetIsPreserved() throws {
+        let element = CueElement(kind: .timecode, name: "LTC", ltcTrim: "+00:00:00:12")
+        let restored = try JSONDecoder().decode(CueElement.self, from: JSONEncoder().encode(element))
+        XCTAssertEqual(restored.ltcTrim, "+00:00:00:12")
+    }
+
     func testGainTrimClampsToSafeNominalHeadroom() {
         XCTAssertEqual(CueElement(kind: .timecode, name: "LTC", ltcLevelTrimDB: 20).ltcLevelTrimDB, 12)
         XCTAssertEqual(CueElement(kind: .timecode, name: "LTC", ltcLevelTrimDB: -99).ltcLevelTrimDB, -36)
@@ -39,7 +62,7 @@ final class LTCFrameTrimTests: XCTestCase {
         json.removeValue(forKey: "ltcLevelTrimDB")
         let data = try JSONSerialization.data(withJSONObject: json)
         let restored = try JSONDecoder().decode(CueElement.self, from: data)
-        XCTAssertEqual(restored.ltcTrim, "+00:00:00:00")
+        XCTAssertEqual(restored.ltcTrim, "-00:00:00:00")
         XCTAssertEqual(restored.ltcLevelTrimDB, 0)
 
         var edited = restored

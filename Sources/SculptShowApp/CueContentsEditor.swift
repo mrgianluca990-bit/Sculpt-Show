@@ -162,6 +162,10 @@ private struct TimecodeEntry: View {
     let listID: UUID
     @State private var value = ""
     @State private var trimDraft = ""
+    @State private var invalidStart = false
+    @State private var invalidTrim = false
+    @FocusState private var focusedField: LTCField?
+    private enum LTCField: Hashable { case start, trim }
 
     private var current: CueElement {
         store.show.cue(cueID)?.elements.first(where: { $0.id == element.id }) ?? element
@@ -175,10 +179,13 @@ private struct TimecodeEntry: View {
                 TextField("HH:MM:SS:FF", text: $value)
                     .font(.system(size: 12, design: .monospaced))
                     .textFieldStyle(.roundedBorder)
-                    .onAppear { value = current.timecodeStart; trimDraft = current.ltcTrim }
-                    .onSubmit { store.setTimecode(element.id, in: cueID, listID: listID, to: value) }
-                Button("SET") { store.setTimecode(element.id, in: cueID, listID: listID, to: value) }
-                    .controlSize(.small)
+                    .focused($focusedField, equals: .start)
+                    .foregroundColor(invalidStart ? .orange : .primary)
+                    .onSubmit { commitStart() }
+            }
+            if invalidStart {
+                Text("Use valid HH:MM:SS:FF for the selected frame rate.")
+                    .font(.caption2).foregroundColor(.orange)
             }
             HStack(spacing: 6) {
                 Text("TC OFFSET")
@@ -186,13 +193,26 @@ private struct TimecodeEntry: View {
                 TextField("±HH:MM:SS:FF", text: $trimDraft)
                     .font(.system(size: 12, design: .monospaced))
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit { store.setTimecodeTrim(element.id, in: cueID, listID: listID, to: trimDraft) }
-                Button("SET") {
-                    store.setTimecodeTrim(element.id, in: cueID, listID: listID, to: trimDraft)
-                }
-                .controlSize(.small)
+                    .focused($focusedField, equals: .trim)
+                    .foregroundColor(invalidTrim ? .orange : .primary)
+                    .onSubmit { commitTrim() }
             }
-            .help("Signed frame-accurate LTC offset. Does not move the audio or cue playhead.")
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                Button("−1F") { nudge(by: -1) }
+                    .help("Subtract one SMPTE frame from the LTC offset")
+                Button("+1F") { nudge(by: 1) }
+                    .help("Add one SMPTE frame to the LTC offset")
+                Button("ZERO") { resetTrim() }
+                    .help("Reset to negative zero; audio remains unchanged")
+            }
+            .controlSize(.small)
+            if invalidTrim {
+                Text("Use ±HH:MM:SS:FF within the selected frame rate.")
+                    .font(.caption2).foregroundColor(.orange)
+            }
+            Text("Return confirms and closes editing · negative offset subtracts LTC frames")
+                .font(.caption2).foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 Text("LTC LEVEL TRIM")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
@@ -242,7 +262,65 @@ private struct TimecodeEntry: View {
                     .font(.caption2).foregroundColor(.orange)
             }
         }
-        .onChange(of: element.timecodeStart) { _ in value = current.timecodeStart }
-        .onChange(of: element.ltcTrim) { _ in trimDraft = current.ltcTrim }
+        .onAppear {
+            value = current.timecodeStart
+            trimDraft = presentedTrim(current.ltcTrim)
+        }
+        .onChange(of: element.timecodeStart) { _ in
+            if focusedField != .start { value = current.timecodeStart }
+        }
+        .onChange(of: element.ltcTrim) { _ in
+            if focusedField != .trim { trimDraft = presentedTrim(current.ltcTrim) }
+        }
+    }
+
+    private func presentedTrim(_ text: String) -> String {
+        // Explicit non-zero positive trims from existing projects must be preserved.
+        // Only the zero sign changes its presentation.
+        text == "+00:00:00:00" ? LTCFrameTrim.negativeZero : text
+    }
+
+    private func commitStart() {
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard CueElement.isValidTimecode(text, frameRate: current.frameRate,
+                dropFrame: current.timecodeDropFrame) else {
+            invalidStart = true
+            return
+        }
+        invalidStart = false
+        store.setTimecode(element.id, in: cueID, listID: listID, to: text)
+        value = text
+        focusedField = nil
+    }
+
+    private func commitTrim() {
+        let rate = LTCFrameRate(fps: current.frameRate, drop: current.timecodeDropFrame)
+        guard let trim = LTCFrameTrim(text: trimDraft, rate: rate) else {
+            invalidTrim = true
+            return
+        }
+        invalidTrim = false
+        // Canonical negative zero, including un-signed zero entered by the operator.
+        let normalized = trim.frames == 0 ? LTCFrameTrim.negativeZero : trim.text
+        store.setTimecodeTrim(element.id, in: cueID, listID: listID, to: normalized)
+        trimDraft = normalized
+        focusedField = nil
+    }
+
+    private func nudge(by delta: Int64) {
+        // Entered edits must be committed before nudging to avoid silently losing work.
+        if focusedField == .trim { commitTrim(); if invalidTrim { return } }
+        store.nudgeTimecodeTrim(element.id, in: cueID, listID: listID, by: delta)
+        trimDraft = presentedTrim(current.ltcTrim)
+        invalidTrim = false
+        focusedField = nil
+    }
+
+    private func resetTrim() {
+        store.setTimecodeTrim(element.id, in: cueID, listID: listID,
+                              to: LTCFrameTrim.negativeZero)
+        trimDraft = LTCFrameTrim.negativeZero
+        invalidTrim = false
+        focusedField = nil
     }
 }

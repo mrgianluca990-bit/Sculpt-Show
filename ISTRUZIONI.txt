@@ -1,24 +1,29 @@
-SCULPT SHOW v0.14.1 — HOLD LTC, TC OFFSET, LEVEL TRIM, DELETE
+SCULPT SHOW 0.14.2 — LTC EDITOR WORKFLOW + ONE-FRAME NUDGE
 
 Repository: https://github.com/mrgianluca990-bit/Sculpt-Show
-Base richiesta: v0.14.0 compilata correttamente (commit GitHub 990cffe45d1919d0aacef4fe2d6e2d9461b0bfcc)
+BASE GITHUB MAIN: v0.14.1 (successful macOS build 38814624727)
 
-PER L'AGGIORNAMENTO
-1. Estrai Sculpt-Show-v0.14.1-LTC-Hold-Trim-Delete-Update.zip.
-2. Su GitHub, apri il repository e fai Add file > Upload files.
-3. Carica i file estratti nelle rispettive posizioni (Sources, Tests, Scripts, README, ISTRUZIONI).
-4. Fai commit sul branch main; attendi il risultato di GitHub Actions.
-5. Scarica l'app macOS dall'artifact Sculpt-Show-macOS del run riuscito.
+ISTRUZIONI RAPIDE PER L'AGGIORNAMENTO
+1. Estrai Sculpt-Show-v0.14.2-LTC-Editing-Update.zip.
+2. In GitHub apri il repository e carica il contenuto estratto mantenendo le cartelle Sources/, Tests/ e Scripts/.
+3. Non caricare il file ZIP stesso nella root del repository.
+4. Sostituisci i file omonimi e conferma il commit su main.
+5. GitHub Actions avviera' la compilazione automatica; l'artifact macOS sara' scaricabile dal run riuscito.
 
-NON caricare lo ZIP come singolo file nel repository: GitHub deve ricevere i sorgenti nei loro percorsi.
-Non sovrascrivere con un vecchio pacchetto 0.14.0 dopo questo aggiornamento.
+NOVITA'
+- Nuovi LTC OFFSET: -00:00:00:00; vecchi +offset non-zero conservati.
+- LTC START e TC OFFSET: Invio conferma il valore valido ed esce dalla modifica. Niente SET.
+- PLAY FROM e nome del marker: Invio conferma e chiude il campo.
+- TC OFFSET: -1F, +1F, ZERO; 24/25/29.97 DF/30 fps.
+- Cmd+D duplica la cue selezionata; disponibile anche dal menu Cues.
 
-VERIFICHE RICHIESTE SUL MAC
-A. Cue con LTC attivo: PAUSE => il reader GENERATED mostra HOLD + ultimo TC, STOP lo cancella; RESUME riparte dalla posizione in pausa.
-B. TC OFFSET: prova +00:00:01:00, poi -00:00:00:10 e verifica TC GENERATED/IN.
-C. LTC LEVEL TRIM: regola -12 dB / 0 dB durante il GO e verifica il livello sul canale LTC in Core Audio.
-D. Seleziona una cue e premi Delete/Backspace; prova anche un campo di testo nell'Inspector per assicurarti che Backspace continui a cancellare i caratteri, NON la cue.
+TEST SUL MAC
+A. Nuova cue LTC: OFFSET predefinito -00:00:00:00.
+B. Inserisci -00:00:00:10, Invio: focus esce, valore salvato. Prova un input invalido.
+C. Verifica +1F, -1F e ZERO, anche a 29.97 DF.
+D. PLAY FROM e nome marker: Invio conferma ed esce. GO resta sempre a zero.
+E. Seleziona una cue e fai Cmd+D; verifica settings LTC, marker, rules e media.
+F. Verifica normale PLAY, GO, HOLD, reader LTC IN/OUT e routing senza interruzioni.
 
-NOTA LTC: in pausa il segnale audio LTC diventa silenzioso; non si emette un frame fermo continuo (potrebbe ingannare i dispositivi chase esterni). Il display GENERATED mantiene invece il valore e mostra HOLD.
-
-Test locali: 119 superati (Linux), parse Swift verificato. Build vera macOS da verificare su GitHub.
+TEST LOCALI: 122 Swift/C unit test superati; controllo sintattico Swift e C.
+BUILD macOS DA VERIFICARE IN GITHUB ACTIONS. La 0.14.1 resta fallback.

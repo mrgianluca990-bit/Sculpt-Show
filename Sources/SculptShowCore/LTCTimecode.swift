@@ -89,6 +89,31 @@ public struct LTCFrameTrim: Equatable, Sendable {
     public let frames: Int64
     public let text: String
 
+    /// Zero has a negative default *presentation*, including legacy +00 trims.
+    /// Sign never changes timing at exactly zero.
+    public static let negativeZero = "-00:00:00:00"
+
+    /// Converts a signed frame delta to an editable SMPTE duration.
+    /// Rounds whole seconds exactly as init(text:rate:) does at 29.97 DF.
+    /// Used for one-frame LTC nudge without changing cue audio position.
+    public static func address(frames: Int64, rate: LTCFrameRate) -> String {
+        let target = min(frames == Int64.min ? Int64.max : abs(frames),
+                         Int64((86_399.0 * rate.actual).rounded()) + Int64(rate.nominal - 1))
+        var lo = 0
+        var hi = 86_399
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            let whole = Int64((Double(mid) * rate.actual).rounded())
+            if whole <= target { lo = mid } else { hi = mid - 1 }
+        }
+        let second = lo
+        let whole = Int64((Double(second) * rate.actual).rounded())
+        let f = min(rate.nominal - 1, max(0, Int(target - whole)))
+        return String(format: "%@%02d:%02d:%02d:%02d",
+                      frames > 0 ? "+" : "-", second / 3600,
+                      (second / 60) % 60, second % 60, f)
+    }
+
     public init?(text: String, rate: LTCFrameRate) {
         let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let sign: Int64 = raw.first == "-" ? -1 : 1

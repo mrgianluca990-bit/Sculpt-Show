@@ -16,6 +16,7 @@ struct CueMarkersEditor: View {
     @State private var markerTime = ""
     @State private var invalidTime = false
     @FocusState private var editingTime: Bool
+    @FocusState private var editingName: Bool
 
     private var selected: CueMarker? {
         cue.markers.first(where: { $0.id == selectedMarkerID })
@@ -88,7 +89,11 @@ struct CueMarkersEditor: View {
                     .foregroundStyle(.secondary)
                 TextField("Marker name", text: $markerName)
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit(commitName)
+                    .focused($editingName)
+                    .onSubmit {
+                        commitName()
+                        editingName = false
+                    }
                 HStack(spacing: 6) {
                     TextField("HH:MM:SS:MMM", text: $markerTime)
                         .textFieldStyle(.roundedBorder)

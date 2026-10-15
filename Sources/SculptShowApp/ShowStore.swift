@@ -273,6 +273,23 @@ final class ShowStore: ObservableObject {
         }
     }
 
+    /// Single-frame SMPTE trim adjustment for a cue-local LTC element.
+    /// Keeps the audio timeline, cue start and output routing untouched.
+    func nudgeTimecodeTrim(_ elementID: UUID, in cueID: UUID, listID: UUID,
+                           by frames: Int64) {
+        guard let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID }) else { return }
+        let rate = LTCFrameRate(fps: element.frameRate, drop: element.timecodeDropFrame)
+        guard let offset = LTCFrameTrim(text: element.ltcTrim, rate: rate) else { return }
+        let shifted = offset.frames.addingReportingOverflow(frames)
+        guard !shifted.overflow else { return }
+        let newText = LTCFrameTrim.address(frames: shifted.partialValue, rate: rate)
+        guard let validated = LTCFrameTrim(text: newText, rate: rate) else { return }
+        editCue(cueID, list: listID) { cue in
+            guard let i = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[i].ltcTrim = validated.text
+        }
+    }
+
     func setTimecodeLevelTrim(_ elementID: UUID, in cueID: UUID, listID: UUID,
                               to value: Double, using playback: PlaybackEngine) {
         guard value.isFinite else { return }

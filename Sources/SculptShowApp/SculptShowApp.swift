@@ -49,6 +49,15 @@ struct SculptShowApp: App {
                     .keyboardShortcut("s", modifiers: [.command, .shift])
             }
             CommandMenu("Cues") {
+                Button("Duplicate Selected Cue") {
+                    if let listID = showStore.selectedListID,
+                       let cueID = showStore.selectedCueID {
+                        showStore.duplicateCue(cueID, in: listID)
+                    }
+                }
+                .keyboardShortcut("d", modifiers: .command)
+                .disabled(showStore.selectedCue == nil)
+
                 Button("GO: Fire Selected Cue") {
                     showStore.fireSelected(using: playback)
                 }
