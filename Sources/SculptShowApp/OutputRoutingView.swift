@@ -9,6 +9,7 @@ struct OutputRoutingView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var pickedDevice: AudioDeviceID = 0
     @State private var applying = false
+    @State private var showingOutputMixer = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 17) {
@@ -43,6 +44,12 @@ struct OutputRoutingView: View {
             }
             Divider()
             HStack(spacing: 8) {
+                Button("OUTPUT MIXER") { showingOutputMixer = true }
+                    .disabled(!playback.routingEnabled)
+                    .help("Open the physical-output Mute/Solo mixer")
+                Spacer()
+            }
+            HStack(spacing: 8) {
                 Circle().fill(playback.routingEnabled ? Color.green : Color.orange)
                     .frame(width: 9, height: 9)
                 Text(playback.routingEnabled
@@ -55,6 +62,9 @@ struct OutputRoutingView: View {
         }
         .padding(24)
         .frame(width: 620)
+        .sheet(isPresented: $showingOutputMixer) {
+            ShowOutputMixerView().environmentObject(playback)
+        }
         .onAppear {
             playback.refreshRoutingDevices()
             pickedDevice = playback.routingDeviceID ?? 0

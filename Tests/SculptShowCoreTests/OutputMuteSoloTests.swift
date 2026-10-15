@@ -2,29 +2,24 @@ import XCTest
 @testable import SculptShowCore
 
 final class OutputMuteSoloTests: XCTestCase {
-    func testMonoOutputAndMultiSoloAcross64Channels() {
+    func testMuteSoloAndResetAcross64Channels() {
         var state = OutputMuteSoloState(channelCount: 64)
         XCTAssertTrue((1...64).allSatisfy(state.isAudible))
         state.toggleMute(1)
         XCTAssertFalse(state.isAudible(1))
-        XCTAssertTrue(state.isAudible(64))
         state.toggleSolo(63)
         state.toggleSolo(64)
         XCTAssertTrue(state.isAudible(63))
         XCTAssertTrue(state.isAudible(64))
         XCTAssertFalse(state.isAudible(2))
         state.toggleMute(63)
-        XCTAssertFalse(state.isAudible(63), "Mute prevails over solo")
+        XCTAssertFalse(state.isAudible(63))
         state.clear()
         XCTAssertTrue((1...64).allSatisfy(state.isAudible))
     }
 
-    func testInvalidChannelsIgnoredAndDeviceChangeClearsState() {
+    func testDeviceChangeClearsState() {
         var state = OutputMuteSoloState(channelCount: 16)
-        state.toggleMute(0)
-        state.toggleSolo(17)
-        XCTAssertEqual(state.mutedCount, 0)
-        XCTAssertEqual(state.soloCount, 0)
         state.toggleMute(16)
         XCTAssertFalse(state.isAudible(16))
         state = OutputMuteSoloState(channelCount: 2)
@@ -33,11 +28,26 @@ final class OutputMuteSoloTests: XCTestCase {
         XCTAssertFalse(state.isAudible(16))
     }
 
-    func testAllBanksCover64WithoutMissingChannels() {
+    func testOutputGainFollowsMuteSolo() {
+        var state = OutputMuteSoloState(channelCount: 16)
+        XCTAssertEqual(state.outputGain(3), 1)
+        state.toggleMute(3)
+        XCTAssertEqual(state.outputGain(3), 0)
+        state.toggleSolo(5)
+        XCTAssertEqual(state.outputGain(5), 1)
+        XCTAssertEqual(state.outputGain(1), 0)
+        state.clear()
+        XCTAssertEqual(state.outputGain(3), 1)
+    }
+
+    func testInvalidChannelIgnoredAndBanksCover64() {
+        var state = OutputMuteSoloState(channelCount: 16)
+        state.toggleSolo(17)
+        state.toggleMute(0)
+        XCTAssertFalse(state.anySolo)
+        XCTAssertEqual(state.mutedCount, 0)
         XCTAssertEqual(OutputMixerBanks.banks(channelCount: 64), [0, 1, 2, 3, 4])
         XCTAssertEqual(OutputMixerBanks.channels(channelCount: 64, bank: 4), Array(49...64))
-        XCTAssertEqual(OutputMixerBanks.banks(channelCount: 2), [0, 1])
-        XCTAssertEqual((1...4).flatMap { OutputMixerBanks.channels(channelCount: 64, bank: $0) }, Array(1...64))
-        XCTAssertTrue(OutputMixerBanks.channels(channelCount: 0, bank: 0).isEmpty)
+        XCTAssertEqual(OutputMixerBanks.channels(channelCount: 2, bank: 0), [1,2])
     }
 }

@@ -1,32 +1,42 @@
-SCULPT SHOW 0.10.1 — INSTALLAZIONE ICONA MACOS
-================================================
+SCULPT SHOW 0.10.2 — Mixer Cue convergence + Icon Fix
 
-Questa patch cambia SOLTANTO il packaging dell'app: nessun file Swift
-modificato e nessuna modifica a routing, cue, Rules, MIDI o marker.
+Stato: test automatici su Linux 84/84 PASS; verifica sintassi Swift PASS.
+Build macOS non ancora eseguita; verrà eseguita da GitHub Actions dopo il commit.
 
-CARICA SU GITHUB 3 FILE NELLA CARTELLA "Scripts":
-https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Scripts
+REPOSITORY:
+https://github.com/mrgianluca990-bit/Sculpt-Show
+ULTIMO COMMIT VERIFICATO DURANTE LA PREPARAZIONE:
+f2c778aecc3be2da9c14a1ac5e3f102b2232121d
 
-   1) Scripts/SculptShow.icns     (NUOVO file, icona per Dock/Finder)
-   2) Scripts/Info.plist         (SOSTITUISCE la versione 0.10)
-   3) Scripts/build-macos.sh     (SOSTITUISCE la versione 0.10)
+AGGIORNAMENTO MANUALE DA GITHUB (non caricare lo ZIP come file):
+1. Estrai questo ZIP sul Mac.
+2. Su GitHub, entra nella rispettiva cartella per ciascuno dei gruppi sotto.
+3. Usa Add file > Upload files e trascina i file di quella cartella.
+4. Conferma Commit changes. Non sostituire altri file del repository.
 
-Passaggi:
-  - Estrai questo ZIP.
-  - Apri su GitHub la cartella Scripts (link sopra).
-  - Scegli Add file > Upload files.
-  - Trascina SOLTANTO i tre file contenuti nella cartella Scripts
-    dello ZIP (non caricare la cartella Scripts dentro Scripts).
-  - Conferma il commit. GitHub Actions avvia la compilazione.
-  - Scarica l'artifact Sculpt-Show-macOS dalla nuova build:
-    https://github.com/mrgianluca990-bit/Sculpt-Show/actions
-  - Sostituisci l'app in Applicazioni con la nuova build.
+GRUPPI:
+- Sources/SculptShowApp : cinque file .swift (PlaybackEngine, RoutedAudioEngine,
+  ShowOutputMixerView, OutputRoutingView, WorkspaceView).
+- Sources/SculptShowCore : OutputMuteSoloState.swift (gia' nel repo, incluso per integrita').
+- Tests/SculptShowCoreTests : OutputMuteSoloTests.swift, RulesTests.swift.
+- Scripts : Info.plist, SculptShow.icns, build-macos.sh.
+- .github/workflows : macos-build.yml.
 
-NOTA: SculptShow-icon-preview.png e una anteprima opzionale; NON va caricata.
+Al termine verifica GitHub Actions:
+https://github.com/mrgianluca990-bit/Sculpt-Show/actions
 
-L'icona e inclusa nel bundle "Sculpt Show.app/Contents/Resources/SculptShow.icns"
-e dichiarata in Contents/Info.plist (CFBundleIconFile).
-Se il Dock visualizza ancora la vecchia icona, rimuovi e riaggiungi
-Sculpt Show dal Dock (macOS puo usare una cache delle icone).
+CORREZIONI:
+- PlaybackEngine espone outputControls e metodi di controllo M/S/Reset.
+- RoutedAudioEngine applica realmente gain 0/1 alle singole uscite MatrixMixer.
+- Finestra ShowOutputMixerView spezzata in piccole viste SwiftUI per evitare
+  gli errori di type-checking e di binding nei log della precedente build.
+- Pulsante OUTPUT MIXER accessibile dal pannello OUTPUT ROUTING.
+- Icona approvata installata nelle risorse di Sculpt Show.app.
+- Script e workflow controllano che la risorsa e il CFBundleIconFile siano presenti.
+- Versione 0.10.2, ridotti avvisi Swift innocui.
 
-VERSIONE: 0.10.1 (sola integrazione icona)
+HARDWARE TEST:
+OUT1 e OUT3 con file mono diversi -> Mute 3 -> il segnale OUT3 si interrompe;
+Solo 1 -> altri canali non udibili; Solo 3 in aggiunta -> 1 e 3 udibili
+(salvo Mute); Reset M/S -> tutto ripristinato. Ripeti con 16+ uscite.
+L'interfaccia mostra lo stato ON/OFF delle uscite, NON misure audio Peak/RMS.

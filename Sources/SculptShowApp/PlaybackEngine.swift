@@ -62,7 +62,41 @@ final class PlaybackEngine: ObservableObject {
     @Published private(set) var routingEnabled = false
     @Published private(set) var routingDevices: [RoutedAudioEngine.OutputDevice] = []
     @Published private(set) var routingDeviceID: AudioDeviceID?
+    /// Global, live-only output Mute/Solo state. Never serialized into a show.
+    @Published private(set) var outputControls = OutputMuteSoloState(channelCount: 0)
     var routingOutputCount: Int { routedAudio.selectedDevice?.channels ?? 0 }
+
+    /// Output-level Mute/Solo goes directly to the MatrixMixer output gain.
+    /// Changing these switches does not stop, restart or reschedule audio.
+    func toggleOutputMute(_ channel: Int) {
+        guard routingEnabled, outputControls.isValid(channel) else { return }
+        var next = outputControls
+        next.toggleMute(channel)
+        applyOutputControls(next)
+    }
+
+    func toggleOutputSolo(_ channel: Int) {
+        guard routingEnabled, outputControls.isValid(channel) else { return }
+        var next = outputControls
+        next.toggleSolo(channel)
+        applyOutputControls(next)
+    }
+
+    func resetOutputMuteSolo() {
+        guard routingEnabled else { return }
+        var next = outputControls
+        next.clear()
+        applyOutputControls(next)
+    }
+
+    private func applyOutputControls(_ next: OutputMuteSoloState) {
+        do {
+            try routedAudio.applyOutputControls(next)
+            outputControls = next
+        } catch {
+            errorMessage = "Cannot update output mute/solo: \(error.localizedDescription)"
+        }
+    }
 
     func refreshRoutingDevices() {
         routingDevices = RoutedAudioEngine.availableOutputs()
@@ -74,6 +108,7 @@ final class PlaybackEngine: ObservableObject {
         routedAudio.teardown()
         routingEnabled = false
         routingDeviceID = nil
+        outputControls = OutputMuteSoloState(channelCount: 0)
         guard let deviceID else { return }
         refreshRoutingDevices()
         guard let device = routingDevices.first(where: { $0.id == deviceID }) else {
@@ -82,6 +117,9 @@ final class PlaybackEngine: ObservableObject {
         }
         do {
             try await routedAudio.configure(device: device)
+            let initialOutputs = OutputMuteSoloState(channelCount: device.channels)
+            try routedAudio.applyOutputControls(initialOutputs)
+            outputControls = initialOutputs
             routingEnabled = true
             routingDeviceID = device.id
         } catch {

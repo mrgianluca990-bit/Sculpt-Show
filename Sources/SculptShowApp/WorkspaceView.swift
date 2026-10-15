@@ -622,7 +622,7 @@ private struct CueListPanel: View {
             .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
                 let matching = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
                 for provider in matching {
-                    _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                         let url: URL?
                         if let file = item as? URL { url = file }
                         else if let file = item as? NSURL { url = file as URL }
@@ -702,7 +702,7 @@ private struct CueRow: View {
             // Dropping audio onto a cue adds it as content instead of creating another cue.
             let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
             for provider in files {
-                _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                     let url: URL?
                     if let file = item as? URL { url = file }
                     else if let file = item as? NSURL { url = file as URL }

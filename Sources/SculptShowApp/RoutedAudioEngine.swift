@@ -171,6 +171,23 @@ final class RoutedAudioEngine {
         selectedDevice = device
     }
 
+    /// Apply audible/inaudible states at the physical MatrixMixer output scope.
+    /// This preserves all per-stem crosspoints and never touches the cue transport.
+    func applyOutputControls(_ controls: OutputMuteSoloState) throws {
+        guard isReady, let matrix, let device = selectedDevice,
+              controls.channelCount == device.channels else {
+            throw RoutingError.engineNotReady
+        }
+        for channel in 1...device.channels {
+            try require(AudioUnitSetParameter(matrix.audioUnit,
+                        kMatrixMixerParam_Volume,
+                        kAudioUnitScope_Output,
+                        UInt32(channel - 1),
+                        controls.outputGain(channel), 0),
+                        "output \(channel) mute/solo")
+        }
+    }
+
     private func require(_ status: OSStatus, _ label: String) throws {
         guard status == noErr else { throw RoutingError.cannotConfigure(label, status) }
     }

@@ -82,7 +82,7 @@ final class RulesTests: XCTestCase {
     }
 
     func testLegacyProjectWithoutRulesStillOpens() throws {
-        var (show, _, ids) = demo()
+        let (show, _, ids) = demo()
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: ShowCodec.encode(show)) as? [String: Any])
         json.removeValue(forKey: "rules")
         var lists = try XCTUnwrap(json["cueLists"] as? [[String: Any]])

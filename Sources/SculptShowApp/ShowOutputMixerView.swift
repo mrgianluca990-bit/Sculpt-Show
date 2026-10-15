@@ -1,65 +1,24 @@
 import SwiftUI
 import SculptShowCore
 
-/// First Cue Native -> Show convergence slice.
-/// Output gain switches are applied by Show's own single routed engine.
+/// First Cue Native → Show convergence: controls the REAL Core Audio MatrixMixer.
 struct ShowOutputMixerView: View {
     @EnvironmentObject private var playback: PlaybackEngine
     @Environment(\.dismiss) private var dismiss
     @State private var bank = 1
     @State private var labels = ShowOutputLabels.load()
-    @State private var editingChannel: Int?
-    @State private var labelDraft = ""
-    @FocusState private var labelEditorFocused: Bool
 
+    private var channelCount: Int { playback.routingOutputCount }
     private var deviceName: String {
         guard let id = playback.routingDeviceID else { return "CoreAudio" }
         return playback.routingDevices.first(where: { $0.id == id })?.name ?? "CoreAudio"
     }
-    private var channelCount: Int { playback.routingOutputCount }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("SCULPT OUTPUT MIXER", systemImage: "slider.vertical.3")
-                    .font(.system(size: 16, weight: .bold, design: .monospaced))
-                Spacer()
-                Button("RESET M/S") { playback.resetOutputMuteSolo() }
-                    .disabled(!playback.routingEnabled ||
-                              playback.outputControls.mutedCount + playback.outputControls.soloCount == 0)
-                Button("Close") { dismiss() }
-            }
+            header
             if playback.routingEnabled && channelCount > 0 {
-                HStack {
-                    Text("\(deviceName) · \(channelCount) OUT")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if playback.outputControls.anySolo {
-                        Text("SOLO ACTIVE: \(playback.outputControls.soloDescription)")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.yellow)
-                    }
-                }
-                Picker("Bank", selection: $bank) {
-                    ForEach(OutputMixerBanks.banks(channelCount: channelCount), id: \.self) { number in
-                        Text(OutputMixerBanks.title(channelCount: channelCount, bank: number))
-                            .tag(number)
-                    }
-                }
-                .pickerStyle(.segmented)
-                ScrollView(.horizontal) {
-                    HStack(alignment: .top, spacing: 3) {
-                        ForEach(OutputMixerBanks.channels(channelCount: channelCount, bank: bank), id: \.self) { channel in
-                            channelStrip(channel)
-                        }
-                    }
-                    .padding(.vertical, 8)
-                }
-                .frame(maxHeight: .infinity)
-                Text("M = mute individual output · S = multi-solo · mute overrides solo. Controls affect the actual MatrixMixer output gain while audio is playing. Levels reset when routing is disabled or the device changes.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                activeMixer
             } else {
                 Text("Enable OUTPUT ROUTING and select a Core Audio interface to control individual outputs. System stereo playback is unchanged.")
                     .foregroundStyle(.secondary)
@@ -68,23 +27,85 @@ struct ShowOutputMixerView: View {
         }
         .padding(20)
         .frame(minWidth: 650, minHeight: 340)
-        .onChange(of: channelCount) { _ in
-            bank = 1
-            editingChannel = nil
+        .onChange(of: channelCount) { _ in bank = 1 }
+    }
+
+    private var header: some View {
+        HStack {
+            Label("SCULPT OUTPUT MIXER", systemImage: "slider.vertical.3")
+                .font(.system(size: 16, weight: .bold, design: .monospaced))
+            Spacer()
+            Button("RESET M/S") { playback.resetOutputMuteSolo() }
+                .disabled(!playback.routingEnabled ||
+                    (playback.outputControls.mutedCount == 0 && !playback.outputControls.anySolo))
+            Button("Close") { dismiss() }
         }
     }
 
-    private func channelStrip(_ channel: Int) -> some View {
-        let muted = playback.outputControls.isMuted(channel)
-        let soloed = playback.outputControls.isSoloed(channel)
-        let audible = playback.outputControls.isAudible(channel)
-        return VStack(spacing: 7) {
+    private var activeMixer: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("\(deviceName) · \(channelCount) OUT")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if playback.outputControls.anySolo {
+                    Text("SOLO ACTIVE: \(playback.outputControls.soloDescription)")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.yellow)
+                }
+            }
+            Picker("Bank", selection: $bank) {
+                ForEach(OutputMixerBanks.banks(channelCount: channelCount), id: \.self) { number in
+                    Text(OutputMixerBanks.title(channelCount: channelCount, bank: number))
+                        .tag(number)
+                }
+            }
+            .pickerStyle(.segmented)
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 3) {
+                    ForEach(OutputMixerBanks.channels(channelCount: channelCount, bank: bank), id: \.self) { channel in
+                        OutputChannelStrip(channel: channel,
+                                           deviceName: deviceName,
+                                           channelCount: channelCount,
+                                           labels: $labels)
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+            .frame(maxHeight: .infinity)
+            Text("M = mute individual output · S = multi-solo · mute overrides solo. Switches affect the MatrixMixer's physical outputs without restarting audio. Levels reset when routing is disabled or the device changes.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct OutputChannelStrip: View {
+    @EnvironmentObject private var playback: PlaybackEngine
+    let channel: Int
+    let deviceName: String
+    let channelCount: Int
+    @Binding var labels: ShowOutputLabels
+    @State private var editing = false
+    @State private var labelDraft = ""
+    @FocusState private var focused: Bool
+
+    private var muted: Bool { playback.outputControls.isMuted(channel) }
+    private var soloed: Bool { playback.outputControls.isSoloed(channel) }
+    private var audible: Bool { playback.outputControls.isAudible(channel) }
+    private var currentLabel: String {
+        labels.label(device: deviceName, channels: channelCount, channel: channel)
+    }
+
+    var body: some View {
+        VStack(spacing: 7) {
             Text(String(format: "%02d", channel))
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
             RoundedRectangle(cornerRadius: 3)
                 .fill(audible ? Color.green.opacity(0.65) : Color.gray.opacity(0.30))
                 .frame(width: 14, height: 66)
-                .help("Output enabled status (not an audio meter)")
+                .help("Output enabled status, not a peak meter")
             Button("M") { playback.toggleOutputMute(channel) }
                 .buttonStyle(.bordered)
                 .tint(muted ? .red : .gray)
@@ -93,39 +114,43 @@ struct ShowOutputMixerView: View {
                 .buttonStyle(.bordered)
                 .tint(soloed ? .yellow : .gray)
                 .help("Solo output \(channel)")
-            if editingChannel == channel {
-                TextField("Name", text: $labelDraft)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 9))
-                    .multilineTextAlignment(.center)
-                    .focused($labelEditorFocused)
-                    .onSubmit { commitLabel(for: channel) }
-            } else {
-                Button {
-                    labelDraft = labels.label(device: deviceName, channels: channelCount, channel: channel)
-                    editingChannel = channel
-                    labelEditorFocused = true
-                } label: {
-                    Text(labels.label(device: deviceName, channels: channelCount, channel: channel).isEmpty
-                         ? "OUT" : labels.label(device: deviceName, channels: channelCount, channel: channel))
-                        .font(.system(size: 9, design: .monospaced))
-                        .lineLimit(1)
-                        .frame(width: 42)
-                }
-                .buttonStyle(.plain)
-                .help("Click to rename; Return saves")
-            }
+            labelView
         }
         .frame(width: 46)
         .padding(.vertical, 8)
         .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
     }
 
-    private func commitLabel(for channel: Int) {
+    @ViewBuilder
+    private var labelView: some View {
+        if editing {
+            TextField("Name", text: $labelDraft)
+                .textFieldStyle(.plain)
+                .font(.system(size: 9))
+                .multilineTextAlignment(.center)
+                .focused($focused)
+                .onSubmit { commitLabel() }
+        } else {
+            Button {
+                labelDraft = currentLabel
+                editing = true
+                focused = true
+            } label: {
+                Text(currentLabel.isEmpty ? "OUT" : currentLabel)
+                    .font(.system(size: 9, design: .monospaced))
+                    .lineLimit(1)
+                    .frame(width: 42)
+            }
+            .buttonStyle(.plain)
+            .help("Click to rename; Return saves")
+        }
+    }
+
+    private func commitLabel() {
         labels.rename(labelDraft, device: deviceName, channels: channelCount, channel: channel)
         labels.save()
-        editingChannel = nil
-        labelEditorFocused = false
+        editing = false
+        focused = false
     }
 }
 
