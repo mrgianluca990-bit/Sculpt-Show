@@ -1,61 +1,32 @@
-SCULPT SHOW 0.8.3 — AGGIORNAMENTO DA 0.8.2
+SCULPT SHOW 0.10.1 — INSTALLAZIONE ICONA MACOS
 ================================================
 
-CORREZIONI
+Questa patch cambia SOLTANTO il packaging dell'app: nessun file Swift
+modificato e nessuna modifica a routing, cue, Rules, MIDI o marker.
 
-1. In ogni cue, i file audio partono dall'inizio (t=0), sincronizzati fra loro.
-   Eliminati OFFSET, IN e OUT dai controlli dei singoli elementi audio.
-   Restano LEVEL e MUTE indipendenti, e la durata della CUE rimane digitabile.
-   Le vecchie impostazioni trim/offset presenti in .scshow vengono conservate nei dati
-   per compatibilita', ma ignorate durante la riproduzione dei file audio.
-   Gli elementi TIMECODE conservano il loro offset indipendente.
+CARICA SU GITHUB 3 FILE NELLA CARTELLA "Scripts":
+https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Scripts
 
-2. Un progetto .scshow si apre con doppio clic dal Finder (nuova associazione macOS),
-   attraverso lo stesso caricamento gia' funzionante da File > Open Show.
-   Rispettata la conferma prima di scartare modifiche non salvate.
+   1) Scripts/SculptShow.icns     (NUOVO file, icona per Dock/Finder)
+   2) Scripts/Info.plist         (SOSTITUISCE la versione 0.10)
+   3) Scripts/build-macos.sh     (SOSTITUISCE la versione 0.10)
 
-PERCORSI DI CARICAMENTO SU GITHUB
+Passaggi:
+  - Estrai questo ZIP.
+  - Apri su GitHub la cartella Scripts (link sopra).
+  - Scegli Add file > Upload files.
+  - Trascina SOLTANTO i tre file contenuti nella cartella Scripts
+    dello ZIP (non caricare la cartella Scripts dentro Scripts).
+  - Conferma il commit. GitHub Actions avvia la compilazione.
+  - Scarica l'artifact Sculpt-Show-macOS dalla nuova build:
+    https://github.com/mrgianluca990-bit/Sculpt-Show/actions
+  - Sostituisci l'app in Applicazioni con la nuova build.
 
-A) Cartella Sources/SculptShowApp
-   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowApp
-   - SculptShowApp.swift
-   - CueContentsEditor.swift
-   - CueTimingEditor.swift
-   - PlaybackEngine.swift
-   - ShowStore.swift
+NOTA: SculptShow-icon-preview.png e una anteprima opzionale; NON va caricata.
 
-B) Cartella Sources/SculptShowCore
-   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowCore
-   - Show.swift
+L'icona e inclusa nel bundle "Sculpt Show.app/Contents/Resources/SculptShow.icns"
+e dichiarata in Contents/Info.plist (CFBundleIconFile).
+Se il Dock visualizza ancora la vecchia icona, rimuovi e riaggiungi
+Sculpt Show dal Dock (macOS puo usare una cache delle icone).
 
-C) Cartella Scripts
-   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Scripts
-   - Info.plist  (ESSENZIALE per riconoscere il doppio clic del Finder)
-
-D) Cartella Tests/SculptShowCoreTests
-   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Tests/SculptShowCoreTests
-   - StemPlaybackTests.swift  (NUOVO)
-
-E) Radice repo (facoltativo ma consigliato)
-   https://github.com/mrgianluca990-bit/Sculpt-Show
-   - README.md
-
-Scegli ogni cartella nel browser di GitHub, poi Add file > Upload files,
-carica i file corrispondenti e conferma il commit.
-Completati i commit, scarica l'artefatto macOS dalla build verde:
-https://github.com/mrgianluca990-bit/Sculpt-Show/actions
-
-TEST DOPPIO CLIC
-1. Estrai Sculpt Show.app dal nuovo artefatto e copia l'app in /Applications,
-   sostituendo la vecchia versione. NON continuare a usare una copia precedente.
-2. In Finder scegli un progetto .scshow > Ottieni informazioni > Apri con > Sculpt Show.
-   Scegli Cambia tutto... per renderla l'app predefinita.
-3. Doppio clic su un file .scshow con Sculpt Show chiuso e poi con Sculpt Show aperto.
-   Deve mostrare lo stesso progetto di File > Open Show, compresi cue, Rules e livelli.
-
-VERIFICHE
-- 65 test Swift eseguiti con successo su Linux.
-- Tutti i file Swift superano swiftc -frontend -parse.
-- Tipo .scshow verificato in Info.plist con Python plistlib.
-- NON ancora compilato/testato nel Finder macOS: serve la build Actions.
-- Nessuna modifica alla gestione MIDI.
+VERSIONE: 0.10.1 (sola integrazione icona)
