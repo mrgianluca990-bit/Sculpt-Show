@@ -123,7 +123,7 @@ final class PlaybackEngine: ObservableObject {
                 }
                 player.numberOfLoops = 0 // The *container*, not each file, controls looping.
                 player.currentTime = start
-                player.volume = cue.fadeInSeconds > 0 ? 0 : Float(cue.gain)
+                player.volume = cue.fadeInSeconds > 0 || element.muted ? 0 : Float(cue.gain * element.gain)
                 player.prepareToPlay()
                 prepared.append(AudioTrack(elementID: element.id, player: player,
                     start: max(0, element.startSeconds), sourceIn: start, sourceOut: end))
@@ -156,6 +156,26 @@ final class PlaybackEngine: ObservableObject {
         Float(activeCues[id]?.gain ?? 1) * (dimFactors[id] ?? 1)
     }
 
+    /// Combine the cue-level gain and dim with this element's individual fader/mute.
+    private func trackGain(_ cueID: UUID, elementID: UUID) -> Float {
+        guard let element = activeCues[cueID]?.elements.first(where: { $0.id == elementID }),
+              !element.muted else { return 0 }
+        return playerGain(cueID) * Float(element.gain)
+    }
+
+    /// Change an individual element live, without stopping or re-scheduling any player.
+    func setElementMix(_ elementID: UUID, for cueID: UUID,
+                       gain: Double? = nil, muted: Bool? = nil) {
+        guard var cue = activeCues[cueID],
+              let index = cue.elements.firstIndex(where: { $0.id == elementID && $0.kind == .audio }) else { return }
+        if let gain { cue.elements[index].gain = gain.isFinite ? min(max(gain, 0), 1) : 1 }
+        if let muted { cue.elements[index].muted = muted }
+        activeCues[cueID] = cue
+        if snapshots[cueID]?.phase == .playing {
+            refreshAudio(for: cueID, elapsed: cueElapsed(cueID))
+        }
+    }
+
     /// Schedule the ENTIRE cue at once using one AVAudioPlayer device timestamp.
     /// A later element is scheduled in advance at (shared time + its offset),
     /// instead of being started by the 50 ms UI refresh timer.
@@ -179,7 +199,6 @@ final class PlaybackEngine: ObservableObject {
         // Single-file cues start immediately unless they need a timed offset.
         // Multiple files must share a future device deadline for alignment.
         let lead = leadOverride ?? (list.count > 1 ? schedulingLead(for: list.count) : 0)
-        let gain = playerGain(id)
         var instructions: [(Int, AudioStartInstruction)] = []
         for index in list.indices {
             let track = list[index]
@@ -193,7 +212,7 @@ final class PlaybackEngine: ObservableObject {
                 continue
             }
             track.player.currentTime = instruction.positionInFile
-            track.player.volume = cue.fadeInSeconds > 0 ? 0 : gain
+            track.player.volume = cue.fadeInSeconds > 0 ? 0 : trackGain(id, elementID: track.elementID)
             if track.player.prepareToPlay() {
                 instructions.append((index, instruction))
             } else {
@@ -227,7 +246,6 @@ final class PlaybackEngine: ObservableObject {
     /// audio player from the timer: that caused the multitrack misalignment.
     private func refreshAudio(for id: UUID, elapsed: Double) {
         guard var list = tracks[id], let cue = activeCues[id] else { return }
-        let gain = playerGain(id)
         for index in list.indices where list[index].started && !list[index].finished {
             let local = elapsed - list[index].start
             let length = list[index].sourceOut - list[index].sourceIn
@@ -241,7 +259,7 @@ final class PlaybackEngine: ObservableObject {
             // Do not prematurely fade an element before its scheduled offset.
             let fade = max(0, cue.fadeInSeconds)
             let fadeFactor = fade > 0 ? min(1, max(0, local / fade)) : 1
-            list[index].player.volume = gain * Float(fadeFactor)
+            list[index].player.volume = trackGain(id, elementID: list[index].elementID) * Float(fadeFactor)
         }
         tracks[id] = list
     }

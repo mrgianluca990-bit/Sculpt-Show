@@ -209,11 +209,16 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     /// Timecode metadata, not yet an LTC/MTC output stream.
     public var timecodeStart: String
     public var frameRate: Int
+    /// Independent level per audio element (linear gain, 1.0 = unity).
+    public var gain: Double
+    /// Muting an element never stops its transport or affects other elements.
+    public var muted: Bool
 
     public init(id: UUID = UUID(), kind: CueElementKind, name: String,
                 sourcePath: String = "", startSeconds: Double = 0,
                 inSeconds: Double = 0, outSeconds: Double? = nil,
-                timecodeStart: String = "00:00:00:00", frameRate: Int = 25) {
+                timecodeStart: String = "00:00:00:00", frameRate: Int = 25,
+                gain: Double = 1.0, muted: Bool = false) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -223,6 +228,32 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
         self.outSeconds = outSeconds.map { max(0, $0) }
         self.timecodeStart = timecodeStart
         self.frameRate = [24, 25, 30].contains(frameRate) ? frameRate : 25
+        self.gain = gain.isFinite ? min(max(gain, 0), 1) : 1
+        self.muted = muted
+    }
+
+    // Version 0.8.1 and older .scshow files lack gain/muted fields.
+    // Decode these two settings with safe defaults so old projects still open.
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, name, sourcePath, startSeconds, inSeconds, outSeconds
+        case timecodeStart, frameRate, gain, muted
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try c.decode(UUID.self, forKey: .id),
+            kind: try c.decode(CueElementKind.self, forKey: .kind),
+            name: try c.decode(String.self, forKey: .name),
+            sourcePath: try c.decodeIfPresent(String.self, forKey: .sourcePath) ?? "",
+            startSeconds: try c.decodeIfPresent(Double.self, forKey: .startSeconds) ?? 0,
+            inSeconds: try c.decodeIfPresent(Double.self, forKey: .inSeconds) ?? 0,
+            outSeconds: try c.decodeIfPresent(Double.self, forKey: .outSeconds),
+            timecodeStart: try c.decodeIfPresent(String.self, forKey: .timecodeStart) ?? "00:00:00:00",
+            frameRate: try c.decodeIfPresent(Int.self, forKey: .frameRate) ?? 25,
+            gain: try c.decodeIfPresent(Double.self, forKey: .gain) ?? 1,
+            muted: try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        )
     }
 
     public static func audio(_ url: URL) -> CueElement {

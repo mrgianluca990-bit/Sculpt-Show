@@ -247,6 +247,27 @@ final class ShowStore: ObservableObject {
         editCue(id, list: list) { $0.gain = min(max(gain, 0), 1) }
     }
 
+    /// Persist and update an individual element's level without restarting playback.
+    func setElementGain(_ elementID: UUID, in cueID: UUID, listID: UUID,
+                        to gain: Double, using playback: PlaybackEngine) {
+        let safe = gain.isFinite ? min(max(gain, 0), 1) : 1
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID && $0.kind == .audio }) else { return }
+            cue.elements[index].gain = safe
+        }
+        playback.setElementMix(elementID, for: cueID, gain: safe)
+    }
+
+    /// Mute changes only the selected audio element; its transport stays aligned.
+    func setElementMuted(_ elementID: UUID, in cueID: UUID, listID: UUID,
+                         to muted: Bool, using playback: PlaybackEngine) {
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID && $0.kind == .audio }) else { return }
+            cue.elements[index].muted = muted
+        }
+        playback.setElementMix(elementID, for: cueID, muted: muted)
+    }
+
     func setFade(_ id: UUID, in list: UUID, to seconds: Double) {
         editCue(id, list: list) { $0.fadeOutSeconds = max(seconds, 0) }
     }

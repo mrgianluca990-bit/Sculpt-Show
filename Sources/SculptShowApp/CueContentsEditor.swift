@@ -46,6 +46,27 @@ struct CueContentsEditor: View {
                         }.font(.caption)
                     }
                     if element.kind == .audio {
+                        HStack {
+                            Text("ELEMENT LEVEL")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            Spacer()
+                            Text("\(Int((store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.gain ?? element.gain) * 100)) %")
+                                .font(.system(size: 10, design: .monospaced))
+                                .monospacedDigit()
+                        }
+                        Slider(value: Binding(
+                            get: { store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.gain ?? element.gain },
+                            set: { store.setElementGain(element.id, in: cue.id, listID: listID, to: $0, using: playback) }
+                        ), in: 0...1)
+                        .controlSize(.small)
+                        .help("Independent audio level: 100% = unity, 0% = silence")
+                        Toggle("MUTE ELEMENT", isOn: Binding(
+                            get: { store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.muted ?? element.muted },
+                            set: { store.setElementMuted(element.id, in: cue.id, listID: listID, to: $0, using: playback) }
+                        ))
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .help("Mute this file without affecting the other elements or stopping its transport")
                         Text(element.sourcePath)
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(.secondary)

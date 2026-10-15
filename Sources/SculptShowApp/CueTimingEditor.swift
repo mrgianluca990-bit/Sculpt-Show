@@ -32,12 +32,12 @@ struct CueTimingEditor: View {
                     .font(.system(size: 16, design: .monospaced))
                     .monospacedDigit()
                     .focused($editing)
-                    .onSubmit(commit)
-                    .onChange(of: editing) { focused in
-                        if !focused { commit() }
+                    .onSubmit {
+                        if commit() { editing = false }
                     }
-                Button("Set") { commit() }
-                    .disabled(CueClock.parse(draft) == nil)
+                    .onChange(of: editing) { focused in
+                        if !focused && !invalid { _ = commit() }
+                    }
             }
             if invalid {
                 Text("Use HH:MM:SS:MMM, e.g. 00:01:30:250 (max 24:00:00:000).")
@@ -65,10 +65,16 @@ struct CueTimingEditor: View {
         }
     }
 
-    private func commit() {
-        guard let value = CueClock.parse(draft) else { invalid = true; return }
+    /// Enter confirms the edit and leaves the text field, just like cue renaming.
+    /// Invalid input is retained for correction; duplicate focus-loss events are harmless.
+    @discardableResult
+    private func commit() -> Bool {
+        guard let value = CueClock.parse(draft) else { invalid = true; return false }
         invalid = false
-        store.setCueDuration(cue.id, in: listID, to: value)
+        if cue.durationMode != .fixed || abs(cue.durationSeconds - value) > 0.0005 {
+            store.setCueDuration(cue.id, in: listID, to: value)
+        }
         draft = CueClock.format(value)
+        return true
     }
 }
