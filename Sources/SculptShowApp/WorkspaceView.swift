@@ -90,6 +90,7 @@ struct WorkspaceView: View {
     @State private var showingTimecodeReader = false
     @StateObject private var midi = MIDIControl()
     @State private var showingMIDISettings = false
+    @State private var showingRouting = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -153,6 +154,9 @@ struct WorkspaceView: View {
         }
         .sheet(isPresented: $showingMIDISettings) {
             MIDIControlSettings().environmentObject(midi)
+        }
+        .sheet(isPresented: $showingRouting) {
+            OutputRoutingView().environmentObject(playback)
         }
         .alert("Sculpt Show", isPresented: Binding(
             get: { store.errorMessage != nil || playback.errorMessage != nil },
@@ -253,6 +257,10 @@ struct WorkspaceView: View {
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .toggleStyle(.switch)
                     .controlSize(.small)
+                Button { showingRouting = true } label: {
+                    Label(playback.routingEnabled ? "ROUTING \(playback.routingOutputCount)CH" : "OUTPUT ROUTING", systemImage: "cable.connector")
+                }
+                .help("Choose Core Audio device and enable per-file physical channel routing")
                 Button { showingMIDISettings = true } label: {
                     Label(midi.selectedID == nil ? "MIDI SETUP" : "MIDI CONNECTED", systemImage: "pianokeys")
                 }

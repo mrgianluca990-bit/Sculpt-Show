@@ -57,6 +57,29 @@ struct CueContentsEditor: View {
                         .toggleStyle(.checkbox)
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .help("Mute this file without affecting the other elements or stopping its transport")
+                        HStack {
+                            Text("PHYSICAL OUTPUT")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            Spacer()
+                            Picker("", selection: Binding(
+                                get: { store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.outputStartChannel ?? element.outputStartChannel },
+                                set: { store.setElementOutput(element.id, in: cue.id, listID: listID, to: $0, using: playback) }
+                            )) {
+                                ForEach(1...max(2, playback.routingOutputCount), id: \.self) { channel in
+                                    Text("OUT \(channel)").tag(channel)
+                                }
+                            }
+                            .frame(width: 126)
+                            .disabled(!playback.routingEnabled)
+                            .help("Select the first hardware output channel. Mono uses one output, stereo uses two consecutive outputs.")
+                        }
+                        if !playback.routingEnabled {
+                            Text("Enable OUTPUT ROUTING in global transport to assign physical outputs.")
+                                .font(.caption2).foregroundColor(.secondary)
+                        } else if let device = playback.routingDevices.first(where: { $0.id == playback.routingDeviceID }) {
+                            Text("\(device.name) · \(device.channels) hardware outputs · mono/stereo destinations")
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
                         Text(element.sourcePath)
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(.secondary)

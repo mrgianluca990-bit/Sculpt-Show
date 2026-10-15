@@ -213,12 +213,15 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     public var gain: Double
     /// Muting an element never stops its transport or affects other elements.
     public var muted: Bool
+    /// One-based physical output channel for this audio file (mono = one output;
+    /// stereo = consecutive L/R outputs). Defaults to output 1 on older shows.
+    public var outputStartChannel: Int
 
     public init(id: UUID = UUID(), kind: CueElementKind, name: String,
                 sourcePath: String = "", startSeconds: Double = 0,
                 inSeconds: Double = 0, outSeconds: Double? = nil,
                 timecodeStart: String = "00:00:00:00", frameRate: Int = 25,
-                gain: Double = 1.0, muted: Bool = false) {
+                gain: Double = 1.0, muted: Bool = false, outputStartChannel: Int = 1) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -230,13 +233,14 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
         self.frameRate = [24, 25, 30].contains(frameRate) ? frameRate : 25
         self.gain = gain.isFinite ? min(max(gain, 0), 1) : 1
         self.muted = muted
+        self.outputStartChannel = min(64, max(1, outputStartChannel))
     }
 
     // Version 0.8.1 and older .scshow files lack gain/muted fields.
     // Decode these two settings with safe defaults so old projects still open.
     private enum CodingKeys: String, CodingKey {
         case id, kind, name, sourcePath, startSeconds, inSeconds, outSeconds
-        case timecodeStart, frameRate, gain, muted
+        case timecodeStart, frameRate, gain, muted, outputStartChannel
     }
 
     public init(from decoder: Decoder) throws {
@@ -252,7 +256,8 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
             timecodeStart: try c.decodeIfPresent(String.self, forKey: .timecodeStart) ?? "00:00:00:00",
             frameRate: try c.decodeIfPresent(Int.self, forKey: .frameRate) ?? 25,
             gain: try c.decodeIfPresent(Double.self, forKey: .gain) ?? 1,
-            muted: try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+            muted: try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false,
+            outputStartChannel: try c.decodeIfPresent(Int.self, forKey: .outputStartChannel) ?? 1
         )
     }
 
