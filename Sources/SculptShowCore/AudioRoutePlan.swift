@@ -21,6 +21,6 @@ public enum AudioRoutePlan {
     }
 
     public static func label(firstOutput: Int, sourceChannels: Int) -> String {
-        sourceChannels == 1 ? "OUT \(firstOutput)" : "OUT \(firstOutput)–\(firstOutput + 1)"
+        sourceChannels == 1 ? "OUT \(firstOutput)" : "OUT \(firstOutput)/\(firstOutput + 1)"
     }
 }

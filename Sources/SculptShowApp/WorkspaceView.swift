@@ -90,6 +90,8 @@ struct WorkspaceView: View {
     @State private var showingTimecodeReader = false
     @EnvironmentObject private var midi: MIDIControl
     @State private var showingOutputMixer = true
+    @State private var showingWaveforms = false
+    @State private var showingPreflight = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -97,31 +99,17 @@ struct WorkspaceView: View {
             Divider().overlay(Skin.stroke)
             transport
             Divider().overlay(Skin.stroke)
-            HStack(spacing: 0) {
-                ScrollView(.horizontal) {
-                    HStack(alignment: .top, spacing: 12) {
-                        ForEach(store.show.cueLists) { list in
-                            CueListPanel(list: list)
-                                .frame(width: 418)
-                        }
-                    }
-                    .padding(16)
+            if showingOutputMixer || showingWaveforms || showingTimecodeReader {
+                // A native, draggable split between the show editor and Cue-style
+                // docked consoles. Changing layout never changes the audio graph.
+                VSplitView {
+                    mainEditor
+                        .frame(minHeight: 235)
+                    bottomConsoles
+                        .frame(minHeight: 310, idealHeight: 370)
                 }
-                .background(Skin.base)
-
-                Divider().overlay(Skin.stroke)
-                inspector
-                    .frame(width: 346)
-            }
-            .frame(maxHeight: .infinity)
-            if showingOutputMixer {
-                Divider().overlay(Skin.stroke)
-                ShowOutputMixerView()
-                    .environmentObject(playback)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 244)
-                    .background(Skin.panel)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else {
+                mainEditor
             }
             statusBar
         }
@@ -160,11 +148,13 @@ struct WorkspaceView: View {
                 store.handleRuleEvent(.stopping, source: id, using: playback)
             }
         }
+        .sheet(isPresented: $showingPreflight) {
+            ShowPreflightPanel()
+                .environmentObject(store)
+                .environmentObject(playback)
+        }
         .sheet(item: $rulesScope) { scope in
             RulesEditor(scope: scope).environmentObject(store)
-        }
-        .sheet(isPresented: $showingTimecodeReader) {
-            TimecodeReaderView().environmentObject(timecodeReader)
         }
         .alert("Sculpt Show", isPresented: Binding(
             get: { store.errorMessage != nil || playback.errorMessage != nil },
@@ -176,6 +166,69 @@ struct WorkspaceView: View {
             }
         } message: {
             Text(store.errorMessage ?? playback.errorMessage ?? "")
+        }
+    }
+
+    private var mainEditor: some View {
+        HStack(spacing: 0) {
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(store.show.cueLists) { list in
+                        CueListPanel(list: list)
+                            .frame(width: 418)
+                    }
+                }
+                .padding(16)
+            }
+            .background(Skin.base)
+            Divider().overlay(Skin.stroke)
+            inspector
+                .frame(width: 346)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Mixer and MTC can run simultaneously or independently. The operator can
+    /// resize this dock with the VSplitView divider, without touching playback.
+    private var bottomConsoles: some View {
+        HStack(spacing: 0) {
+            if showingOutputMixer || showingWaveforms {
+                waveformAndMixer
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if (showingOutputMixer || showingWaveforms) && showingTimecodeReader {
+                Divider().overlay(Skin.stroke)
+            }
+            if showingTimecodeReader {
+                TimecodeReaderView()
+                    .environmentObject(timecodeReader)
+                    .frame(width: (showingOutputMixer || showingWaveforms) ? 375 : nil)
+                    .frame(maxWidth: (showingOutputMixer || showingWaveforms) ? nil : .infinity,
+                           maxHeight: .infinity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Skin.panel)
+    }
+
+    @ViewBuilder
+    private var waveformAndMixer: some View {
+        if showingOutputMixer && showingWaveforms {
+            VSplitView {
+                ShowOutputMixerView()
+                    .environmentObject(playback)
+                    .frame(minHeight: 235, idealHeight: 340)
+                ShowWaveformOverview()
+                    .environmentObject(store)
+                    .environmentObject(playback)
+                    .frame(minHeight: 145, idealHeight: 250)
+            }
+        } else if showingOutputMixer {
+            ShowOutputMixerView().environmentObject(playback)
+        } else if showingWaveforms {
+            ShowWaveformOverview()
+                .environmentObject(store)
+                .environmentObject(playback)
         }
     }
 
@@ -213,6 +266,7 @@ struct WorkspaceView: View {
             }
             headerButton("square.and.arrow.down", "Save") { store.save() }
             headerButton("arrow.triangle.branch", "Show Rules") { rulesScope = .show }
+            headerButton("checkmark.shield", "Preflight") { showingPreflight = true }
             headerButton("plus.rectangle.on.folder", "New List") { store.addList() }
         }
         .padding(.horizontal, 22)
@@ -273,16 +327,31 @@ struct WorkspaceView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(showingOutputMixer ? Skin.gold : Skin.raised)
                 .help(showingOutputMixer ? "Hide the docked output mixer" : "Show the docked output mixer")
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        showingWaveforms.toggle()
+                    }
+                } label: {
+                    Label("WAVEFORMS", systemImage: "waveform")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(showingWaveforms ? Skin.gold : Skin.raised)
+                .help("Show aligned cue waveforms, marker positions and live playhead")
                 HStack(spacing: 4) {
                     Circle().fill(playback.routingEnabled ? Skin.green : .red)
                         .frame(width: 7, height: 7)
                     Text(playback.routingEnabled ? "AUDIO \(playback.routingOutputCount)CH" : "AUDIO OFF")
                         .font(.system(size: 10, design: .monospaced))
                 }
-                Button { showingTimecodeReader = true } label: {
-                    Text(timecodeReader.frame?.display ?? "MTC READER")
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { showingTimecodeReader.toggle() }
+                } label: {
+                    Label(timecodeReader.frame?.display ?? "MTC READER", systemImage: "clock")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(showingTimecodeReader ? Skin.gold : Skin.raised)
+                .help(showingTimecodeReader ? "Hide the docked timecode reader" : "Show timecode reader, alongside or without the mixer")
             }
             .font(.system(size: 11, weight: .semibold))
         }

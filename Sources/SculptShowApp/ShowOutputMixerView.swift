@@ -105,6 +105,8 @@ private struct OutputChannelStrip: View {
     @State private var labelDraft = ""
     @FocusState private var focused: Bool
 
+    private let meterHeight: CGFloat = 165
+
     private var muted: Bool { playback.outputControls.isMuted(channel) }
     private var soloed: Bool { playback.outputControls.isSoloed(channel) }
     private var levels: (peak: Float, rms: Float) { playback.outputMeter(channel: channel) }
@@ -120,9 +122,10 @@ private struct OutputChannelStrip: View {
             signalMeter
             Text(hold >= 1 ? "CLIP" :
                 String(format: "%.0f", max(-90, OutputMeterLevels.dBFS(hold))))
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundColor(hold >= 1 ? .red : .secondary)
                 .monospacedDigit()
+                .help("Held peak dBFS. Press CLEAR PEAK to reset")
             HStack(spacing: 2) {
                 switchButton(letter: "M", isActive: muted, activeColor: .red,
                              help: "Mute output \(channel)") {
@@ -135,8 +138,8 @@ private struct OutputChannelStrip: View {
             }
             labelView
         }
-        .frame(width: 45)
-        .padding(.vertical, 5)
+        .frame(width: 51)
+        .padding(.vertical, 8)
         .background(Color.gray.opacity(0.11), in: RoundedRectangle(cornerRadius: 4))
     }
 
@@ -172,24 +175,24 @@ private struct OutputChannelStrip: View {
         return ZStack(alignment: .bottom) {
             RoundedRectangle(cornerRadius: 2)
                 .fill(Color.black.opacity(0.48))
-                .frame(width: 15, height: 65)
+                .frame(width: 17, height: meterHeight)
             RoundedRectangle(cornerRadius: 2)
                 .fill(Color.green.opacity(0.8))
-                .frame(width: 15, height: 65 * rmsValue)
+                .frame(width: 17, height: meterHeight * rmsValue)
             if levels.peak > 0 {
                 Rectangle()
                     .fill(currentColor)
-                    .frame(width: 15, height: 2)
-                    .offset(y: -max(0, 65 * peakValue - 2))
+                    .frame(width: 17, height: 2)
+                    .offset(y: -max(0, meterHeight * peakValue - 2))
             }
             if hold > 0 {
                 Rectangle()
                     .fill(hold >= 1 ? Color.red : Color.yellow)
-                    .frame(width: 15, height: 2)
-                    .offset(y: -max(0, 65 * heldValue - 2))
+                    .frame(width: 17, height: 2)
+                    .offset(y: -max(0, meterHeight * heldValue - 2))
             }
         }
-        .frame(width: 15, height: 65)
+        .frame(width: 17, height: meterHeight)
         .help("POST-ROUTE Peak \(Int(OutputMeterLevels.dBFS(levels.peak))) dBFS · RMS \(Int(OutputMeterLevels.dBFS(levels.rms))) dBFS · Hold \(Int(OutputMeterLevels.dBFS(hold))) dBFS")
     }
 
@@ -202,7 +205,7 @@ private struct OutputChannelStrip: View {
                 .multilineTextAlignment(.center)
                 .focused($focused)
                 .onSubmit { commitLabel() }
-                .frame(width: 43)
+                .frame(width: 48)
         } else {
             Button {
                 labelDraft = currentLabel
@@ -212,7 +215,7 @@ private struct OutputChannelStrip: View {
                 Text(currentLabel.isEmpty ? "OUT" : currentLabel)
                     .font(.system(size: 9, design: .monospaced))
                     .lineLimit(1)
-                    .frame(width: 42)
+                    .frame(width: 48)
             }
             .buttonStyle(.plain)
             .help("Rename channel · Return saves")

@@ -1,42 +1,31 @@
-SCULPT SHOW 0.10.2 — Mixer Cue convergence + Icon Fix
+SCULPT SHOW 0.11.0 - CONVERGENZA CUE / BUILD CUMULATIVA
+======================================================
 
-Stato: test automatici su Linux 84/84 PASS; verifica sintassi Swift PASS.
-Build macOS non ancora eseguita; verrà eseguita da GitHub Actions dopo il commit.
+Base pubblicata verificata su GitHub: Sculpt Show 0.10.4.
+La versione 0.10.5 è inclusa nel pacchetto, anche se non è stata
+ancora caricata nel repository.
 
-REPOSITORY:
-https://github.com/mrgianluca990-bit/Sculpt-Show
-ULTIMO COMMIT VERIFICATO DURANTE LA PREPARAZIONE:
-f2c778aecc3be2da9c14a1ac5e3f102b2232121d
+METODO CONSIGLIATO (GitHub via browser):
+1) Scarica Sculpt-Show-v0.11.0-Cue-Convergence-Update.zip
+2) Estrai lo ZIP.
+3) Apri https://github.com/mrgianluca990-bit/Sculpt-Show
+4) Carica i file nelle corrispondenti cartelle, preservando la struttura.
+   ATTENZIONE: non caricare l'intera cartella principale come sottocartella
+   di main. Le directory sono Sources, Tests, Scripts.
+5) Commit su main: GitHub Actions avvierà la build macOS universale.
+6) Scarica l'app da Actions -> ultimo run -> Sculpt-Show-macOS.
 
-AGGIORNAMENTO MANUALE DA GITHUB (non caricare lo ZIP come file):
-1. Estrai questo ZIP sul Mac.
-2. Su GitHub, entra nella rispettiva cartella per ciascuno dei gruppi sotto.
-3. Usa Add file > Upload files e trascina i file di quella cartella.
-4. Conferma Commit changes. Non sostituire altri file del repository.
+ALTERNATIVA: usa Sculpt-Show-v0.11.0-Complete-Source.zip per
+sostituire tutti i sorgenti. Include script, workflow, test, icona.
 
-GRUPPI:
-- Sources/SculptShowApp : cinque file .swift (PlaybackEngine, RoutedAudioEngine,
-  ShowOutputMixerView, OutputRoutingView, WorkspaceView).
-- Sources/SculptShowCore : OutputMuteSoloState.swift (gia' nel repo, incluso per integrita').
-- Tests/SculptShowCoreTests : OutputMuteSoloTests.swift, RulesTests.swift.
-- Scripts : Info.plist, SculptShow.icns, build-macos.sh.
-- .github/workflows : macos-build.yml.
+NON rimuovere gli script esistenti e NON cancellare .scshow.
 
-Al termine verifica GitHub Actions:
-https://github.com/mrgianluca990-bit/Sculpt-Show/actions
+IL PACCHETTO È SORGENTE: finché GitHub Actions non restituisce
+SUCCESS, non considerarlo un'app compilata né una versione live stabile.
 
-CORREZIONI:
-- PlaybackEngine espone outputControls e metodi di controllo M/S/Reset.
-- RoutedAudioEngine applica realmente gain 0/1 alle singole uscite MatrixMixer.
-- Finestra ShowOutputMixerView spezzata in piccole viste SwiftUI per evitare
-  gli errori di type-checking e di binding nei log della precedente build.
-- Pulsante OUTPUT MIXER accessibile dal pannello OUTPUT ROUTING.
-- Icona approvata installata nelle risorse di Sculpt Show.app.
-- Script e workflow controllano che la risorsa e il CFBundleIconFile siano presenti.
-- Versione 0.10.2, ridotti avvisi Swift innocui.
-
-HARDWARE TEST:
-OUT1 e OUT3 con file mono diversi -> Mute 3 -> il segnale OUT3 si interrompe;
-Solo 1 -> altri canali non udibili; Solo 3 in aggiunta -> 1 e 3 udibili
-(salvo Mute); Reset M/S -> tutto ripristinato. Ripeti con 16+ uscite.
-L'interfaccia mostra lo stato ON/OFF delle uscite, NON misure audio Peak/RMS.
+TEST PRINCIPALI:
+- WAVEFORMS su cue multitraccia e marker.
+- MIXER + WAVEFORMS + MTC simultanei.
+- PREFLIGHT -> JSON / RELINK / ricerca cartella.
+- Audio/MIDI Setup -> speaker test 440 Hz -30 dBFS, solo senza cue attive.
+- Verifica nessuna interruzione al cambio live di OUT, M/S, drag dei pannelli.

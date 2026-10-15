@@ -164,6 +164,68 @@ final class ShowStore: ObservableObject {
         editCue(cueID, list: listID) { $0.elements.removeAll { $0.id == elementID } }
     }
 
+    /// Replace a reference while preserving element UUID, routing, gain and Rules.
+    /// Does not stop a currently playing cue: the new path takes effect on next GO.
+    func relinkElement(_ elementID: UUID, in cueID: UUID, listID: UUID, to url: URL) {
+        guard url.isFileURL,
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: {
+                $0.id == elementID && $0.kind == .audio
+            }) else { return }
+            cue.elements[index].sourcePath = url.path
+        }
+    }
+
+    func chooseRelink(for elementID: UUID, cueID: UUID, listID: UUID) {
+        guard let element = show.cue(cueID)?.audioElements.first(where: { $0.id == elementID }) else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Relink Audio — \(element.name)"
+        panel.message = "Choose the replacement audio file. The active cue will not be interrupted."
+        panel.allowedContentTypes = [.audio]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: element.sourcePath).deletingLastPathComponent()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        relinkElement(elementID, in: cueID, listID: listID, to: url)
+    }
+
+    /// Only exact-filename, unambiguous matches are relinked; never guesses
+    /// based on partial names. Skips packages and hidden folders, max 10k files.
+    /// Can be run while playing: existing audio file handles stay untouched.
+    @discardableResult
+    func relinkMissingMedia(in folder: URL) -> Int {
+        guard folder.isFileURL else { return 0 }
+        var existing: [String: [URL]] = [:]
+        if let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
+            var inspected = 0
+            for case let url as URL in enumerator {
+                inspected += 1
+                if inspected > 10_000 { break }
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                existing[url.lastPathComponent.lowercased(), default: []].append(url)
+            }
+        }
+        var updated = show
+        var replacements = 0
+        for li in updated.cueLists.indices {
+            for ci in updated.cueLists[li].cues.indices {
+                for ei in updated.cueLists[li].cues[ci].elements.indices {
+                    let item = updated.cueLists[li].cues[ci].elements[ei]
+                    guard item.kind == .audio,
+                          !FileManager.default.fileExists(atPath: item.sourcePath),
+                          let matches = existing[URL(fileURLWithPath: item.sourcePath).lastPathComponent.lowercased()],
+                          matches.count == 1 else { continue }
+                    updated.cueLists[li].cues[ci].elements[ei].sourcePath = matches[0].path
+                    replacements += 1
+                }
+            }
+        }
+        if replacements > 0 { commit(updated) }
+        return replacements
+    }
+
     func setElementStart(_ elementID: UUID, in cueID: UUID, listID: UUID, to seconds: Double) {
         editCue(cueID, list: listID) { cue in
             guard let index = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }

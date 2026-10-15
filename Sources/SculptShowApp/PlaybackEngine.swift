@@ -68,6 +68,7 @@ final class PlaybackEngine: ObservableObject {
     @Published private(set) var outputRMS: [Float] = []
     @Published private(set) var outputPeakHolds: [Float] = []
     private var peakHoldState = OutputPeakHoldState(channelCount: 0)
+    @Published private(set) var testToneOutput: Int?
     private let preferredOutputUIDKey = "SculptShow.preferredCoreAudioOutputUID.v1"
     private var routingStartupAttempted = false
 
@@ -152,6 +153,32 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
+    /// Cue Native diagnostic: -30 dBFS 440 Hz, routed via a dedicated bus.
+    /// Safety: cannot start with any cue active, and GO always stops it.
+    func toggleTestTone(output channel: Int) {
+        guard snapshots.isEmpty else {
+            errorMessage = "Stop all cues before using the speaker test tone."
+            return
+        }
+        guard routingEnabled, outputControls.isValid(channel) else {
+            errorMessage = "Select a valid output channel for the test tone."
+            return
+        }
+        if testToneOutput == channel { stopTestTone(); return }
+        do {
+            try routedAudio.startTestTone(output: channel)
+            testToneOutput = channel
+        } catch {
+            testToneOutput = nil
+            errorMessage = "Test tone failed: \(error.localizedDescription)"
+        }
+    }
+
+    func stopTestTone() {
+        routedAudio.stopTestTone()
+        testToneOutput = nil
+    }
+
     func refreshRoutingDevices() {
         routingDevices = RoutedAudioEngine.availableOutputs()
     }
@@ -168,6 +195,7 @@ final class PlaybackEngine: ObservableObject {
             errorMessage = "Cannot change audio interface while cues are active. The current audio keeps playing; stop the show before changing hardware."
             return
         }
+        stopTestTone()
         refreshRoutingDevices()
         guard let device = routingDevices.first(where: { $0.id == deviceID }) else {
             errorMessage = "Selected output device is not connected. Current routing was not changed."
@@ -264,6 +292,8 @@ final class PlaybackEngine: ObservableObject {
     func play(_ requestedCue: Cue, overrideFadeInSeconds: Double? = nil,
               from markerOffsetSeconds: Double = 0) -> Bool {
         guard requestedCue.enabled else { return false }
+        // A forgotten diagnostic tone can never continue into a live GO.
+        stopTestTone()
         // Show mode always requires an active Core Audio route for audio cues.
         // Never silently fall back to system stereo if the hardware is unavailable.
         if requestedCue.hasAudio && !routingEnabled {

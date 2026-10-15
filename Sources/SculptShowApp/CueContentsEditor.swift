@@ -73,12 +73,12 @@ struct CueContentsEditor: View {
                                 set: { store.setElementOutput(element.id, in: cue.id, listID: listID, to: $0, using: playback) }
                             )) {
                                 ForEach(1...max(1, playback.routingOutputCount - ((audioChannelCache[element.sourcePath] ?? 2) == 2 ? 1 : 0)), id: \.self) { channel in
-                                    Text("OUT \(channel)").tag(channel)
+                                    Text(AudioRoutePlan.label(firstOutput: channel, sourceChannels: (audioChannelCache[element.sourcePath] ?? 2) == 1 ? 1 : 2)).tag(channel)
                                 }
                             }
-                            .frame(width: 126)
+                            .frame(width: 142)
                             .disabled(!playback.routingEnabled)
-                            .help("Select the first hardware output channel. Mono uses one output, stereo uses two consecutive outputs.")
+                            .help("Current destination: \(AudioRoutePlan.label(firstOutput: store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.outputStartChannel ?? element.outputStartChannel, sourceChannels: (audioChannelCache[element.sourcePath] ?? 2) == 1 ? 1 : 2)). Changing routing never restarts playback.")
                         }
                         if !playback.routingEnabled {
                             Text("Audio routing is initializing. Select a device in File → Audio/MIDI Setup if required.")
@@ -86,6 +86,16 @@ struct CueContentsEditor: View {
                         } else if let device = playback.routingDevices.first(where: { $0.id == playback.routingDeviceID }) {
                             Text("\(device.name) · \(device.channels) hardware outputs · mono/stereo destinations")
                                 .font(.caption2).foregroundColor(.secondary)
+                        }
+                        HStack {
+                            Button {
+                                store.chooseRelink(for: element.id, cueID: cue.id, listID: listID)
+                            } label: {
+                                Label("RELINK…", systemImage: "link")
+                            }
+                            .controlSize(.small)
+                            .help("Replace file reference without stopping playback. Change takes effect at next GO.")
+                            Spacer()
                         }
                         Text(element.sourcePath)
                             .font(.system(size: 10, design: .monospaced))

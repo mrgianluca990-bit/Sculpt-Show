@@ -55,6 +55,12 @@ final class RoutedAudioEngine {
     private var voices: [Voice] = []
     private(set) var selectedDevice: OutputDevice?
     private var cueToVoices: [UUID: [Int]] = [:]
+    // Test tone reuses one FREE voice only when the transport is idle.
+    // No extra mixer bus, AVAudioEngine node or graph rebuild is needed.
+    private var testBuffer: AVAudioPCMBuffer?
+    private(set) var testToneOutput: Int?
+    private var testToneVoice: Int?
+
     /// Called on the main queue with actual PCM values tapped after the matrix.
     var onMeterSample: (([Float], [Float]) -> Void)?
 
@@ -164,6 +170,16 @@ final class RoutedAudioEngine {
             gain.outputVolume = 0
             newVoices.append(Voice(node: player, gainNode: gain))
         }
+        let frameCount = AVAudioFrameCount(max(1024, Int(rate / 2)))
+        guard let toneFormat = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2),
+              let tone = AVAudioPCMBuffer(pcmFormat: toneFormat, frameCapacity: frameCount),
+              let samples = tone.floatChannelData else { throw RoutingError.noDeviceOutput }
+        tone.frameLength = frameCount
+        for i in 0..<Int(frameCount) {
+            // −30 dBFS peak, 440 Hz. The right input is silent for mono output.
+            samples[0][i] = 0.03162278 * Float(sin(Double(i) * 2 * Double.pi * 440 / rate))
+            samples[1][i] = 0
+        }
         graph.prepare()
         try graph.start()
         let au = mixerUnit.audioUnit
@@ -214,6 +230,9 @@ final class RoutedAudioEngine {
         engine = graph
         matrix = mixerUnit
         voices = newVoices
+        testBuffer = tone
+        testToneOutput = nil
+        testToneVoice = nil
         selectedDevice = device
     }
 
@@ -234,6 +253,42 @@ final class RoutedAudioEngine {
         }
     }
 
+    /// Safe, operator-armed 440 Hz −30 dBFS test tone through an existing
+    /// free MatrixMixer input. Disabled while cues are running by the caller.
+    func startTestTone(output channel: Int) throws {
+        guard isReady, let matrix, let testBuffer,
+              let device = selectedDevice, channel >= 1, channel <= device.channels,
+              cueToVoices.isEmpty,
+              let index = voices.indices.last(where: { voices[$0].owner == nil }) else {
+            throw RoutingError.engineNotReady
+        }
+        stopTestTone()
+        try route(index: index, fileChannels: 1, firstOutput: channel, on: matrix)
+        voices[index].gainNode.outputVolume = 1
+        voices[index].node.scheduleBuffer(testBuffer, at: nil, options: .loops, completionHandler: nil)
+        voices[index].node.play()
+        testToneOutput = channel
+        testToneVoice = index
+    }
+
+    func stopTestTone() {
+        if let index = testToneVoice, voices.indices.contains(index) {
+            voices[index].node.stop()
+            voices[index].gainNode.outputVolume = 0
+            if let matrix, let device = selectedDevice {
+                for output in 0..<device.channels {
+                    for input in (index * 2)..<(index * 2 + 2) {
+                        let crosspoint = (UInt32(input) << 16) | UInt32(output)
+                        _ = AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
+                             kAudioUnitScope_Global, crosspoint, 0, 0)
+                    }
+                }
+            }
+        }
+        testToneOutput = nil
+        testToneVoice = nil
+    }
+
     private func require(_ status: OSStatus, _ label: String) throws {
         guard status == noErr else { throw RoutingError.cannotConfigure(label, status) }
     }
@@ -241,6 +296,8 @@ final class RoutedAudioEngine {
     func teardown() {
         // Disconnect the tap before destroying its host graph.
         if let matrix { matrix.removeTap(onBus: 0) }
+        stopTestTone()
+        testBuffer = nil
         for voice in voices { voice.node.stop() }
         engine?.stop()
         voices = []
@@ -251,6 +308,7 @@ final class RoutedAudioEngine {
     }
 
     func start(_ cue: Cue, from elapsed: Double, fade: Float, hostLead: Double = 0.22) throws -> Double {
+        stopTestTone()
         guard isReady, let matrix, let device = selectedDevice else { throw RoutingError.engineNotReady }
         // Remove and re-arm on seek/resume, keeping free-voice occupancy atomic.
         stop(cue.id)

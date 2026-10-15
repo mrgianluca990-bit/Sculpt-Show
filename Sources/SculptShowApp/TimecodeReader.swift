@@ -29,6 +29,7 @@ final class TimecodeReader: ObservableObject {
     private var awaitingQuarterFrameData = false
     private var lastMessageTime: Date?
     private var watchdog: Timer?
+    private static let sourceKey = "SculptShow.timecodeReader.preferredSource.v1"
 
     init() {
         setupMIDI()
@@ -79,21 +80,28 @@ final class TimecodeReader: ObservableObject {
             return Source(id: identifier, endpoint: endpoint, name: title)
         }
         if let selectedID, !sources.contains(where: { $0.id == selectedID }) {
-            disconnect()
+            disconnect(clearPreference: false)
+        }
+        if selectedID == nil,
+           let remembered = UserDefaults.standard.object(forKey: Self.sourceKey) as? NSNumber {
+            let preferredID = MIDIUniqueID(remembered.int32Value)
+            if sources.contains(where: { $0.id == preferredID }) { connect(to: preferredID) }
         }
     }
 
     func connect(to id: MIDIUniqueID) {
         guard inputPort != 0, let source = sources.first(where: { $0.id == id }) else { return }
-        disconnect()
+        if selectedID == id && connectedEndpoint != 0 { return }
+        disconnect(clearPreference: false)
         let status = MIDIPortConnectSource(inputPort, source.endpoint, nil)
         guard status == noErr else { error = "Cannot connect MIDI source (\(status))."; return }
         connectedEndpoint = source.endpoint
         selectedID = id
+        UserDefaults.standard.set(NSNumber(value: id), forKey: Self.sourceKey)
         error = nil
     }
 
-    func disconnect() {
+    func disconnect(clearPreference: Bool = true) {
         if connectedEndpoint != 0 && inputPort != 0 { MIDIPortDisconnectSource(inputPort, connectedEndpoint) }
         connectedEndpoint = 0
         selectedID = nil
@@ -102,6 +110,7 @@ final class TimecodeReader: ObservableObject {
         locked = false
         lastMessageTime = nil
         awaitingQuarterFrameData = false
+        if clearPreference { UserDefaults.standard.removeObject(forKey: Self.sourceKey) }
     }
 
     private func consume(_ packet: [UInt8]) {
@@ -127,30 +136,40 @@ final class TimecodeReader: ObservableObject {
     }
 }
 
+/// Dockable live MTC console. Not a modal sheet: can remain visible beside
+/// the multichannel mixer while the show runs.
 struct TimecodeReaderView: View {
     @EnvironmentObject private var reader: TimecodeReader
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("TIMECODE READER").font(.system(size: 18, weight: .bold, design: .monospaced))
+                Label("TIMECODE READER", systemImage: "clock")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(red: 0.93, green: 0.70, blue: 0.38))
                 Spacer()
-                Button("Close") { dismiss() }
+                Circle()
+                    .fill(reader.locked ? Color.green : Color.orange)
+                    .frame(width: 9, height: 9)
+                    .help(reader.locked ? "MTC locked" : "No valid MTC")
             }
             Text(reader.frame?.display ?? "--:--:--:--")
-                .font(.system(size: 43, weight: .medium, design: .monospaced))
+                .font(.system(size: 38, weight: .medium, design: .monospaced))
                 .monospacedDigit()
+                .minimumScaleFactor(0.60)
+                .lineLimit(1)
                 .foregroundColor(reader.locked ? .green : .secondary)
             HStack {
-                Circle().fill(reader.locked ? Color.green : Color.orange)
-                    .frame(width: 9, height: 9)
-                Text(reader.locked ? "MTC SIGNAL RECEIVED" : "WAITING FOR MTC")
+                Text(reader.locked ? "MTC LOCKED" : "WAITING FOR MTC")
+                    .foregroundColor(reader.locked ? .green : .orange)
                 Spacer()
-                if let f = reader.frame { Text("\(f.nominalFPS) fps\(f.dropFrame ? " DF" : "")") }
+                if let frame = reader.frame {
+                    Text("\(frame.nominalFPS) fps\(frame.dropFrame ? " DF" : "")")
+                        .foregroundColor(.secondary)
+                }
             }
-            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-            HStack {
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            HStack(spacing: 8) {
                 Picker("MIDI INPUT", selection: Binding(
                     get: { reader.selectedID ?? 0 },
                     set: { if $0 == 0 { reader.disconnect() } else { reader.connect(to: $0) } }
@@ -160,16 +179,22 @@ struct TimecodeReaderView: View {
                         Text(source.name).tag(source.id)
                     }
                 }
-                Button("Refresh") { reader.refreshSources() }
+                .frame(maxWidth: .infinity)
+                Button { reader.refreshSources() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh available MIDI sources")
             }
-            if let error = reader.error { Text(error).foregroundColor(.orange).font(.caption) }
-            Text("Reads incoming MIDI Time Code quarter-frame messages from a CoreMIDI source. " +
-                 "The final field shows FRAMES, not milliseconds. This reader does not decode LTC audio yet, " +
-                 "and does not chase playback or trigger cue rules in this version.")
-                .font(.caption)
+            if let error = reader.error {
+                Text(error).foregroundColor(.orange).font(.caption)
+            }
+            Spacer(minLength: 0)
+            Text("CoreMIDI · quarter-frame MTC input · FRAMES (not milliseconds). Source selection is restored across launches. LTC decoding and chase are not enabled.")
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(24)
-        .frame(width: 560)
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

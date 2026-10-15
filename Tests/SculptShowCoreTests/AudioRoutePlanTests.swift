@@ -2,6 +2,12 @@ import XCTest
 @testable import SculptShowCore
 
 final class AudioRoutePlanTests: XCTestCase {
+    func testInspectorDisplaysPhysicalStereoPairAndMonoSingle() {
+        XCTAssertEqual(AudioRoutePlan.label(firstOutput: 1, sourceChannels: 2), "OUT 1/2")
+        XCTAssertEqual(AudioRoutePlan.label(firstOutput: 15, sourceChannels: 2), "OUT 15/16")
+        XCTAssertEqual(AudioRoutePlan.label(firstOutput: 7, sourceChannels: 1), "OUT 7")
+    }
+
     func testMonoRouteToChannel8() {
         XCTAssertEqual(AudioRoutePlan.crosspoints(firstOutput: 8, sourceChannels: 1, deviceChannels: 16),
                        [.init(sourceChannel: 0, deviceChannel: 7)])

@@ -9,6 +9,7 @@ struct OutputRoutingView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var pickedDevice: AudioDeviceID = 0
     @State private var applying = false
+    @State private var testChannel = 1
 
     var body: some View {
         VStack(alignment: .leading, spacing: 17) {
@@ -51,6 +52,29 @@ struct OutputRoutingView: View {
                      : "AUDIO NOT READY · GO BLOCKED")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
             }
+            Divider()
+            HStack(spacing: 10) {
+                Text("SPEAKER TEST · 440 Hz / −30 dBFS")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                Spacer()
+                Picker("OUT", selection: $testChannel) {
+                    ForEach(1...max(1, playback.routingOutputCount), id: \.self) { n in
+                        Text("OUT \(n)").tag(n)
+                    }
+                }
+                .frame(width: 130)
+                Button(playback.testToneOutput == testChannel ? "STOP TEST" : "PLAY TEST") {
+                    playback.toggleTestTone(output: testChannel)
+                }
+                .disabled(!playback.routingEnabled || !playback.snapshots.isEmpty)
+                .tint(playback.testToneOutput == testChannel ? .red : .orange)
+                .buttonStyle(.borderedProminent)
+                if playback.testToneOutput != nil && playback.testToneOutput != testChannel {
+                    Button("STOP") { playback.stopTestTone() }
+                }
+            }
+            Text("Safety: only available with STOP ALL, independent from show cues. A cue GO automatically stops the tone. The mixer mute/solo is respected.")
+                .font(.caption).foregroundStyle(.secondary)
             Text("LIVE SAFETY: Reassign stem outputs and operate the mixer without stopping playback. A hardware device change during playback is refused and the current show continues. Device preference is remembered by Core Audio UID, not transient numeric ID. Routing must be ready before an audio cue can GO. Maximum 16 concurrent mono/stereo stems; MTC controller settings are separate.")
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -59,6 +83,7 @@ struct OutputRoutingView: View {
         .onAppear {
             playback.refreshRoutingDevices()
             pickedDevice = playback.routingDeviceID ?? 0
+            testChannel = 1
         }
     }
 }
