@@ -161,6 +161,7 @@ private struct TimecodeEntry: View {
     let cueID: UUID
     let listID: UUID
     @State private var value = ""
+    @State private var trimDraft = ""
 
     private var current: CueElement {
         store.show.cue(cueID)?.elements.first(where: { $0.id == element.id }) ?? element
@@ -174,11 +175,37 @@ private struct TimecodeEntry: View {
                 TextField("HH:MM:SS:FF", text: $value)
                     .font(.system(size: 12, design: .monospaced))
                     .textFieldStyle(.roundedBorder)
-                    .onAppear { value = current.timecodeStart }
+                    .onAppear { value = current.timecodeStart; trimDraft = current.ltcTrim }
                     .onSubmit { store.setTimecode(element.id, in: cueID, listID: listID, to: value) }
                 Button("SET") { store.setTimecode(element.id, in: cueID, listID: listID, to: value) }
                     .controlSize(.small)
             }
+            HStack(spacing: 6) {
+                Text("TC OFFSET")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                TextField("±HH:MM:SS:FF", text: $trimDraft)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { store.setTimecodeTrim(element.id, in: cueID, listID: listID, to: trimDraft) }
+                Button("SET") {
+                    store.setTimecodeTrim(element.id, in: cueID, listID: listID, to: trimDraft)
+                }
+                .controlSize(.small)
+            }
+            .help("Signed frame-accurate LTC offset. Does not move the audio or cue playhead.")
+            HStack(spacing: 8) {
+                Text("LTC LEVEL TRIM")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                Slider(value: Binding(
+                    get: { current.ltcLevelTrimDB },
+                    set: { store.setTimecodeLevelTrim(element.id, in: cueID, listID: listID,
+                                                     to: $0, using: playback) }
+                ), in: -36...12, step: 1)
+                Text(String(format: "%+.0f dB", current.ltcLevelTrimDB))
+                    .font(.system(size: 10, design: .monospaced))
+                    .frame(width: 65, alignment: .trailing)
+            }
+            .help("Live LTC output gain trim, -36 to +12 dB relative to nominal -12 dBFS. No changes to music audio.")
             Picker("LTC FPS", selection: Binding(
                 get: { LTCFrameRate(fps: current.frameRate, drop: current.timecodeDropFrame) },
                 set: { store.setTimecodeLTCFrameRate(element.id, in: cueID, listID: listID, to: $0) }
@@ -216,5 +243,6 @@ private struct TimecodeEntry: View {
             }
         }
         .onChange(of: element.timecodeStart) { _ in value = current.timecodeStart }
+        .onChange(of: element.ltcTrim) { _ in trimDraft = current.ltcTrim }
     }
 }

@@ -196,7 +196,11 @@ struct TimecodeReaderView: View {
                 HStack {
                     Text("GENERATED · LTC AUDIO OUT")
                     Spacer()
-                    Circle().fill(playback.generatedLTC?.active == true ? Color.green : .gray)
+                    Text(playback.generatedLTC?.holding == true ? "HOLD" :
+                         playback.generatedLTC?.active == true ? "RUN" : "STOP")
+                        .foregroundColor(playback.generatedLTC?.holding == true ? .orange : .secondary)
+                    Circle().fill(playback.generatedLTC?.active == true ? Color.green :
+                                  playback.generatedLTC?.holding == true ? .orange : .gray)
                         .frame(width: 8, height: 8)
                 }
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -205,7 +209,8 @@ struct TimecodeReaderView: View {
                     .monospacedDigit()
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
-                    .foregroundColor(playback.generatedLTC?.active == true ? .green : .secondary)
+                    .foregroundColor(playback.generatedLTC?.active == true ? .green :
+                                     playback.generatedLTC?.holding == true ? .orange : .secondary)
                 if let state = playback.generatedLTC {
                     Text("\(state.cueName) · OUT \(state.output) · \(state.rate)")
                         .font(.system(size: 10, design: .monospaced))

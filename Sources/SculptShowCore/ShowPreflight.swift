@@ -80,6 +80,10 @@ public enum ShowPreflight {
                     add(.blocking, "ltc-start", cue, nil,
                         "Invalid SMPTE timecode for \(rate.label).")
                 }
+                if LTCFrameTrim(text: tc.ltcTrim, rate: rate) == nil {
+                    add(.blocking, "ltc-trim", cue, nil,
+                        "Invalid signed LTC trim for \(rate.label). Use ±HH:MM:SS:FF.")
+                }
                 if cue.durationMode == .fixed && tc.startSeconds >= cue.durationSeconds {
                     add(.warning, "ltc-unreachable", cue, nil,
                         "LTC offset is not inside the cue duration.")

@@ -14,6 +14,8 @@ void sculpt_ltc_start(SculptLTCGenerator *g, uint64_t host_start_ns,
                       int64_t first_frame, int rate, double cue_offset_seconds,
                       double start_at_seconds, double cue_duration_seconds);
 void sculpt_ltc_stop(SculptLTCGenerator *g);
+// Lock-free output gain control in dB, relative to nominal -12 dBFS PCM.
+void sculpt_ltc_set_level_db(SculptLTCGenerator *g, double decibels);
 // start_ns is the Core Audio render buffer's host time, converted to nanoseconds.
 // Silence before scheduled cue/TC onset and outside cue duration.
 void sculpt_ltc_render(SculptLTCGenerator *g, uint64_t start_ns,

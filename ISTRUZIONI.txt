@@ -1,17 +1,24 @@
-SCULPT SHOW 0.14.0 - LTC SWIFT FLAGS COMPILE FIX
+SCULPT SHOW v0.14.1 — HOLD LTC, TC OFFSET, LEVEL TRIM, DELETE
 
-Build fallita: https://github.com/mrgianluca990-bit/Sculpt-Show/actions/runs/38810069413
-Errore: LTCRealtimeState.swift:22:48 - AudioTimeStampFlags non convertibile in UInt32.
+Repository: https://github.com/mrgianluca990-bit/Sculpt-Show
+Base richiesta: v0.14.0 compilata correttamente (commit GitHub 990cffe45d1919d0aacef4fe2d6e2d9461b0bfcc)
 
-PATCH MINIMA - SOLO UN FILE DA SOSTITUIRE:
-Sources/SculptShowApp/LTCRealtimeState.swift
+PER L'AGGIORNAMENTO
+1. Estrai Sculpt-Show-v0.14.1-LTC-Hold-Trim-Delete-Update.zip.
+2. Su GitHub, apri il repository e fai Add file > Upload files.
+3. Carica i file estratti nelle rispettive posizioni (Sources, Tests, Scripts, README, ISTRUZIONI).
+4. Fai commit sul branch main; attendi il risultato di GitHub Actions.
+5. Scarica l'app macOS dall'artifact Sculpt-Show-macOS del run riuscito.
 
-1. Apri https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowApp
-2. Seleziona Add file > Upload files.
-3. Carica il file LTCRealtimeState.swift contenuto in Sources/SculptShowApp/ di questo ZIP.
-4. Conferma la sostituzione e fai Commit changes. GitHub Actions avviera' la build.
+NON caricare lo ZIP come singolo file nel repository: GitHub deve ricevere i sorgenti nei loro percorsi.
+Non sovrascrivere con un vecchio pacchetto 0.14.0 dopo questo aggiornamento.
 
-La correzione usa il flag Core Audio tipizzato:
-    timestamp.pointee.mFlags.contains(.hostTimeValid)
+VERIFICHE RICHIESTE SUL MAC
+A. Cue con LTC attivo: PAUSE => il reader GENERATED mostra HOLD + ultimo TC, STOP lo cancella; RESUME riparte dalla posizione in pausa.
+B. TC OFFSET: prova +00:00:01:00, poi -00:00:00:10 e verifica TC GENERATED/IN.
+C. LTC LEVEL TRIM: regola -12 dB / 0 dB durante il GO e verifica il livello sul canale LTC in Core Audio.
+D. Seleziona una cue e premi Delete/Backspace; prova anche un campo di testo nell'Inspector per assicurarti che Backspace continui a cancellare i caratteri, NON la cue.
 
-Non cambiare altri file. L'app 0.14.0 deve ancora superare la compilazione e il test LTC hardware su macOS.
+NOTA LTC: in pausa il segnale audio LTC diventa silenzioso; non si emette un frame fermo continuo (potrebbe ingannare i dispositivi chase esterni). Il display GENERATED mantiene invece il valore e mostra HOLD.
+
+Test locali: 119 superati (Linux), parse Swift verificato. Build vera macOS da verificare su GitHub.

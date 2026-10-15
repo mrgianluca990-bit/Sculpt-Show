@@ -115,6 +115,7 @@ struct WorkspaceView: View {
             statusBar
         }
         .background(Skin.base)
+        .onDeleteCommand(perform: deleteSelectedCue)
         .onAppear {
             Task { @MainActor in await playback.startRoutingAutomatically() }
             midi.onCommand = { [weak store, weak playback] command in
@@ -168,6 +169,18 @@ struct WorkspaceView: View {
         } message: {
             Text(store.errorMessage ?? playback.errorMessage ?? "")
         }
+    }
+
+    private func deleteSelectedCue() {
+        // Text fields (including the Inspector and sheet field editors) own their
+        // Backspace/Delete key. Never remove a cue while typing into one.
+        if NSApp.keyWindow?.firstResponder is NSTextView ||
+           NSApp.keyWindow?.firstResponder is NSTextField { return }
+        guard let listID = store.selectedListID,
+              let cueID = store.selectedCueID,
+              store.show.cueLists.first(where: { $0.id == listID })?.cues.contains(where: { $0.id == cueID }) == true else { return }
+        playback.stop(cueID, notifyRules: false)
+        store.removeCue(cueID, from: listID)
     }
 
     private var mainEditor: some View {
@@ -799,6 +812,10 @@ private struct CueRow: View {
                 editingName = true
             }
             Button("Edit Cue Rules…") { editingCueRules = true }
+            Button("Delete Cue", role: .destructive) {
+                playback.stop(cue.id, notifyRules: false)
+                store.removeCue(cue.id, from: listID)
+            }
             Menu("Move to Cue List") {
                 ForEach(store.show.cueLists.filter { $0.id != listID }) { destination in
                     Button(destination.name) {

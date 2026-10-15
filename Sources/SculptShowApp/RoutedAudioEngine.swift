@@ -350,9 +350,9 @@ final class RoutedAudioEngine {
                   (1...device.channels).contains(channel) else {
                 throw RoutingError.ltcConflict("Configure a dedicated LTC OUT on ‘\(cue.name)’ before GO.")
             }
-            guard LTCTimecode(text: timecode.timecodeStart,
-                  rate: LTCFrameRate(fps: timecode.frameRate,
-                                     drop: timecode.timecodeDropFrame)) != nil else {
+            let rate = LTCFrameRate(fps: timecode.frameRate, drop: timecode.timecodeDropFrame)
+            guard LTCTimecode(text: timecode.timecodeStart, rate: rate) != nil,
+                  LTCFrameTrim(text: timecode.ltcTrim, rate: rate) != nil else {
                 throw RoutingError.ltcConflict("Invalid SMPTE start address in ‘\(cue.name)’.")
             }
             if let owner = ltcOwner, owner != cue.id {
@@ -442,21 +442,33 @@ final class RoutedAudioEngine {
               let channel = element.ltcOutputChannel,
               let address = LTCTimecode(text: element.timecodeStart,
                    rate: LTCFrameRate(fps: element.frameRate,
-                                      drop: element.timecodeDropFrame)) else {
+                                      drop: element.timecodeDropFrame)),
+              let trim = LTCFrameTrim(text: element.ltcTrim, rate: address.rate) else {
             throw RoutingError.ltcConflict("Missing or invalid LTC configuration.")
         }
         stopLTC()
         let input = UInt32(Self.ltcInputIndex * 2)
         let crosspoint = (input << 16) | UInt32(channel - 1)
+        // Keep the physical crosspoint at unity: positive LTC gain is handled
+        // inside the dedicated DSP renderer, never by an out-of-range AU value.
         try require(AudioUnitSetParameter(matrix.audioUnit,
                     kMatrixMixerParam_Volume, kAudioUnitScope_Global,
                     crosspoint, 1, 0), "LTC physical route")
+        sculpt_ltc_set_level_db(realtime.pointer, element.ltcLevelTrimDB)
         sculpt_ltc_start(realtime.pointer, AudioConvertHostTimeToNanos(hostDeadline),
-                         address.absoluteFrames, Int32(address.rate.rawValue),
+                         address.absoluteFrames + trim.frames, Int32(address.rate.rawValue),
                          element.startSeconds, elapsed, duration)
         ltcOwner = owner
         ltcElement = element
         ltcOutput = channel
+    }
+
+    /// Live, lock-free LTC gain trim; no matrix repatch or voice rescheduling.
+    func setLTCLevel(for owner: UUID, trimDB: Double) {
+        guard ltcOwner == owner, let realtime = ltcRealtime else { return }
+        let db = trimDB.isFinite ? min(12, max(-36, trimDB)) : 0
+        sculpt_ltc_set_level_db(realtime.pointer, db)
+        ltcElement?.ltcLevelTrimDB = db
     }
 
     private func stopLTC() {

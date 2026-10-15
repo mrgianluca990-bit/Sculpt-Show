@@ -3,6 +3,28 @@ import SculptLTCCore
 @testable import SculptShowCore
 
 final class LTCRendererTests: XCTestCase {
+    func testLiveLTCGainTrimUpdatesPCMWithoutStoppingClock() throws {
+        let g = try XCTUnwrap(sculpt_ltc_create())
+        defer { sculpt_ltc_destroy(g) }
+        sculpt_ltc_start(g, 1_000_000_000, 0, 1, 0, 0, 1.0)
+        var samples = [Float](repeating: 0, count: 1000)
+        samples.withUnsafeMutableBufferPointer {
+            sculpt_ltc_render(g, 1_000_000_000, 48000, $0.baseAddress, UInt32($0.count))
+        }
+        let normal = samples.map { abs($0) }.max() ?? 0
+        sculpt_ltc_set_level_db(g, -6)
+        samples.withUnsafeMutableBufferPointer {
+            sculpt_ltc_render(g, 1_010_000_000, 48000, $0.baseAddress, UInt32($0.count))
+        }
+        let quieter = samples.map { abs($0) }.max() ?? 0
+        XCTAssertEqual(Double(quieter / normal), pow(10, -6.0/20.0), accuracy: 0.001)
+        sculpt_ltc_set_level_db(g, 12)
+        samples.withUnsafeMutableBufferPointer {
+            sculpt_ltc_render(g, 1_020_000_000, 48000, $0.baseAddress, UInt32($0.count))
+        }
+        XCTAssertEqual(samples.map { abs($0) }.max() ?? 0, 1.0, accuracy: 0.001)
+    }
+
     func testSMPTECodewordAndParity() {
         for rate in 0...3 {
             for frame in [Int64(0), 1, 1799, 1800, 17982, 23976, 80000] {

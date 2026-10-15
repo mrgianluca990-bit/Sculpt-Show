@@ -46,7 +46,9 @@ final class PlaybackEngine: ObservableObject {
         let output: Int
         let rate: String
         let active: Bool
+        let holding: Bool
     }
+    private var heldLTC: (owner: UUID, value: GeneratedLTC)?
     @Published private(set) var generatedLTC: GeneratedLTC?
 
     private func updateGeneratedLTC() {
@@ -56,17 +58,21 @@ final class PlaybackEngine: ObservableObject {
               let address = LTCTimecode(text: element.timecodeStart,
                   rate: LTCFrameRate(fps: element.frameRate, drop: element.timecodeDropFrame)),
               let output = element.ltcOutputChannel,
-              let snapshot = snapshots[owner] else {
-            if generatedLTC != nil { generatedLTC = nil }
+              let snapshot = snapshots[owner],
+              let trim = LTCFrameTrim(text: element.ltcTrim, rate: address.rate) else {
+            let held = heldLTC.flatMap { snapshots[$0.owner]?.phase == .paused ? $0.value : nil }
+            if generatedLTC != held { generatedLTC = held }
             return
         }
         let seconds = max(0, snapshot.elapsed - element.startSeconds)
         let isSending = snapshot.elapsed >= element.startSeconds &&
                         (snapshot.phase == .playing || snapshot.phase == .fading) &&
                         outputControls.isAudible(output)
+        let base = LTCTimecode.at(frameNumber: address.absoluteFrames + trim.frames,
+                                  rate: address.rate)
         let value = GeneratedLTC(cueName: cue.name,
-            timecode: isSending ? address.adding(seconds: seconds).display : "--:--:--:--",
-            output: output, rate: address.rate.label, active: isSending)
+            timecode: snapshot.elapsed >= element.startSeconds ? base.adding(seconds: seconds).display : "--:--:--:--",
+            output: output, rate: address.rate.label, active: isSending, holding: false)
         if value != generatedLTC { generatedLTC = value }
     }
 
@@ -76,6 +82,13 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func cuePlayCursor(_ id: UUID) -> Double { cuePlayCursors[id] ?? 0 }
+
+    func setLiveLTCLevel(for cueID: UUID, trimDB: Double) {
+        routedAudio.setLTCLevel(for: cueID, trimDB: trimDB)
+        if let i = activeCues[cueID]?.elements.firstIndex(where: { $0.kind == .timecode && !$0.muted }) {
+            activeCues[cueID]?.elements[i].ltcLevelTrimDB = trimDB
+        }
+    }
 
     @discardableResult
     func playCueLocally(_ cue: Cue) -> Bool {
@@ -592,7 +605,9 @@ final class PlaybackEngine: ObservableObject {
         guard snapshots[id]?.phase == .paused else { return }
         let position = elapsedAtStart[id] ?? 0
         snapshots[id]?.phase = .playing
+        if heldLTC?.owner == id { heldLTC = nil }
         armAudio(for: id, from: position)
+        updateGeneratedLTC()
     }
 
     func togglePause(_ id: UUID) {
@@ -604,11 +619,31 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
+    private func holdGeneratedLTC(for id: UUID, at elapsed: Double) {
+        // After pause the hardware renderer intentionally stops. Derive the
+        // frozen address from the cue rather than from a now-destroyed LTC owner.
+        guard let cue = activeCues[id],
+              let element = cue.elements.first(where: { $0.kind == .timecode && !$0.muted }),
+              let output = element.ltcOutputChannel,
+              let address = LTCTimecode(text: element.timecodeStart,
+                 rate: LTCFrameRate(fps: element.frameRate, drop: element.timecodeDropFrame)),
+              let trim = LTCFrameTrim(text: element.ltcTrim, rate: address.rate) else { return }
+        let base = LTCTimecode.at(frameNumber: address.absoluteFrames + trim.frames,
+                                  rate: address.rate)
+        let display = elapsed >= element.startSeconds
+            ? base.adding(seconds: elapsed - element.startSeconds).display : "--:--:--:--"
+        heldLTC = (owner: id, value: GeneratedLTC(cueName: cue.name, timecode: display,
+                   output: output, rate: address.rate.label, active: false, holding: true))
+    }
+
     func pause(_ id: UUID) {
         guard snapshots[id]?.phase == .playing else { return }
         let elapsed = cueElapsed(id)
         elapsedAtStart[id] = elapsed
         startedAt.removeValue(forKey: id)
+        // Preserve the SMPTE position, but silence the physical LTC signal.
+        // External chase devices should not be fed a repeated stationary frame.
+        holdGeneratedLTC(for: id, at: elapsed)
         // Cancel even a future scheduled start: a player may not be audible yet.
         if routedCues.contains(id) { routedAudio.stop(id) }
         for track in tracks[id] ?? [] { track.player.stop() }
@@ -632,6 +667,7 @@ final class PlaybackEngine: ObservableObject {
         elapsedAtStart.removeValue(forKey: id)
         dimFactors.removeValue(forKey: id)
         snapshots.removeValue(forKey: id)
+        if heldLTC?.owner == id { heldLTC = nil }
         updateGeneratedLTC()
         if previous != nil && previous?.phase != .fading && notifyRules { onStopped?(id) }
     }
@@ -706,7 +742,10 @@ final class PlaybackEngine: ObservableObject {
         } else {
             if routedCues.contains(id) { routedAudio.stop(id) }
             for track in tracks[id] ?? [] { track.player.stop() }
+            // A seek while paused changes the held display, but does not emit LTC.
+            if state.phase == .paused { holdGeneratedLTC(for: id, at: position) }
         }
+        updateGeneratedLTC()
     }
 
     private func emitCrossedMarkers(_ id: UUID, at elapsed: Double, duration: Double) {

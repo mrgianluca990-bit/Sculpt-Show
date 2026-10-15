@@ -9,6 +9,7 @@ struct SculptLTCGenerator {
     atomic_ullong start_ns;
     atomic_llong first_frame;
     atomic_int rate;
+    atomic_int level_millidb;
     atomic_llong offset_ns;
     atomic_llong seek_ns;
     atomic_llong end_ns;
@@ -75,6 +76,12 @@ SculptLTCGenerator *sculpt_ltc_create(void) {
 }
 void sculpt_ltc_destroy(SculptLTCGenerator *g) { if (g) free(g); }
 void sculpt_ltc_stop(SculptLTCGenerator *g) { if (g) atomic_store_explicit(&g->active, 0, memory_order_release); }
+void sculpt_ltc_set_level_db(SculptLTCGenerator *g, double decibels) {
+    if (!g) return;
+    if (!isfinite(decibels)) decibels = 0;
+    decibels = fmin(12.0, fmax(-36.0, decibels));
+    atomic_store_explicit(&g->level_millidb, (int)lround(decibels * 1000.0), memory_order_release);
+}
 
 void sculpt_ltc_start(SculptLTCGenerator *g, uint64_t host_start_ns,
                       int64_t first_frame, int rate, double cue_offset_seconds,
@@ -104,6 +111,8 @@ void sculpt_ltc_render(SculptLTCGenerator *g, uint64_t start_ns,
     int64_t seek=atomic_load(&g->seek_ns);
     int64_t end=atomic_load(&g->end_ns);
     const double fps = rate == 0 ? 24.0 : rate == 1 ? 25.0 : rate == 2 ? 30000.0/1001.0 : 30.0;
+    const float level = powf(10.0f,
+        (float)atomic_load_explicit(&g->level_millidb, memory_order_acquire) / 20000.0f);
     // Buffer host timestamp belongs to the SAME Core Audio output timeline
     // used by AVAudioPlayerNode.play(atTime:), so no UI timer drives LTC.
     double firstNs = (double)((int64_t)start_ns - (int64_t)t0) + (double)seek;
@@ -134,6 +143,6 @@ void sculpt_ltc_render(SculptLTCGenerator *g, uint64_t start_ns,
         int slot = (int)(frac * 160);
         if (slot < 0) slot = 0;
         if (slot > 159) slot = 159;
-        output[i] = 0.25118864f * signByHalf[slot];
+        output[i] = 0.25118864f * level * signByHalf[slot];
     }
 }

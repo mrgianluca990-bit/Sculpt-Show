@@ -260,11 +260,36 @@ final class ShowStore: ObservableObject {
         }
     }
 
+    func setTimecodeTrim(_ elementID: UUID, in cueID: UUID, listID: UUID, to value: String) {
+        guard let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID }) else { return }
+        let rate = LTCFrameRate(fps: element.frameRate, drop: element.timecodeDropFrame)
+        guard let trim = LTCFrameTrim(text: value, rate: rate) else {
+            errorMessage = "LTC trim must be ±HH:MM:SS:FF at the selected frame rate."
+            return
+        }
+        editCue(cueID, list: listID) { cue in
+            guard let i = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[i].ltcTrim = trim.text
+        }
+    }
+
+    func setTimecodeLevelTrim(_ elementID: UUID, in cueID: UUID, listID: UUID,
+                              to value: Double, using playback: PlaybackEngine) {
+        guard value.isFinite else { return }
+        let db = min(12, max(-36, value))
+        editCue(cueID, list: listID) { cue in
+            guard let i = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[i].ltcLevelTrimDB = db
+        }
+        playback.setLiveLTCLevel(for: cueID, trimDB: db)
+    }
+
     func setTimecodeLTCFrameRate(_ elementID: UUID, in cueID: UUID,
                                  listID: UUID, to rate: LTCFrameRate) {
         guard let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID }),
               CueElement.isValidTimecode(element.timecodeStart,
-                  frameRate: rate.nominal, dropFrame: rate == .fps2997DF) else {
+                  frameRate: rate.nominal, dropFrame: rate == .fps2997DF),
+              LTCFrameTrim(text: element.ltcTrim, rate: rate) != nil else {
             errorMessage = "Invalid SMPTE address for the selected rate (29.97 DF skips frames 00/01 at non-tenth minutes)."
             return
         }

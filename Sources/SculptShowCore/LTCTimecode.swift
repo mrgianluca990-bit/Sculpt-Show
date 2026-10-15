@@ -80,3 +80,29 @@ public struct LTCTimecode: Equatable, Sendable {
         hours=h; minutes=m; seconds=s; frames=f; self.rate=rate
     }
 }
+
+
+/// Signed, cue-local LTC offset in SMPTE fields. The trim is a *duration*,
+/// not an absolute SMPTE address, so 29.97 DF does not skip 00/01 labels here.
+/// A negative trim wraps naturally at the 24-hour SMPTE boundary.
+public struct LTCFrameTrim: Equatable, Sendable {
+    public let frames: Int64
+    public let text: String
+
+    public init?(text: String, rate: LTCFrameRate) {
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sign: Int64 = raw.first == "-" ? -1 : 1
+        let body = raw.first == "-" || raw.first == "+" ? String(raw.dropFirst()) : raw
+        let components = body.split(separator: ":", omittingEmptySubsequences: false)
+        guard components.count == 4,
+              components.allSatisfy({ $0.count == 2 && $0.allSatisfy({ $0.isASCII && $0.isNumber }) }),
+              let h = Int(components[0]), let m = Int(components[1]),
+              let s = Int(components[2]), let f = Int(components[3]),
+              (0..<24).contains(h), (0..<60).contains(m),
+              (0..<60).contains(s), (0..<rate.nominal).contains(f) else { return nil }
+        let whole = Int64(h * 3600 + m * 60 + s)
+        // In DF use true 30000/1001 cadence, not nominal 30 seconds.
+        frames = sign * (Int64((Double(whole) * rate.actual).rounded()) + Int64(f))
+        self.text = String(format: "%@%02d:%02d:%02d:%02d", sign < 0 ? "-" : "+", h, m, s, f)
+    }
+}
