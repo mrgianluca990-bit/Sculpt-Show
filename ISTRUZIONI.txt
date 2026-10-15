@@ -1,27 +1,33 @@
-SCULPT SHOW 0.8.0 — INSTALLAZIONE SU GITHUB (SENZA TERMINALE)
+SCULPT SHOW 0.8.1 — PATCH SINCRONIZZAZIONE MULTITRACCIA
 
-Repository: https://github.com/mrgianluca990-bit/Sculpt-Show
+Questa patch NON modifica il MIDI (MIDI Learn e Timecode Reader restano come nella 0.8.0), le Rules, l'interfaccia e il formato degli show.
 
-I file sono organizzati nelle relative cartelle. Aggiungi/sostituisci:
+Su GitHub apri il repository:
+https://github.com/mrgianluca990-bit/Sculpt-Show
 
-Sources/SculptShowCore/CueNavigator.swift
-Sources/SculptShowApp/ShowStore.swift
-Sources/SculptShowApp/WorkspaceView.swift
-Sources/SculptShowApp/MIDIControl.swift
-Sources/SculptShowApp/CueDragDrop.swift
-Sources/SculptShowApp/SculptShowApp.swift
-Tests/SculptShowCoreTests/NavigationTests.swift
-Scripts/Info.plist
-README.md
+Carica i QUATTRO file seguendo il percorso esatto. Usa Add file -> Upload files nella rispettiva cartella e conferma con Commit changes sul ramo main.
 
-ISTRUZIONI:
-1. Apri la repository GitHub e la sottocartella indicata nel percorso (es. Sources/SculptShowApp).
-2. Con Add file > Upload files trascina i file corrispondenti, sostituendo gli esistenti.
-3. Conferma Commit changes su main. Ripeti per le altre cartelle.
-4. Carica TUTTI i file prima di considerare definitivo il risultato della build.
-5. Apri GitHub > Actions > ultima build verde > Artifacts > Sculpt-Show-macOS.
-6. Estrai il pacchetto due volte per arrivare a Sculpt Show.app.
+1) Sources/SculptShowApp/PlaybackEngine.swift  [SOSTITUIRE]
+   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowApp
 
-NOTA: non serve modificare .github/workflows/macos-build.yml.
-NOTA: non eliminare manualmente gli altri file.
-NOTA: non caricare solo README o .plist: la nuova funzionalità richiede tutti i file sorgenti indicati.
+2) Sources/SculptShowCore/AudioStartPlanner.swift  [AGGIUNGERE]
+   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Sources/SculptShowCore
+
+3) Tests/SculptShowCoreTests/AudioStartPlannerTests.swift  [AGGIUNGERE]
+   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Tests/SculptShowCoreTests
+
+4) Scripts/Info.plist  [SOSTITUIRE, versione 0.8.1]
+   https://github.com/mrgianluca990-bit/Sculpt-Show/tree/main/Scripts
+
+Dopo l'ultimo commit, apri Actions:
+https://github.com/mrgianluca990-bit/Sculpt-Show/actions
+
+Non caricare ISTRUZIONI.txt nel repository.
+
+VERIFICHE ESEGUITE
+- 55 test Core passati con Swift 6.2.1 su Linux.
+- Controllo sintattico Swift dei sorgenti modificati.
+- La build macOS e il test di sincronizzazione in hardware NON sono ancora stati eseguiti.
+
+TEST AUDIO CONSIGLIATO
+Metti nella stessa cue 4-8 WAV mono esportati dallo stesso inizio sessione, tutti con offset 00:00:00:000. Ascolta il transiente e confronta con la 0.8.0. Poi prova offset differenti e pausa/resume.

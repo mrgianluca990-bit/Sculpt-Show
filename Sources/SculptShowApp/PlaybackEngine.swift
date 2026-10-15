@@ -3,7 +3,10 @@ import Foundation
 import SculptShowCore
 
 /// Timeline-based playback: one cue can own zero, one or several audio elements.
-/// AVAudioPlayer is retained for 0.6 compatibility; starts are not sample-accurate.
+/// All elements of one cue are scheduled against the SAME output-device clock.
+/// AVAudioPlayer.play(atTime:) synchronizes individual players on that device.
+/// OUT points still use the UI timer; for sample-accurate edits/routing, the
+/// planned AVAudioEngine-based show engine remains necessary.
 @MainActor
 final class PlaybackEngine: ObservableObject {
     enum Phase: String {
@@ -47,6 +50,12 @@ final class PlaybackEngine: ObservableObject {
     private var dimFactors: [UUID: Float] = [:]
     private var durationCache: [String: Double] = [:]
     private var updateTimer: Timer?
+
+    /// Allow all prepared players to receive their play(atTime:) call before the
+    /// device deadline. Every element uses the SAME deadline, not a per-file now.
+    private func schedulingLead(for count: Int) -> TimeInterval {
+        min(0.65, max(0.18, Double(count) * 0.012))
+    }
 
     init() {
         updateTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
@@ -132,9 +141,8 @@ final class PlaybackEngine: ObservableObject {
         activeCues[cue.id] = cue
         tracks[cue.id] = prepared
         elapsedAtStart[cue.id] = 0
-        startedAt[cue.id] = Date()
         snapshots[cue.id] = Snapshot(phase: .playing, elapsed: 0, duration: length)
-        synchronizeAudio(for: cue.id, elapsed: 0, restart: false)
+        armAudio(for: cue.id, from: 0)
         onStarted?(cue.id)
         return true
     }
@@ -148,60 +156,101 @@ final class PlaybackEngine: ObservableObject {
         Float(activeCues[id]?.gain ?? 1) * (dimFactors[id] ?? 1)
     }
 
-    /// Start due elements; stop an element at its OUT even if the cue continues.
-    private func synchronizeAudio(for id: UUID, elapsed: Double, restart: Bool) {
-        guard var list = tracks[id], let snapshot = snapshots[id] else { return }
-        let playing = snapshot.phase == .playing
+    /// Schedule the ENTIRE cue at once using one AVAudioPlayer device timestamp.
+    /// A later element is scheduled in advance at (shared time + its offset),
+    /// instead of being started by the 50 ms UI refresh timer.
+    private func armAudio(for id: UUID, from elapsed: Double, leadOverride: Double? = nil) {
+        guard var list = tracks[id], let cue = activeCues[id] else { return }
+        // Empty containers keep their existing immediate timeline behavior.
+        guard !list.isEmpty else {
+            elapsedAtStart[id] = elapsed
+            startedAt[id] = Date()
+            return
+        }
+
+        // First cancel ALL previously queued starts before reading the device
+        // clock. When its last player stops, the output clock may reset to zero.
+        for index in list.indices {
+            list[index].player.stop()
+            list[index].started = false
+            list[index].finished = false
+        }
+
+        // Single-file cues start immediately unless they need a timed offset.
+        // Multiple files must share a future device deadline for alignment.
+        let lead = leadOverride ?? (list.count > 1 ? schedulingLead(for: list.count) : 0)
         let gain = playerGain(id)
-        for i in list.indices {
-            let trackDuration = list[i].sourceOut - list[i].sourceIn
-            let local = elapsed - list[i].start
-            if restart {
-                list[i].player.stop()
-                list[i].started = false
-                list[i].finished = false
-            }
-            if local < 0 || local >= trackDuration {
-                if list[i].started {
-                    list[i].player.stop()
-                    list[i].started = false
-                }
-                if local >= trackDuration { list[i].finished = true }
+        var instructions: [(Int, AudioStartInstruction)] = []
+        for index in list.indices {
+            let track = list[index]
+            guard let instruction = AudioStartPlanner.instruction(
+                elementOffset: track.start,
+                sourceIn: track.sourceIn,
+                sourceOut: track.sourceOut,
+                cuePosition: elapsed
+            ) else {
+                list[index].finished = true
                 continue
             }
-            if !list[i].started && !list[i].finished {
-                list[i].player.currentTime = list[i].sourceIn + local
-                let fade = max(0, activeCues[id]?.fadeInSeconds ?? 0)
-                list[i].player.volume = fade > 0 ? 0 : gain
-                if playing {
-                    list[i].started = list[i].player.play()
-                    if list[i].started && fade > 0 {
-                        list[i].player.setVolume(gain, fadeDuration: fade)
-                    }
-                } else { list[i].started = true }
-            } else if playing && list[i].started && !list[i].player.isPlaying {
-                // A media element can end before its containing cue. Never replay it.
-                if list[i].player.currentTime >= list[i].sourceOut - 0.03 {
-                    list[i].finished = true
-                    list[i].started = false
-                } else {
-                    _ = list[i].player.play() // Resume after Pause.
-                }
+            track.player.currentTime = instruction.positionInFile
+            track.player.volume = cue.fadeInSeconds > 0 ? 0 : gain
+            if track.player.prepareToPlay() {
+                instructions.append((index, instruction))
+            } else {
+                errorMessage = "Cannot prepare synchronized audio ‘\(cue.name)’ (element \(index + 1))."
             }
-            if list[i].started && list[i].player.currentTime >= list[i].sourceOut - 0.005 {
-                list[i].player.stop()
-                list[i].started = false
-                list[i].finished = true
+        }
+
+        // Read device time only AFTER cancelling/repreparing all players.
+        // Every schedule is measured against this one immutable timestamp.
+        let anchor = (list.first?.player.deviceCurrentTime ?? 0) + lead
+        let wallClockAnchor = Date().addingTimeInterval(lead)
+        elapsedAtStart[id] = elapsed
+        startedAt[id] = wallClockAnchor
+        for (index, instruction) in instructions {
+            let player = list[index].player
+            let success: Bool
+            if lead == 0 && instruction.delayFromCueAnchor == 0 && list.count == 1 {
+                success = player.play()
+            } else {
+                success = player.play(atTime: anchor + instruction.delayFromCueAnchor)
             }
+            list[index].started = success
+            if !success {
+                errorMessage = "Cannot schedule audio ‘\(cue.name)’ (element \(index + 1))."
+            }
+        }
+        tracks[id] = list
+    }
+
+    /// Poll only for stopping at OUT and for fade/gain envelopes. Never start an
+    /// audio player from the timer: that caused the multitrack misalignment.
+    private func refreshAudio(for id: UUID, elapsed: Double) {
+        guard var list = tracks[id], let cue = activeCues[id] else { return }
+        let gain = playerGain(id)
+        for index in list.indices where list[index].started && !list[index].finished {
+            let local = elapsed - list[index].start
+            let length = list[index].sourceOut - list[index].sourceIn
+            if local >= length {
+                list[index].player.stop()
+                list[index].started = false
+                list[index].finished = true
+                continue
+            }
+            // Apply fade-in relative to each element's timeline position.
+            // Do not prematurely fade an element before its scheduled offset.
+            let fade = max(0, cue.fadeInSeconds)
+            let fadeFactor = fade > 0 ? min(1, max(0, local / fade)) : 1
+            list[index].player.volume = gain * Float(fadeFactor)
         }
         tracks[id] = list
     }
 
     private func resume(_ id: UUID) {
         guard snapshots[id]?.phase == .paused else { return }
-        startedAt[id] = Date()
+        let position = elapsedAtStart[id] ?? 0
         snapshots[id]?.phase = .playing
-        synchronizeAudio(for: id, elapsed: cueElapsed(id), restart: false)
+        armAudio(for: id, from: position)
     }
 
     func togglePause(_ id: UUID) {
@@ -218,7 +267,8 @@ final class PlaybackEngine: ObservableObject {
         let elapsed = cueElapsed(id)
         elapsedAtStart[id] = elapsed
         startedAt.removeValue(forKey: id)
-        for track in tracks[id] ?? [] where track.started { track.player.pause() }
+        // Cancel even a future scheduled start: a player may not be audible yet.
+        for track in tracks[id] ?? [] { track.player.stop() }
         snapshots[id]?.phase = .paused
         snapshots[id]?.elapsed = elapsed
     }
@@ -249,7 +299,12 @@ final class PlaybackEngine: ObservableObject {
         snapshots[cue.id]?.phase = .fading
         onStopped?(cue.id)
         for track in tracks[cue.id] ?? [] where track.started {
-            track.player.setVolume(0, fadeDuration: seconds)
+            if track.player.isPlaying {
+                track.player.setVolume(0, fadeDuration: seconds)
+            } else {
+                // Do not let a future element start during the stop/fade.
+                track.player.stop()
+            }
         }
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -261,26 +316,37 @@ final class PlaybackEngine: ObservableObject {
     func setGain(_ gain: Double, for cueID: UUID) {
         guard snapshots[cueID]?.phase != .fading else { return }
         activeCues[cueID]?.gain = min(max(gain, 0), 1)
-        for track in tracks[cueID] ?? [] { track.player.volume = playerGain(cueID) }
+        // Preserve any ongoing fade-in instead of jumping to the final gain.
+        if let state = snapshots[cueID], state.phase == .playing {
+            refreshAudio(for: cueID, elapsed: cueElapsed(cueID))
+        }
     }
 
     func dim(_ id: UUID, by decibels: Double) {
         dimFactors[id] = Float(pow(10.0, max(-80, min(decibels, 0)) / 20.0))
-        for track in tracks[id] ?? [] { track.player.setVolume(playerGain(id), fadeDuration: 0.15) }
+        if let state = snapshots[id], state.phase == .playing {
+            refreshAudio(for: id, elapsed: cueElapsed(id))
+        }
     }
 
     func restoreGain(_ id: UUID) {
         dimFactors.removeValue(forKey: id)
-        for track in tracks[id] ?? [] { track.player.setVolume(playerGain(id), fadeDuration: 0.15) }
+        if let state = snapshots[id], state.phase == .playing {
+            refreshAudio(for: id, elapsed: cueElapsed(id))
+        }
     }
 
     func seek(_ id: UUID, to fraction: Double) {
         guard let state = snapshots[id], state.phase != .waiting, state.phase != .fading else { return }
         let position = min(max(fraction, 0), 0.9999) * state.duration
         elapsedAtStart[id] = position
-        if startedAt[id] != nil { startedAt[id] = Date() }
         snapshots[id]?.elapsed = position
-        synchronizeAudio(for: id, elapsed: position, restart: true)
+        if state.phase == .playing {
+            armAudio(for: id, from: position)
+        } else {
+            // A paused seek must not queue audio until Resume.
+            for track in tracks[id] ?? [] { track.player.stop() }
+        }
     }
 
     func setLoop(_ enabled: Bool, for id: UUID) { activeCues[id]?.loop = enabled }
@@ -305,11 +371,11 @@ final class PlaybackEngine: ObservableObject {
             let elapsed = cueElapsed(id)
             if elapsed >= snapshot.duration {
                 if activeCues[id]?.loop == true && snapshot.phase == .playing {
-                    elapsedAtStart[id] = 0
-                    startedAt[id] = Date()
                     snapshot.elapsed = 0
                     snapshots[id] = snapshot
-                    synchronizeAudio(for: id, elapsed: 0, restart: true)
+                    // Loop re-arms together on the device clock. This is not
+                    // yet a gapless loop: that requires the next engine stage.
+                    armAudio(for: id, from: 0, leadOverride: 0.08)
                 } else if snapshot.phase == .playing {
                     finishNaturally(id)
                 }
@@ -317,7 +383,7 @@ final class PlaybackEngine: ObservableObject {
             }
             snapshot.elapsed = elapsed
             snapshots[id] = snapshot
-            if snapshot.phase == .playing { synchronizeAudio(for: id, elapsed: elapsed, restart: false) }
+            if snapshot.phase == .playing { refreshAudio(for: id, elapsed: elapsed) }
         }
     }
 }
