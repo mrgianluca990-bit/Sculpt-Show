@@ -622,7 +622,7 @@ final class ShowStore: ObservableObject {
     /// Markers are timeline positions inside the cue, never separate cue types.
     @discardableResult
     func addMarker(to cueID: UUID, in listID: UUID, at seconds: Double) -> UUID? {
-        guard let cue = show.cue(cueID) else { return nil }
+        guard show.cue(cueID) != nil else { return nil }
         let id = UUID()
         let safe = seconds.isFinite ? min(max(0, seconds), 86400) : 0
         editCue(cueID, list: listID) { cue in

@@ -1,27 +1,34 @@
-SCULPT SHOW 0.14.0 — LTC PER CUE + LTC IN/OUT + PLAY FROM DIGITABILE
+SCULPT SHOW v0.14.0 — CORREZIONE COMPILAZIONE LTC
+================================================
 
-BASE VERIFICATA: Sculpt Show 0.13.0
-Repository: https://github.com/mrgianluca990-bit/Sculpt-Show
-Commit di partenza: d865de35e221cc2fc08b210c8a607e2e2f92ebe1
+Correzione basata sul log reale di GitHub Actions:
+Run: https://github.com/mrgianluca990-bit/Sculpt-Show/actions/runs/38808491719
 
-1. Estrai Sculpt-Show-v0.14.0-LTC-Cumulative-Update.zip.
-2. Apri il repository GitHub e scegli Add file > Upload files.
-3. Carica TUTTI i file dello ZIP conservando i rispettivi percorsi
-   (Sources/..., Tests/..., Scripts/..., Samples/..., Package.swift, README.md).
-4. Fai commit su main. GitHub Actions compilera' e pubblichera'
-   l'artefatto Sculpt-Show-macOS (Mac Intel + Apple Silicon).
-5. Scarica il risultato da Actions. NON utilizzare questa prima versione LTC
-   dal vivo prima del test delle uscite dedicate.
+ERRORE RISOLTO:
+Sources/SculptShowApp/LTCRealtimeState.swift:20:57
+'cannot find kAudioTimeStampHostTimeValid in scope'
+La costante C viene sostituita con il suo bit CoreAudioTypes (0x02).
 
-MODIFICHE IMPORTANTI:
-- PLAYS FROM: campo editabile HH:MM:SS:MMM; GO globale parte da zero.
-- Timecode+: genera LTC SMPTE audio su un OUT mono scelto esplicitamente.
-- TIMECODE: mostra generated LTC e received LTC (Core Audio input).
-- Il generatore MIDI MTC e' escluso dal target app (nessun pulsante MTC).
-- Autorizzare ingresso/microfono se macOS lo richiede quando si avvia LTC IN.
-- E' incluso Samples/LTC_25fps_01h_demo.wav per i test del decoder.
+WARNINGS:
+Sources/SculptShowApp/ShowStore.swift:625
+Rimosso binding non usato nella guardia del metodo addMarker().
 
-SICUREZZA: LTC e' un segnale tecnico, non collegarlo mai a diffusori!
-Una sola sorgente LTC attiva per volta. Uscita LTC non sovrapposta agli stem.
+FILE DA SOSTITUIRE SUL REPOSITORY
+1. Sources/SculptShowApp/LTCRealtimeState.swift
+2. Sources/SculptShowApp/ShowStore.swift
 
-Questa e' una patch con SORGENTI, non un file .app compilato.
+GITHUB WEB:
+- Apri https://github.com/mrgianluca990-bit/Sculpt-Show
+- Apri Sources/SculptShowApp
+- Fai Add file -> Upload files
+- Carica i due file .swift presenti in questa cartella, sovrascrivendo gli omonimi
+- Esegui Commit changes su main
+- Attendi l'esito della workflow Build Sculpt Show for macOS
+
+NON caricare il file ZIP come file del repository: prima estrailo.
+La versione resta 0.14.0. Non sono modificate le funzioni LTC, routing, MIDI o audio.
+
+VERIFICHE LOCALI:
+- 113/113 test Swift Package superati (Linux)
+- Controllo sintattico dei due file Swift superato
+- Verifica della build macOS ancora necessaria tramite GitHub Actions

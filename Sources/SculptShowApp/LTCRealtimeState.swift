@@ -17,7 +17,9 @@ final class LTCRealtimeState {
                 outputData: UnsafeMutablePointer<AudioBufferList>,
                 sampleRate: Float) {
         let buffers = UnsafeMutableAudioBufferListPointer(outputData)
-        let validHostTime = (timestamp.pointee.mFlags & kAudioTimeStampHostTimeValid) != 0
+        // CoreAudioTypes defines kAudioTimeStampHostTimeValid as bit 1 (0x02).
+        // The named C constant is not always surfaced in Swift's SDK imports.
+        let validHostTime = (timestamp.pointee.mFlags & 0x02) != 0
         let hostNanos: UInt64 = validHostTime
             ? AudioConvertHostTimeToNanos(timestamp.pointee.mHostTime) : 0
         for (index, buffer) in buffers.enumerated() {
