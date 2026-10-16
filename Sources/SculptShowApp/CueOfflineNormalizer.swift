@@ -1,10 +1,11 @@
 import AVFAudio
-import AudioToolbox
 import Foundation
 import SculptShowCore
 
-/// Offline, non-destructive normalization. A whole cue is committed only when all
-/// stems have been rendered and verified; the audio/render thread is never touched.
+/// Non-destructive, offline two-pass normalization. Plain PCM WAV files use
+/// Swift's streamed WAV reader/writer, bypassing the AVAudioFile writer that
+/// previously produced opaque Foundation._GenericObjCError failures. Other
+/// supported audio formats use AVAudioFile only to DECODE to planar Float32.
 enum CueOfflineNormalizer {
     struct Request: Sendable {
         let elementID: UUID
@@ -27,51 +28,109 @@ enum CueOfflineNormalizer {
     enum Failure: LocalizedError {
         case unsupported(String)
         case empty(String)
-        case input(String, String)
-        case output(String, String)
+        case operation(String, String, String)
         case invalidOutput(String)
 
         var errorDescription: String? {
             switch self {
             case .unsupported(let name):
-                return "\(name): audio must be mono or stereo."
+                return "\(name): normalization supports mono and stereo audio only."
             case .empty(let name):
-                return "\(name): no measurable loudness. This stem is silent or shorter than the 400 ms loudness analysis window."
-            case .input(let name, let detail):
-                return "\(name): cannot read the source audio (\(detail))."
-            case .output(let name, let detail):
-                return "\(name): cannot write normalized WAV (\(detail))."
+                return "\(name): no measurable signal. For LUFS-I, the audio needs at least 400 ms of measurable content."
+            case .operation(let name, let stage, let explanation):
+                return "\(name): \(stage) failed — \(explanation)"
             case .invalidOutput(let name):
-                return "\(name): the normalized WAV did not pass validation; no cue audio has been replaced."
+                return "\(name): normalized WAV failed its frame count, sample rate, channel or output size check. The cue was not changed."
             }
         }
     }
 
-    /// Reading explicitly as non-interleaved Float32 works for 16/24-bit PCM,
-    /// floating-point WAV, AIFF and Core Audio decodable formats alike. The source
-    /// bit depth or interleaving must not determine whether normalization works.
-    private static func makeReader(_ source: URL, name: String) throws -> AVAudioFile {
-        do {
-            return try AVAudioFile(forReading: source, commonFormat: .pcmFormatFloat32, interleaved: false)
-        } catch {
-            throw Failure.input(name, error.localizedDescription)
+    /// Format-neutral, Float32 planar frame reader with an independent seek state.
+    /// WAV PCM uses native Swift; AIFF/other formats use Core Audio only to decode.
+    private enum Reader {
+        case wave(WavePCMReader)
+        case core(CoreAudioDecoder)
+
+        var sampleRate: Double {
+            switch self {
+            case .wave(let r): return r.sampleRate
+            case .core(let r): return r.sampleRate
+            }
         }
+        var channels: Int {
+            switch self {
+            case .wave(let r): return r.channels
+            case .core(let r): return r.channels
+            }
+        }
+        func next() throws -> [[Float]] {
+            switch self {
+            case .wave(let r): return try r.readFrames()
+            case .core(let r): return try r.next()
+            }
+        }
+    }
+
+    private final class CoreAudioDecoder {
+        let audio: AVAudioFile
+        let buffer: AVAudioPCMBuffer
+        let sampleRate: Double
+        let channels: Int
+
+        init(_ url: URL) throws {
+            let reader = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+            let format = reader.processingFormat
+            guard (1...2).contains(Int(format.channelCount)),
+                  format.commonFormat == .pcmFormatFloat32, !format.isInterleaved,
+                  format.sampleRate.isFinite, (8000...384000).contains(format.sampleRate),
+                  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192) else {
+                throw Failure.unsupported(url.lastPathComponent)
+            }
+            self.audio = reader
+            self.buffer = buffer
+            self.sampleRate = format.sampleRate
+            self.channels = Int(format.channelCount)
+        }
+        func next() throws -> [[Float]] {
+            try audio.read(into: buffer, frameCount: 8192)
+            let count = Int(buffer.frameLength)
+            guard count > 0 else { return Array(repeating: [], count: channels) }
+            guard let channelsData = buffer.floatChannelData else {
+                throw Failure.unsupported(audio.url.lastPathComponent)
+            }
+            return (0..<channels).map { ch in Array(UnsafeBufferPointer(start: channelsData[ch], count: count)) }
+        }
+    }
+
+    private static func makeReader(_ url: URL, name: String) throws -> Reader {
+        let ext = url.pathExtension.lowercased()
+        if ["wav", "wave", "bwf"].contains(ext) {
+            do { return .wave(try WavePCMReader(url: url)) }
+            catch WavePCMFailure.unsupported {
+                // Compressed WAV codecs may still be supported by Core Audio.
+            } catch {
+                throw Failure.operation(name, "reading source WAV", explain(error))
+            }
+        }
+        do { return .core(try CoreAudioDecoder(url)) }
+        catch { throw Failure.operation(name, "decoding source audio", explain(error)) }
+    }
+
+    private static func explain(_ error: Error) -> String {
+        let n = error as NSError
+        return "\(error.localizedDescription) [\(n.domain):\(n.code)]"
     }
 
     private static func outputDirectory(cueID: UUID) throws -> URL {
         let fm = FileManager.default
-        // ~/Music is subject to privacy and access restrictions on some machines.
-        // Application Support is owned by the app/user and does not require
-        // blanket permission to another user's audio library.
         guard let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            throw Failure.output("Output folder", "Application Support is unavailable")
+            throw Failure.operation("Output folder", "locating Application Support", "No directory is available")
         }
-        let folder = support
-            .appendingPathComponent("Sculpt Show", isDirectory: true)
+        let folder = support.appendingPathComponent("Sculpt Show", isDirectory: true)
             .appendingPathComponent("Normalized Audio", isDirectory: true)
             .appendingPathComponent(cueID.uuidString, isDirectory: true)
         do { try fm.createDirectory(at: folder, withIntermediateDirectories: true) }
-        catch { throw Failure.output("Output folder", error.localizedDescription) }
+        catch { throw Failure.operation("Output folder", "creating directory", explain(error)) }
         return folder
     }
 
@@ -86,112 +145,84 @@ enum CueOfflineNormalizer {
             for request in requests {
                 try Task<Never, Never>.checkCancellation()
                 let source = URL(fileURLWithPath: request.originalPath)
-                let reader = try makeReader(source, name: request.name)
-                let fmt = reader.processingFormat
-                let channels = Int(fmt.channelCount)
-                guard (1...2).contains(channels), fmt.commonFormat == .pcmFormatFloat32,
-                      !fmt.isInterleaved, fmt.sampleRate.isFinite, fmt.sampleRate >= 8_000 else {
-                    throw Failure.unsupported(request.name)
-                }
-                let frameCapacity: AVAudioFrameCount = 8192
-                guard let buffer = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frameCapacity) else {
-                    throw Failure.unsupported(request.name)
-                }
-                var meter = LoudnessMeter(sampleRate: fmt.sampleRate, channels: channels)
+                let analysis = try makeReader(source, name: request.name)
+                guard (1...2).contains(analysis.channels) else { throw Failure.unsupported(request.name) }
+                var meter = LoudnessMeter(sampleRate: analysis.sampleRate, channels: analysis.channels)
                 do {
                     while true {
                         try Task<Never, Never>.checkCancellation()
-                        try reader.read(into: buffer, frameCount: frameCapacity)
-                        let read = Int(buffer.frameLength)
-                        if read == 0 { break }
-                        guard let pcm = buffer.floatChannelData else { throw Failure.unsupported(request.name) }
-                        meter.ingest(UnsafePointer(pcm), frames: read)
+                        let pcm = try analysis.next()
+                        guard let first = pcm.first, !first.isEmpty else { break }
+                        meter.ingest(planar: pcm)
                     }
-                } catch let error as Failure { throw error }
-                catch { throw Failure.input(request.name, error.localizedDescription) }
-                let measurement = meter.measure()
+                } catch let e as Failure { throw e }
+                catch { throw Failure.operation(request.name, "analyzing audio", explain(error)) }
+                let before = meter.measure()
                 let change: Double
                 do {
-                    change = try NormalizationPlanner.gainDB(for: measurement,
-                        mode: mode, target: target,
-                        ceilingDBFS: peakLimit ? peakCeiling : nil)
-                } catch NormalizationError.silence {
-                    throw Failure.empty(request.name)
-                } catch {
-                    throw Failure.output(request.name, "Invalid normalization target: \(error.localizedDescription)")
-                }
+                    change = try NormalizationPlanner.gainDB(for: before, mode: mode,
+                        target: target, ceilingDBFS: peakLimit ? peakCeiling : nil)
+                } catch NormalizationError.silence { throw Failure.empty(request.name) }
+                catch { throw Failure.operation(request.name, "computing gain", explain(error)) }
 
-                let stemName = source.deletingPathExtension().lastPathComponent
+                let stem = source.deletingPathExtension().lastPathComponent.prefix(60)
                     .replacingOccurrences(of: "/", with: "-")
-                    .prefix(60)
-                let filename = "\(stemName)-\(request.elementID.uuidString.prefix(8))-\(UUID().uuidString.prefix(8)).wav"
-                let outputURL = folder.appendingPathComponent(filename)
-                created.append(outputURL)
-
-                // A WAV stores interleaved Float32 PCM, but Core Audio provides
-                // non-interleaved Float32 processing buffers via an explicit client
-                // format. This avoids relying on the source's encoding/layout.
-                // Build the on-disk interleaved LPCM format through Core Audio,
-                // rather than passing a hand-built settings dictionary. The
-                // processing buffers remain planar Float32; AVAudioFile converts.
-                guard let fileFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                sampleRate: fmt.sampleRate,
-                                channels: AVAudioChannelCount(channels), interleaved: true) else {
-                    throw Failure.output(request.name, "Cannot construct WAV format")
-                }
-                let settings = fileFormat.settings
+                let filename = "\(stem)-\(request.elementID.uuidString.prefix(8))-\(UUID().uuidString.prefix(8)).wav"
+                let output = folder.appendingPathComponent(filename)
+                created.append(output)
 
                 do {
-                    // Open a fresh decoder for pass two rather than seeking a
-                    // compressed source backwards. Some Core Audio file codecs
-                    // do not reliably reset their decoding state via framePosition.
+                    // Two-pass analysis + rendering with separate reader handles.
                     let replay = try makeReader(source, name: request.name)
-                    let scale = Float(pow(10, change / 20))
-                    let maxAmplitude: Float = peakLimit ? Float(pow(10, peakCeiling / 20)) : .greatestFiniteMagnitude
-                    let dest = try AVAudioFile(forWriting: outputURL, settings: settings,
-                                               commonFormat: .pcmFormatFloat32, interleaved: false)
+                    guard replay.channels == analysis.channels,
+                          abs(replay.sampleRate - analysis.sampleRate) < 0.001 else {
+                        throw Failure.unsupported(request.name)
+                    }
+                    let writer = try WaveFloat32Writer(url: output,
+                        sampleRate: analysis.sampleRate, channels: analysis.channels)
+                    let gain = Float(pow(10, change / 20))
+                    let ceiling: Float? = peakLimit ? Float(pow(10, peakCeiling / 20)) : nil
                     while true {
                         try Task<Never, Never>.checkCancellation()
-                        try replay.read(into: buffer, frameCount: frameCapacity)
-                        let read = Int(buffer.frameLength)
-                        if read == 0 { break }
-                        guard let pcm = buffer.floatChannelData else { throw Failure.unsupported(request.name) }
-                        for ch in 0..<channels {
-                            for i in 0..<read {
-                                let sample = pcm[ch][i] * scale
-                                pcm[ch][i] = sample.isFinite ? min(max(sample, -maxAmplitude), maxAmplitude) : 0
-                            }
-                        }
-                        try dest.write(from: buffer)
+                        let pcm = try replay.next()
+                        guard let first = pcm.first, !first.isEmpty else { break }
+                        try writer.append(planar: pcm, gain: gain, peakCeiling: ceiling)
                     }
-                } catch let error as Failure { throw error }
-                catch { throw Failure.output(request.name, error.localizedDescription) }
+                    try writer.finalize() // close file before verification
+                    guard writer.frameCount == before.frames else { throw Failure.invalidOutput(request.name) }
+                } catch let e as Failure { throw e }
+                catch { throw Failure.operation(request.name, "writing Float32 WAV", explain(error)) }
 
-                // Verify the file really exists and preserves the original number
-                // of frames, sample rate and channels before it can be relinked.
+                let after: NormalizationMeasurement
                 do {
-                    let verify = try makeReader(outputURL, name: request.name)
-                    let outFmt = verify.processingFormat
-                    guard verify.length == measurement.frames,
-                          Int(outFmt.channelCount) == channels,
-                          abs(outFmt.sampleRate - fmt.sampleRate) < 0.001,
-                          verify.length > 0 else { throw Failure.invalidOutput(request.name) }
-                } catch let error as Failure { throw error }
-                catch { throw Failure.invalidOutput(request.name) }
+                    let verified = try WavePCMReader(url: output)
+                    guard verified.channels == analysis.channels,
+                          abs(verified.sampleRate - analysis.sampleRate) < 0.001,
+                          verified.frameCount == before.frames,
+                          verified.frameCount > 0 else { throw Failure.invalidOutput(request.name) }
+                    // Actual post-render measurements, not predicted LUFS.
+                    var meter = LoudnessMeter(sampleRate: verified.sampleRate, channels: verified.channels)
+                    while true {
+                        try Task<Never, Never>.checkCancellation()
+                        let pcm = try verified.readFrames()
+                        guard let first = pcm.first, !first.isEmpty else { break }
+                        meter.ingest(planar: pcm)
+                    }
+                    after = meter.measure()
+                } catch let e as Failure { throw e }
+                catch { throw Failure.operation(request.name, "verifying normalized WAV", explain(error)) }
 
                 results.append(Result(elementID: request.elementID,
-                                      originalPath: request.originalPath,
-                                      normalizedPath: outputURL.path,
-                                      beforeLUFS: measurement.integratedLUFS,
-                                      beforePeak: measurement.samplePeakDBFS,
-                                      gainDB: change,
-                                      estimatedAfterLUFS: measurement.integratedLUFS.map { $0 + change },
-                                      estimatedAfterPeak: measurement.samplePeakDBFS.map { $0 + change },
-                                      name: request.name))
+                    originalPath: request.originalPath, normalizedPath: output.path,
+                    beforeLUFS: before.integratedLUFS, beforePeak: before.samplePeakDBFS,
+                    gainDB: change, estimatedAfterLUFS: after.integratedLUFS,
+                    estimatedAfterPeak: after.samplePeakDBFS, name: request.name))
             }
             return results
         } catch {
-            for url in created { try? fm.removeItem(at: url) }
+            // Multitrack normalization is atomic: not one file is relinked if
+            // ANY stem fails. Remove all generated files and keep originals.
+            for item in created { try? fm.removeItem(at: item) }
             throw error
         }
     }

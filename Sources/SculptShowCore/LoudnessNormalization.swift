@@ -82,6 +82,31 @@ public struct LoudnessMeter {
         }
     }
 
+    /// Chunked Float32 planar samples from the native WAV decoder. This
+    /// overload avoids temporary unsafe pointer allocations or DSP copies.
+    public mutating func ingest(planar: [[Float]]) {
+        guard planar.count == channels, let count = planar.first?.count,
+              planar.allSatisfy({ $0.count == count }) else { return }
+        for frame in 0..<count {
+            var weightedPower: Double = 0
+            for ch in 0..<channels {
+                let sample = Double(planar[ch][frame])
+                if !sample.isFinite { continue }
+                maxSample = max(maxSample, abs(sample))
+                let high = filters[ch].0.process(sample)
+                let filtered = filters[ch].1.process(high)
+                weightedPower += filtered * filtered
+            }
+            rollingSum += weightedPower - ring[ringIndex]
+            ring[ringIndex] = weightedPower
+            ringIndex = (ringIndex + 1) % windowSamples
+            frames += 1
+            if frames >= windowSamples && (frames - Int64(windowSamples)) % Int64(hopSamples) == 0 {
+                blockEnergies.append(max(0, rollingSum) / Double(windowSamples))
+            }
+        }
+    }
+
     public func measure() -> NormalizationMeasurement {
         let peakDB = maxSample > 0 ? 20 * log10(maxSample) : nil
         let gateEnergy = pow(10, (-70 + 0.691) / 10)
