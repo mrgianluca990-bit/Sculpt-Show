@@ -192,6 +192,40 @@ final class ShowStore: ObservableObject {
         }
     }
 
+    /// Show -> DAW Phase 2: direct, non-destructive, editable session handoff.
+    /// Does not stop any cue or mutate Show's audio graph / saved document.
+    @Published private(set) var dawBridgeBusy = false
+    @Published var dawBridgeMessage: String?
+
+    func editCueInDAW(_ cueID: UUID, in listID: UUID) {
+        guard !dawBridgeBusy else { return }
+        do {
+            let manifest = try SculptBridge.manifest(show: show, listID: listID, cueID: cueID)
+            let preparation = try SculptDAWLaunchBridge.prepare(manifest)
+            dawBridgeBusy = true
+            dawBridgeMessage = "Preparing Sculpt DAW session…"
+            SculptDAWLaunchBridge.run(preparation) { [weak self] result in
+                guard let self else { return }
+                self.dawBridgeBusy = false
+                switch result {
+                case .success(let message): self.dawBridgeMessage = message
+                case .failure(let error):
+                    self.dawBridgeMessage = nil
+                    self.errorMessage = "Sculpt Bridge: \(error.localizedDescription)"
+                }
+            }
+        } catch {
+            errorMessage = "Sculpt Bridge: \(error.localizedDescription)"
+        }
+    }
+
+    func chooseDAWCLI() {
+        do {
+            try SculptDAWLaunchBridge.chooseCLI()
+            dawBridgeMessage = "Sculpt DAW CLI configured. Next EDIT IN DAW will create a native, editable session."
+        } catch { errorMessage = error.localizedDescription }
+    }
+
     /// User explicitly picks a bounced mono/stereo stem to replace one source.
     /// Changes take effect on the NEXT playback, while cue/marker/routing IDs persist.
     func receiveDAWBounce(for elementID: UUID, in cueID: UUID, listID: UUID) {

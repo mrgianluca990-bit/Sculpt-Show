@@ -1,29 +1,34 @@
-SCULPT SHOW v0.15.0 — DURATION FIX + DAW BRIDGE PHASE 1
+SCULPT SHOW 0.16.0 — DIRECT EDIT IN SCULPT DAW (PHASE 2)
 
-UPDATE (GitHub): extract the update archive and upload its files to the
-Sculpt-Show repository root preserving the exact Sources/, Tests/, Scripts/ paths.
-Use one single GitHub commit if possible. Do not delete any existing files.
-The update includes a new Core exchange format (SculptBridge.swift),
-new regression tests and a new DAW button in the Cue Inspector.
+1. Extract Sculpt-Show-v0.16.0-DAW-Direct-Edit-Update.zip.
+2. On github.com/mrgianluca990-bit/Sculpt-Show open Add file > Upload files
+   and upload the files preserving EXACT folder paths. If GitHub's web UI
+   doesn't preserve paths when uploading loose files, use GitHub Desktop
+   or drag the top-level folders from the unzipped source on GitHub's uploader.
+3. Commit all changed files TOGETHER in one commit to main.
+4. Wait for the GitHub Actions macOS build. Download the new artifact.
 
-COMPLETE SOURCE: the other archive includes the entire v0.15.0 source tree,
-including app icon, CoreAudio/LTC sources and GitHub Actions workflow.
+Only Show needs compiling for this phase; the existing Sculpt DAW build already
+supports loading .scraft sessions from startup arguments and includes
+soundcraft-cli. The update does NOT modify the DAW repository.
 
-QUICK TEST:
-1. Open a saved .scshow, select cue A, click its LENGTH field and type a
-   temporary value, WITHOUT Enter. Select cue B. Cue B's length must stay intact.
-2. Go back to A: old duration should still be there. Type a valid duration
-   and Enter: only A should change.
-3. On a cue with 1–2 WAV/AIFF stems, click SEND CUE TO DAW…
-   in Inspector. It exports cue metadata JSON and SculptDAW CLI script.
-4. Use the installed `soundcraft-cli script /absolute/path/Cue-bridge-DAW.txt`
-   to create an editable .scdaw session. CLI requires Sculpt DAW installed/build.
-5. Export a stem bounce from the DAW and click RECEIVE DAW BOUNCE… on the
-   corresponding audio element. The cue retains its routing, Rules, LTC, and markers.
-6. Check GO, LTC, routing, mixer and preflight did not regress.
+The update changes/adds:
+  Scripts/Info.plist
+  Sources/SculptShowApp/SculptDAWLaunchBridge.swift (new)
+  Sources/SculptShowApp/ShowStore.swift
+  Sources/SculptShowApp/WorkspaceView.swift
+  Sources/SculptShowCore/SculptBridge.swift
+  Tests/SculptShowCoreTests/SculptBridgeTests.swift
+  BRIDGE-PHASE2.md (new)
+  ISTRUZIONI.txt, README.md
 
-IMPORTANT: Phase 1 is FILE-BASED; not yet live IPC or automatic DAW GUI
-round-trip. The original audio and .scshow are not overwritten by bridge export.
-Local Swift Core suite: 127 tests passed. The macOS app must build on Actions.
+FIRST TEST:
+  - Select a 2-stem cue and click EDIT IN SCULPT DAW.
+  - If necessary, select Sculpt DAW.app, and the soundcraft-cli binary included
+    alongside the app in the downloaded DAW ZIP.
+  - Confirm DAW opens a native named .scraft session with both clips at 00:00.
+  - Split/move a clip, adjust gain, insert a plugin, save and reopen the session.
+  - Check no changes occurred to the Show cue or original WAVs.
 
-See BRIDGE-PHASE1.md for precise scope and current limitations.
+For the full setup and what is still missing, see BRIDGE-PHASE2.md.
+This is NOT yet a two-way live bridge. No macOS build of 0.16.0 has been confirmed.

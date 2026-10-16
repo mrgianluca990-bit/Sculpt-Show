@@ -503,12 +503,29 @@ struct WorkspaceView: View {
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundColor(Skin.gold)
                         Button {
-                            store.exportCueToDAW(cue.id, in: listID)
+                            store.editCueInDAW(cue.id, in: listID)
                         } label: {
-                            Label("SEND CUE TO DAW…", systemImage: "square.and.arrow.up")
+                            Label("EDIT IN SCULPT DAW", systemImage: "waveform.path.ecg.rectangle")
                         }
-                        .help("Export a versioned cue manifest and native Sculpt DAW CLI import script; audio files remain untouched")
-                        Text("Export aligned stems for DAW editing. Import a bounced replacement from each element below; original routing, marker and Rules stay in Show.")
+                        .disabled(store.dawBridgeBusy)
+                        .help("Create a new independent, editable DAW session from this cue and open Sculpt DAW automatically")
+                        if store.dawBridgeBusy {
+                            HStack(spacing: 7) {
+                                ProgressView().controlSize(.small)
+                                Text("Preparing DAW session…")
+                            }.font(.caption)
+                        }
+                        HStack(spacing: 12) {
+                            Button("EXPORT MANIFEST…") { store.exportCueToDAW(cue.id, in: listID) }
+                            Button("LOCATE CLI…") { store.chooseDAWCLI() }
+                        }
+                        if let message = store.dawBridgeMessage {
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        Text("Open aligned stems directly in the DAW for region edits, levels and plugin processing. Original Show media and cue routing are untouched.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

@@ -59,4 +59,25 @@ final class SculptBridgeTests: XCTestCase {
         let cueID = try XCTUnwrap(empty.addEmptyCue(to: listID))
         XCTAssertThrowsError(try SculptBridge.manifest(show: empty, listID: listID, cueID: cueID))
     }
+
+    func testBridgeWorkspaceFilenameIsSafeAndDeterministic() {
+        XCTAssertEqual(SculptBridge.safeFilename("  Scene/42: LX\\Q?  "), "Scene-42- LX-Q")
+        XCTAssertEqual(SculptBridge.safeFilename("../\\"), "Untitled Cue")
+        XCTAssertEqual(SculptBridge.safeFilename(" \n "), "Untitled Cue")
+        XCTAssertEqual(SculptBridge.safeFilename(String(repeating: "z", count: 100)).count, 70)
+    }
+
+    func testNativeSculptDAWSessionScriptHasExplicitOrigin() throws {
+        let (show, list, id) = try makeShow()
+        let manifest = try SculptBridge.manifest(show: show, listID: list, cueID: id)
+        let destination = "/tmp/Sculpt Bridge/Cue A.scraft"
+        let script = try SculptBridge.dawImportScript(manifest, sampleRate: 44100, destination: destination)
+        let saveLine = try XCTUnwrap(script.split(separator: "\n").first(where: { $0.hasPrefix("session.save ") }))
+        let save = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(saveLine.dropFirst("session.save ".count).utf8)) as? [String: Any])
+        XCTAssertEqual(save["path"] as? String, destination)
+        XCTAssertEqual(save["replace"] as? Bool, false)
+        XCTAssertTrue(script.contains("\"seconds\":0"))
+    }
+
 }

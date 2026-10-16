@@ -62,6 +62,17 @@ public enum SculptBridge {
                         timecode: tc)
     }
 
+    /// File-safe display name only. Cue identity is kept separately by UUID,
+    /// and every direct handoff uses a new workspace to avoid overwrites.
+    public static func safeFilename(_ name: String) -> String {
+        let forbidden = CharacterSet(charactersIn: "/\\:?*\"<>|\n\r\t")
+        let pieces = name.components(separatedBy: forbidden)
+        let joined = pieces.joined(separator: "-")
+            .replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " -.\n\r\t"))
+        return String((joined.isEmpty ? "Untitled Cue" : joined).prefix(70))
+    }
+
     public static func encode(_ manifest: Manifest) throws -> Data {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]

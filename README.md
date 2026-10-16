@@ -1,3 +1,17 @@
+# Sculpt Show 0.16.0 — Direct Edit in Sculpt DAW (Bridge Phase 2)
+
+- **EDIT IN SCULPT DAW** creates an isolated editable DAW session (named `.scraft`) and automatically launches Sculpt DAW with the cue's stems **aligned at zero**, using `soundcraft-cli` from the existing DAW package. For multiple stems the CLI is required to guarantee alignment.
+- If the CLI is unavailable, one-stem cues can be opened directly by the DAW GUI; in this fallback case save the session manually.
+- On first launch, select Sculpt DAW.app and, if necessary, `soundcraft-cli`. Their paths are remembered.
+- Import runs off the SwiftUI thread. No shell invocation; original Show data and audio remain untouched.
+- The v1 JSON manifest is kept for future Show ← DAW synchronization. **RECEIVE DAW BOUNCE** continues to work as before.
+- Sculpt DAW itself is **not changed** by this phase, so only Sculpt Show needs a new GitHub build.
+- Local checks: **129 Core tests passed** and Swift parsing passed; actual GUI launch, editing and plugin operations require Mac testing.
+
+See [BRIDGE-PHASE2.md](BRIDGE-PHASE2.md) and [ISTRUZIONI.txt](ISTRUZIONI.txt).
+
+---
+
 # Sculpt Show 0.15.0 — Duration Editing Fix + Sculpt DAW Bridge (Phase 1)
 
 - Duration editor: **Return commits**, selecting another cue **discards unconfirmed text**, cue-specific identity prevents stale fields overwriting adjacent cues.
