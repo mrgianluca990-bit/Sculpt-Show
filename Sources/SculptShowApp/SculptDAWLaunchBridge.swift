@@ -37,6 +37,7 @@ enum SculptDAWLaunchBridge {
         let session: URL
         let workspace: URL
         let sampleRate: Int
+        let channelCounts: [UUID: Int]
     }
 
     private static let appPreference = "SculptBridge.DAWApplication.v2"
@@ -45,7 +46,7 @@ enum SculptDAWLaunchBridge {
 
     static func prepare(_ manifest: SculptBridge.Manifest) throws -> Preparation {
         let app = try locateApplication()
-        let sampleRate = try checkAudio(manifest)
+        let audioInfo = try checkAudio(manifest)
         var cli = locateCLI(near: app)
         // DAW's standalone audio-arguments mode has no explicit alignment
         // guarantees between consecutive imports. For multi-stem cue editing,
@@ -59,7 +60,8 @@ enum SculptDAWLaunchBridge {
         let json = workspace.appendingPathComponent("sculpt-cue-bridge.json")
         do {
             let commands = try SculptBridge.dawImportScript(manifest,
-                sampleRate: sampleRate, destination: session.path)
+                sampleRate: audioInfo.rate, destination: session.path,
+                channelCounts: audioInfo.channels)
             try SculptBridge.encode(manifest).write(to: json, options: .atomic)
             try Data(commands.utf8).write(to: script, options: .atomic)
         } catch {
@@ -67,7 +69,7 @@ enum SculptDAWLaunchBridge {
         }
         return Preparation(dawApplication: app, cli: cli, manifest: manifest,
                            script: script, session: session, workspace: workspace,
-                           sampleRate: sampleRate)
+                           sampleRate: audioInfo.rate, channelCounts: audioInfo.channels)
     }
 
     static func run(_ preparation: Preparation, report: @escaping @MainActor (Result<String, Error>) -> Void) {
@@ -97,7 +99,7 @@ enum SculptDAWLaunchBridge {
             openDAW(preparation.dawApplication, arguments: paths) { result in
                 switch result {
                 case .success:
-                    report(.success("Sculpt DAW opened with \(paths.count) audio stem(s) at project start. Use File > Save Session As in DAW. For an automatically named session, locate soundcraft-cli (included with the DAW download)."))
+                    report(.success("Sculpt DAW opened with \(paths.count) audio stem(s) at project start. Use File > Save Session As in DAW. For marker import and saving the physical I/O mapping, authorize and select soundcraft-cli (included with the DAW download). Actual direct hardware playback routing still requires an update in Sculpt DAW."))
                 case .failure(let error): report(.failure(error))
                 }
             }
@@ -164,9 +166,10 @@ enum SculptDAWLaunchBridge {
         return nil
     }
 
-    private static func checkAudio(_ manifest: SculptBridge.Manifest) throws -> Int {
+    private static func checkAudio(_ manifest: SculptBridge.Manifest) throws -> (rate: Int, channels: [UUID: Int]) {
         guard !manifest.stems.isEmpty else { throw LaunchError.invalidAudio("no audio stems") }
         var sampleRate = 48000
+        var channels: [UUID: Int] = [:]
         for (index, stem) in manifest.stems.enumerated() {
             let url = URL(fileURLWithPath: stem.sourcePath)
             guard FileManager.default.fileExists(atPath: url.path),
@@ -177,8 +180,9 @@ enum SculptDAWLaunchBridge {
                 throw LaunchError.invalidAudio("missing or unreadable mono/stereo file: \(stem.name)")
             }
             if index == 0 { sampleRate = Int(file.processingFormat.sampleRate.rounded()) }
+            channels[stem.elementID] = Int(file.processingFormat.channelCount)
         }
-        return sampleRate
+        return (sampleRate, channels)
     }
 
     private static func createWorkspace(for manifest: SculptBridge.Manifest) throws -> URL {

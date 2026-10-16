@@ -40,7 +40,7 @@ public enum SculptBridge {
         public let timecode: LTC?
     }
     public enum BridgeError: Error, Equatable {
-        case missingCue, noAudio, invalidSampleRate
+        case missingCue, noAudio, invalidSampleRate, missingChannelMetadata, invalidOutput, unsupportedChannelCount
     }
 
     public static func manifest(show: Show, listID: UUID, cueID: UUID) throws -> Manifest {
@@ -79,25 +79,82 @@ public enum SculptBridge {
         return try enc.encode(manifest)
     }
 
-    /// Script understood by SculptDAW's existing soundcraft-cli `script FILE`
-    /// command: session.new, file.import_audio, session.save. Each JSON object is
-    /// escaped by JSONSerialization; a name/path cannot inject extra commands.
+    /// Creates a native Sculpt DAW project using ONLY commands supported by
+    /// the existing DAW CLI. The contract remains version 1 for old manifests;
+    /// the additional physical-channel data comes from decoding each source.
+    /// Physical routes are recorded as named output paths and track metadata;
+    /// track outputs stay on Main until DAW's mix renderer supports hardware routes.
+    /// (The current renderer silently drops Route::Hardware output signals.)
+    /// One input file = one track; stereo is never split unless explicitly requested.
     public static func dawImportScript(_ manifest: Manifest, sampleRate: Int,
-                                       destination: String) throws -> String {
-        guard sampleRate >= 8000 && sampleRate <= 384000 else { throw BridgeError.invalidSampleRate }
+                                       destination: String,
+                                       channelCounts: [UUID: Int]) throws -> String {
+        guard (8000...384000).contains(sampleRate) else { throw BridgeError.invalidSampleRate }
         func command(_ name: String, _ args: [String: Any]) throws -> String {
-            let data = try JSONSerialization.data(withJSONObject: args, options: [.sortedKeys, .fragmentsAllowed])
+            let data = try JSONSerialization.data(withJSONObject: args, options: [.sortedKeys])
             guard let json = String(data: data, encoding: .utf8) else { return "" }
             return name + " " + json
         }
-        let lines = [
+        // DAW's main session has an existing default output, Out 1-2. Use
+        // distinctly named bridge paths (SCULPT HW ...) to avoid the DAW's
+        // special alias parsing of Out 1-2 as the main output bus.
+        func physicalPath(_ first: Int, _ count: Int) -> String {
+            let ch = String(format: "%02d", first)
+            return count == 1 ? "SCULPT HW MONO \(ch)" :
+                "SCULPT HW STEREO \(ch)-\(String(format: "%02d", first + 1))"
+        }
+        var lines = [
             "# Sculpt Bridge v1 · cueID=\(manifest.cueID.uuidString)",
-            "# Non-destructive handoff. Stem placements begin at 00:00; Show retains routing, LTC and Rules.",
-            try command("session.new", ["name": manifest.cueName, "sample_rate": sampleRate]),
-            try command("file.import_audio", ["paths": manifest.stems.map(\.sourcePath),
-                                               "at": ["seconds": 0], "new_tracks": true]),
-            try command("session.save", ["path": destination, "replace": false])
+            "# Aligned audio, physical output assignments and cue markers. Do not reinterpret OUT as buses.",
+            try command("session.new", ["name": manifest.cueName, "sample_rate": sampleRate])
         ]
+        var createdPaths = Set<String>()
+        for (index, stem) in manifest.stems.enumerated() {
+            guard let count = channelCounts[stem.elementID] else { throw BridgeError.missingChannelMetadata }
+            guard count == 1 || count == 2 else { throw BridgeError.unsupportedChannelCount }
+            guard stem.outputStartChannel >= 1,
+                  stem.outputStartChannel + count - 1 <= 64 else { throw BridgeError.invalidOutput }
+            let path = physicalPath(stem.outputStartChannel, count)
+            // Import one file at a time, rename the freshly created track before
+            // importing another. This also handles sources with identical basenames.
+            let sourceName = (stem.sourcePath as NSString).lastPathComponent
+            let sourceTrack = (sourceName as NSString).deletingPathExtension
+            let stableName = "S\(String(format: "%03d", index + 1)) \(String(stem.name.prefix(35))) \(stem.elementID.uuidString.prefix(8))"
+            lines.append(try command("file.import_audio", ["path": stem.sourcePath,
+                                                            "at": ["seconds": 0], "new_tracks": true]))
+            lines.append(try command("track.rename", ["track": sourceTrack, "name": stableName]))
+            if createdPaths.insert(path).inserted {
+                lines.append(try command("setup.io", ["action": "create_output", "name": path,
+                                                       "first_channel": stem.outputStartChannel - 1,
+                                                       "format": count == 1 ? "mono" : "stereo"]))
+            }
+            // Keep the track audible through the DAW's main monitor output.
+            // Physical output assignments are saved separately as I/O paths
+            // and explicit track comments until the DAW renderer can output
+            // Route::Hardware, which currently produces silence.
+            let endChannel = stem.outputStartChannel + count - 1
+            let assignment = count == 1 ? "OUT \(stem.outputStartChannel)" :
+                "OUT \(stem.outputStartChannel)/\(endChannel)"
+            lines.append(try command("track.comments", ["track": stableName,
+                                                          "comments": "Sculpt Show physical routing: \(assignment) (\(path)). Prepared only: DAW monitoring uses Main until hardware route playback is supported. Source stem UUID: \(stem.elementID.uuidString)"]))
+            if stem.muted {
+                lines.append(try command("mix.mute", ["track": stableName, "value": true]))
+            }
+            if stem.gain.isFinite && stem.gain != 1 {
+                let db = stem.gain <= 0 ? -144.0 : max(-144, min(12, 20 * log10(stem.gain)))
+                lines.append(try command("mix.volume", ["track": stableName, "db": db]))
+            }
+        }
+        for marker in manifest.markers.sorted(by: { $0.seconds < $1.seconds }) {
+            guard marker.seconds.isFinite && marker.seconds >= 0 else { continue }
+            lines.append(try command("markers.add", ["name": marker.name,
+                                                     "at": ["seconds": marker.seconds],
+                                                     "kind": "marker", "ruler": 1]))
+        }
+        if !manifest.markers.isEmpty {
+            lines.append(try command("view.ruler", ["ruler": "markers", "visible": true]))
+        }
+        lines.append(try command("session.save", ["path": destination, "replace": false]))
         return lines.joined(separator: "\n") + "\n"
     }
 }

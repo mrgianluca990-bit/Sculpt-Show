@@ -1,0 +1,15 @@
+SCULPT SHOW 0.17.0 — COME CARICARE SU GITHUB
+
+Estrarre il file Sculpt-Show-v0.17.0-Update.zip.
+Su https://github.com/mrgianluca990-bit/Sculpt-Show caricare, mantenendo il percorso:
+ Sources/SculptShowApp/WorkspaceView.swift
+ Sources/SculptShowApp/ShowOutputMixerView.swift
+ Sources/SculptShowApp/ShowStore.swift
+ Sources/SculptShowApp/SculptDAWLaunchBridge.swift
+ Sources/SculptShowCore/SculptBridge.swift
+ Tests/SculptShowCoreTests/SculptBridgeTests.swift
+ Scripts/Info.plist
+Sono inclusi anche README-v0.17.0.md e BRIDGE-ROUTING-PHASE3.md (facoltativi).
+Un solo commit avvia la build di Github Actions.
+La DAW attuale non deve essere ricompilata per importare marker e salvare la mappatura I/O.
+I percorsi hardware sono PREPARATI, non ancora attivi nel renderer DAW.

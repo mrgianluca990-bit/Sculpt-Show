@@ -89,7 +89,7 @@ struct WorkspaceView: View {
     @StateObject private var timecodeReader = LTCInputReader()
     @State private var showingTimecodeReader = false
     @EnvironmentObject private var midi: MIDIControl
-    @State private var showingOutputMixer = true
+    @State private var showingOutputMixer = false
     @State private var showingWaveforms = false
     @State private var showingPreflight = false
     @State private var selectedMarkerID: UUID?

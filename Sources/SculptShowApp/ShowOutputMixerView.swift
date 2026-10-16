@@ -79,17 +79,26 @@ struct ShowOutputMixerView: View {
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: 3) {
-                    ForEach(OutputMixerBanks.channels(channelCount: channelCount, bank: bank), id: \.self) { channel in
-                        OutputChannelStrip(meter: playback.meterMonitor,
-                                           channel: channel,
-                                           deviceName: deviceName,
-                                           channelCount: channelCount,
-                                           labels: $labels)
+            // Give the strips the dock's ACTUAL current height. The VSplitView
+            // divider can move without rebuilding the audio engine or meters.
+            GeometryReader { available in
+                // Number/title, held dB, mute/solo, label and strip padding
+                // reserve ~105 points. Use the remainder for a long VU strip.
+                let height = max(36, available.size.height - 110)
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: 3) {
+                        ForEach(OutputMixerBanks.channels(channelCount: channelCount, bank: bank), id: \.self) { channel in
+                            OutputChannelStrip(meter: playback.meterMonitor,
+                                               channel: channel,
+                                               deviceName: deviceName,
+                                               channelCount: channelCount,
+                                               meterHeight: height,
+                                               labels: $labels)
+                        }
                     }
+                    .padding(.vertical, 3)
                 }
-                .padding(.vertical, 3)
+                .frame(width: available.size.width, height: available.size.height)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -102,12 +111,12 @@ private struct OutputChannelStrip: View {
     let channel: Int
     let deviceName: String
     let channelCount: Int
+    let meterHeight: CGFloat
     @Binding var labels: ShowOutputLabels
     @State private var editing = false
     @State private var labelDraft = ""
     @FocusState private var focused: Bool
 
-    private let meterHeight: CGFloat = 165
 
     private var muted: Bool { playback.outputControls.isMuted(channel) }
     private var soloed: Bool { playback.outputControls.isSoloed(channel) }

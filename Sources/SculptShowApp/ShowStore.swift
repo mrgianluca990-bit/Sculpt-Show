@@ -162,6 +162,7 @@ final class ShowStore: ObservableObject {
             let manifest = try SculptBridge.manifest(show: show, listID: listID, cueID: cueID)
             let supported: Set<String> = ["wav", "wave", "aif", "aiff", "flac"]
             var rate: Int?
+            var channels: [UUID: Int] = [:]
             for stem in manifest.stems {
                 let url = URL(fileURLWithPath: stem.sourcePath)
                 guard url.isFileURL, supported.contains(url.pathExtension.lowercased()),
@@ -171,6 +172,7 @@ final class ShowStore: ObservableObject {
                     return
                 }
                 if rate == nil { rate = Int(audio.processingFormat.sampleRate.rounded()) }
+                channels[stem.elementID] = Int(audio.processingFormat.channelCount)
             }
             let savePanel = NSSavePanel()
             savePanel.title = "Send Cue to Sculpt DAW"
@@ -180,10 +182,11 @@ final class ShowStore: ObservableObject {
             savePanel.message = "Creates JSON metadata plus a Sculpt DAW CLI import script. Does not change Show or original media."
             guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
             let base = url.deletingPathExtension()
-            let destination = base.appendingPathExtension("scdaw")
+            let destination = base.appendingPathExtension("scraft")
             let commandsURL = URL(fileURLWithPath: base.path + "-DAW.txt")
             let commands = try SculptBridge.dawImportScript(manifest, sampleRate: rate ?? 48000,
-                                                              destination: destination.path)
+                                                              destination: destination.path,
+                                                              channelCounts: channels)
             try SculptBridge.encode(manifest).write(to: url, options: .atomic)
             try Data(commands.utf8).write(to: commandsURL, options: .atomic)
             // No automatic process launch: DAW CLI availability/build differs by installation.
