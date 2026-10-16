@@ -150,7 +150,7 @@ enum SculptDAWLaunchBridge {
     private static func locateCLI(near app: URL) -> URL? {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
-        let candidatePaths = [
+        let candidatePaths: [String?] = [
             UserDefaults.standard.string(forKey: cliPreference),
             app.deletingLastPathComponent().appendingPathComponent("soundcraft-cli").path,
             home.appendingPathComponent("Downloads/soundcraft-cli").path,
