@@ -1,0 +1,28 @@
+SCULPT SHOW 0.18.1 — aggiornamento UI
+
+Carica nel repository mrgianluca990-bit/Sculpt-Show, branch main,
+solo i seguenti file, rispettando le cartelle dello ZIP:
+
+  Sources/SculptShowApp/WorkspaceView.swift
+  Scripts/Info.plist
+
+Il file README.md nella versione completa serve come documentazione
+(opzionale caricarlo). Non sostituire l'intero repository con il pacchetto
+di aggiornamento: aggiungi/sostituisci i file ai percorsi indicati.
+
+GitHub Actions compilerà automaticamente macOS universal app.
+
+TEST DA ESEGUIRE:
+1. App avviata: seleziona una cue. Tutte le sezioni dell'Inspector devono
+   risultare chiuse, espandibili singolarmente.
+2. Premi il pulsante Timecode (orologio) nel trasporto: il monitor deve
+   apparire come colonna A DESTRA dell'Inspector, non in basso.
+3. Trascina il separatore dell'Inspector: i due pannelli a destra devono
+   mantenere la stessa larghezza, anche passando da 280 a 650 pt.
+4. Apri Mixer o Waveforms: soltanto questi occupano il dock inferiore.
+   Il monitor timecode deve rimanere a destra.
+5. Chiudi Timecode: la cue list deve riottenere l'area liberata.
+6. Verifica che GO, LTC INPUT/OUTPUT, routing, Rules e bridge DAW continuino
+   ad operare come nella 0.18.0.
+
+NOTA: la build macOS va ancora verificata da GitHub Actions.

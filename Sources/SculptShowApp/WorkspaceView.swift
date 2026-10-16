@@ -152,7 +152,7 @@ struct WorkspaceView: View {
     @State private var selectedMarkerID: UUID?
     @AppStorage("SculptShow.InspectorWidth.v1") private var inspectorWidth: Double = 346
     @State private var inspectorResizeStart: Double?
-    @State private var expandedInspectorSections: Set<String> = ["COLOR", "LEVEL & WAIT", "TIMING", "STEMS & LTC"]
+    @State private var expandedInspectorSections: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -160,13 +160,13 @@ struct WorkspaceView: View {
             Divider().overlay(Skin.stroke)
             transport
             Divider().overlay(Skin.stroke)
-            if showingOutputMixer || showingWaveforms || showingTimecodeReader {
-                // A native, draggable split between the show editor and Cue-style
-                // docked consoles. Changing layout never changes the audio graph.
+            if showingOutputMixer || showingWaveforms {
+                // The mixer/waveform dock stays below the show editor. The LTC monitor
+                // instead docks on the right, independently of the audio graph.
                 VSplitView {
                     mainEditor
                         .frame(minHeight: 235)
-                    bottomConsoles
+                    waveformAndMixer
                         .frame(minHeight: 310, idealHeight: 370)
                 }
             } else {
@@ -275,38 +275,30 @@ struct WorkspaceView: View {
                 .help("Drag to resize Cue Lists and Inspector")
             inspector
                 .frame(width: min(650, max(280, inspectorWidth)))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
 
-    /// Mixer and the received/generated timecode monitor run independently. The operator can
-    /// resize this dock with the VSplitView divider, without touching playback.
-    private var bottomConsoles: some View {
-        HStack(spacing: 0) {
-            if showingOutputMixer || showingWaveforms {
-                waveformAndMixer
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            if (showingOutputMixer || showingWaveforms) && showingTimecodeReader {
-                Divider().overlay(Skin.stroke)
-            }
             if showingTimecodeReader {
+                // The monitor docks on the right (rather than at the bottom),
+                // inheriting the Inspector's adjustable width. It remains
+                // independent from both the mixer and waveforms.
+                Rectangle()
+                    .fill(Skin.stroke)
+                    .frame(width: 1)
+                    .accessibilityHidden(true)
                 TimecodeReaderView()
                     .environmentObject(timecodeReader)
                     .environmentObject(playback)
-                    .frame(width: (showingOutputMixer || showingWaveforms) ? 410 : nil)
-                    .frame(maxWidth: (showingOutputMixer || showingWaveforms) ? nil : .infinity,
-                           maxHeight: .infinity)
+                    .frame(width: min(650, max(280, inspectorWidth)))
+                    .frame(maxHeight: .infinity)
+                    .background(Skin.panel)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Skin.panel)
     }
 
     @ViewBuilder
     private var waveformAndMixer: some View {
-        // Exactly one primary dock. Timecode Reader remains independent and
-        // may be displayed alone or beside either dock.
+        // Exactly one primary dock. The Timecode Reader has its own right panel.
         if showingOutputMixer {
             ShowOutputMixerView().environmentObject(playback)
         } else if showingWaveforms {
