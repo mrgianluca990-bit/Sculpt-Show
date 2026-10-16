@@ -280,7 +280,7 @@ final class ShowStore: ObservableObject {
                 }
                 self.normalizationReport = results.map {
                     "\($0.name):  \(value($0.beforeLUFS)) LUFS  |  \(value($0.beforePeak)) dBFS peak  |  \(String(format: "%+.1f", $0.gainDB)) dB  →  \(value($0.estimatedAfterLUFS)) LUFS / \(value($0.estimatedAfterPeak)) dBFS"
-                }.joined(separator: "\n") + "\n\nNormalized copies saved in Music/Sculpt Normalized. Source files and live playback settings are unchanged. Save the Show to preserve the new references."
+                }.joined(separator: "\n") + "\n\nNormalized copies saved in Application Support/Sculpt Show/Normalized Audio. Source files and live playback settings are unchanged. Save the Show to preserve the new references."
                 self.normalizingCueID = nil
             } catch {
                 self.normalizingCueID = nil
@@ -785,17 +785,25 @@ final class ShowStore: ObservableObject {
 
     func save() {
         guard let url = documentURL else { saveAs(); return }
-        write(to: url)
+        if ShowProjectPackage.isPackaged(url) { write(to: url) }
+        else { saveAs() } // Convert legacy, stand-alone .scshow to a self-contained project.
     }
 
     func saveAs() {
         let panel = NSSavePanel()
         panel.title = "Save Sculpt Show"
         panel.nameFieldStringValue = "\(show.name).scshow"
-        panel.message = "The show file stores file paths, not the media itself."
+        panel.message = "Creates a portable folder with the .scshow document and Audio Files organized by Cue List. Existing source media are not moved."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let destination = url.pathExtension == "scshow" ? url : url.appendingPathExtension("scshow")
-        write(to: destination)
+        do {
+            let saved = try ShowProjectPackage.create(show, requestedDocumentURL: destination)
+            show = saved.runtimeShow
+            documentURL = saved.documentURL
+            dirty = false
+        } catch {
+            errorMessage = "Unable to create Show project folder: \(error.localizedDescription)"
+        }
     }
 
     @discardableResult
@@ -817,7 +825,8 @@ final class ShowStore: ObservableObject {
             return false
         }
         do {
-            let next = try ShowCodec.decode(contentsOf: url)
+            let decoded = try ShowCodec.decode(contentsOf: url)
+            let next = try ShowProjectPackage.resolve(decoded, documentURL: url)
             guard confirmDiscard() else { return false }
             cancelPendingRules()
             playingLists.removeAll()
@@ -1078,8 +1087,9 @@ final class ShowStore: ObservableObject {
 
     private func write(to url: URL) {
         do {
-            try ShowCodec.encode(show).write(to: url, options: .atomic)
-            documentURL = url
+            let saved = try ShowProjectPackage.save(show, documentURL: url)
+            show = saved.runtimeShow
+            documentURL = saved.documentURL
             dirty = false
         } catch {
             errorMessage = "Unable to save show: \(error.localizedDescription)"
