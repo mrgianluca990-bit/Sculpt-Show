@@ -92,6 +92,72 @@ final class ShowProjectPackageTests: XCTestCase {
         XCTAssertEqual(try ShowCodec.decode(contentsOf: saved.documentURL), empty)
     }
 
+    func testNormalizedAudioDirectoryStaysInProjectAfterListRename() throws {
+        let dir = try sandbox()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = try audioFile(dir, name: "original.wav")
+        let original = Show(name: "Concert", cueLists: [
+            CueList(name: "Drums", cues: [Cue(name: "Snare", mediaPath: source.path)])
+        ])
+        let saved = try ShowProjectPackage.create(original,
+            requestedDocumentURL: dir.appendingPathComponent("Concert.scshow"))
+        let id = saved.runtimeShow.cueLists[0].id
+        let audioRoot = saved.documentURL.deletingLastPathComponent()
+            .appendingPathComponent("Audio Files")
+        let directory = try ShowProjectPackage.audioDirectory(for: id,
+            in: saved.runtimeShow, documentURL: saved.documentURL)
+        XCTAssertEqual(directory.deletingLastPathComponent(), audioRoot)
+        XCTAssertTrue(directory.lastPathComponent.contains("Drums"))
+
+        // Renaming/reordering must not generate new media folder for the same UUID.
+        var edited = saved.runtimeShow
+        edited.cueLists[0].name = "Percussion"
+        let sameDirectory = try ShowProjectPackage.audioDirectory(for: id,
+            in: edited, documentURL: saved.documentURL)
+        XCTAssertEqual(sameDirectory, directory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    func testNormalizedWAVIsPortableWithItsCueAfterSaveAndRelocation() throws {
+        let dir = try sandbox()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = try audioFile(dir, name: "source.wav")
+        let initial = Show(name: "Portable", cueLists: [
+            CueList(name: "Music", cues: [Cue(name: "Stereo", mediaPath: source.path)])
+        ])
+        let saved = try ShowProjectPackage.create(initial,
+            requestedDocumentURL: dir.appendingPathComponent("Portable.scshow"))
+        var edited = saved.runtimeShow
+        let listID = edited.cueLists[0].id
+        let destination = try ShowProjectPackage.audioDirectory(for: listID,
+            in: edited, documentURL: saved.documentURL)
+            .appendingPathComponent("Normalized-Stereo.wav")
+        let writer = try WaveFloat32Writer(url: destination,
+            sampleRate: 48000, channels: 2)
+        try writer.append(planar: [[0.1, -0.2], [-0.3, 0.4]], gain: 1)
+        try writer.finalize()
+        edited.cueLists[0].cues[0].elements[0].sourcePath = destination.path
+        _ = try ShowProjectPackage.save(edited, documentURL: saved.documentURL)
+
+        let stored = try ShowCodec.decode(contentsOf: saved.documentURL)
+        let relative = stored.cueLists[0].cues[0].audioElements[0].sourcePath
+        XCTAssertTrue(relative.hasPrefix("Audio Files/"))
+        XCTAssertFalse(relative.hasPrefix("/"))
+        let newParent = dir.appendingPathComponent("Another Computer")
+        try FileManager.default.createDirectory(at: newParent, withIntermediateDirectories: true)
+        let newRoot = newParent.appendingPathComponent("Portable")
+        try FileManager.default.moveItem(at: saved.documentURL.deletingLastPathComponent(), to: newRoot)
+        let reopened = try ShowProjectPackage.resolve(
+            ShowCodec.decode(contentsOf: newRoot.appendingPathComponent("Portable.scshow")),
+            documentURL: newRoot.appendingPathComponent("Portable.scshow"))
+        let reopenedURL = URL(fileURLWithPath: reopened.cueLists[0].cues[0].audioElements[0].sourcePath)
+        XCTAssertTrue(reopenedURL.path.hasPrefix(newRoot.path))
+        let audio = try WavePCMReader(url: reopenedURL)
+        XCTAssertEqual(audio.channels, 2)
+        XCTAssertEqual(audio.frameCount, 2)
+        XCTAssertEqual(try audio.readFrames()[1][1], 0.4, accuracy: 0.00001)
+    }
+
     func testRejectsEscapingRelativePath() throws {
         let dir = try sandbox()
         defer { try? FileManager.default.removeItem(at: dir) }

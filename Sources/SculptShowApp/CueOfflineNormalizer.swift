@@ -106,10 +106,17 @@ enum CueOfflineNormalizer {
         let ext = url.pathExtension.lowercased()
         if ["wav", "wave", "bwf"].contains(ext) {
             do { return .wave(try WavePCMReader(url: url)) }
-            catch WavePCMFailure.unsupported {
-                // Compressed WAV codecs may still be supported by Core Audio.
-            } catch {
-                throw Failure.operation(name, "reading source WAV", explain(error))
+            catch {
+                // Real-world stereo WAVs may be RF64, WAVE64, compressed RIFF,
+                // contain nonstandard metadata, or use valid PCM layouts that
+                // the strict Swift parser does not recognize. Ask Core Audio
+                // to decode as a second path; retain BOTH errors if it fails.
+                let directError = explain(error)
+                do { return .core(try CoreAudioDecoder(url)) }
+                catch {
+                    throw Failure.operation(name, "decoding source WAV",
+                        "Direct PCM: \(directError); Core Audio: \(explain(error))")
+                }
             }
         }
         do { return .core(try CoreAudioDecoder(url)) }
@@ -121,24 +128,15 @@ enum CueOfflineNormalizer {
         return "\(error.localizedDescription) [\(n.domain):\(n.code)]"
     }
 
-    private static func outputDirectory(cueID: UUID) throws -> URL {
-        let fm = FileManager.default
-        guard let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            throw Failure.operation("Output folder", "locating Application Support", "No directory is available")
-        }
-        let folder = support.appendingPathComponent("Sculpt Show", isDirectory: true)
-            .appendingPathComponent("Normalized Audio", isDirectory: true)
-            .appendingPathComponent(cueID.uuidString, isDirectory: true)
-        do { try fm.createDirectory(at: folder, withIntermediateDirectories: true) }
-        catch { throw Failure.operation("Output folder", "creating directory", explain(error)) }
-        return folder
-    }
-
-    static func normalize(_ requests: [Request], cueID: UUID,
+    static func normalize(_ requests: [Request], outputDirectory folder: URL,
                           mode: NormalizationTarget, target: Double,
                           peakLimit: Bool, peakCeiling: Double = -1) throws -> [Result] {
         let fm = FileManager.default
-        let folder = try outputDirectory(cueID: cueID)
+        guard folder.isFileURL else {
+            throw Failure.operation("Output folder", "validating project directory", "Not a local file URL")
+        }
+        do { try fm.createDirectory(at: folder, withIntermediateDirectories: true) }
+        catch { throw Failure.operation("Output folder", "creating directory", explain(error)) }
         var created: [URL] = []
         do {
             var results: [Result] = []

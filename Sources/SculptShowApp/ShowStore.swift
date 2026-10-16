@@ -240,10 +240,23 @@ final class ShowStore: ObservableObject {
         }
         guard let list = show.cueLists.first(where: { $0.id == listID }),
               let cue = list.cues.first(where: { $0.id == cueID }), cue.hasAudio else { return }
+        // Normalized audio must be part of a portable Show project from the
+        // start. No hidden external Application Support copies or broken refs.
+        guard let showID = documentURL, ShowProjectPackage.isPackaged(showID) else {
+            errorMessage = "Save the Show as a portable project before normalizing audio (File > Save As)."
+            return
+        }
+        let outputDirectory: URL
+        do {
+            outputDirectory = try ShowProjectPackage.audioDirectory(
+                for: listID, in: show, documentURL: showID)
+        } catch {
+            errorMessage = "Normalize Audio: cannot access the project media folder: \(error.localizedDescription)"
+            return
+        }
         let requested = cue.audioElements.map {
             CueOfflineNormalizer.Request(elementID: $0.id, name: $0.name, originalPath: $0.sourcePath)
         }
-        let showID = documentURL // not a unique document ID: guarded by cue/source check below
         normalizingCueID = cueID
         normalizationReportCueID = cueID
         normalizationReport = "Analyzing and rendering \(requested.count) stem(s)…"
@@ -251,7 +264,8 @@ final class ShowStore: ObservableObject {
         Task {
             do {
                 let results = try await Task.detached(priority: .userInitiated) {
-                    try CueOfflineNormalizer.normalize(requested, cueID: cueID,
+                    try CueOfflineNormalizer.normalize(requested,
+                       outputDirectory: outputDirectory,
                        mode: mode, target: target, peakLimit: peakLimit)
                 }.value
                 // Do not link a file into a different show or into a changed cue.
@@ -280,7 +294,7 @@ final class ShowStore: ObservableObject {
                 }
                 self.normalizationReport = results.map {
                     "\($0.name):  \(value($0.beforeLUFS)) LUFS  |  \(value($0.beforePeak)) dBFS peak  |  \(String(format: "%+.1f", $0.gainDB)) dB  →  \(value($0.estimatedAfterLUFS)) LUFS / \(value($0.estimatedAfterPeak)) dBFS"
-                }.joined(separator: "\n") + "\n\nNormalized copies saved in Application Support/Sculpt Show/Normalized Audio. Source files and live playback settings are unchanged. Save the Show to preserve the new references."
+                }.joined(separator: "\n") + "\n\nNormalized WAV copies written to the project's Audio Files / Cue List folder. Original media are unchanged. Save the Show to persist the new cue references."
                 self.normalizingCueID = nil
             } catch {
                 self.normalizingCueID = nil

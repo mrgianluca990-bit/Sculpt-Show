@@ -35,6 +35,40 @@ public enum ShowProjectPackage {
             && FileManager.default.fileExists(atPath: folder.appendingPathComponent("Audio Files", isDirectory: true).path)
     }
 
+    /// Locate the permanent audio directory for a cue list. A renamed/reordered
+    /// list retains its original folder (the UUID suffix is stable), so rendered
+    /// files are never placed in a duplicate directory merely after a rename.
+    /// Called before offline normalization: files are written directly into
+    /// the portable project, not to Application Support.
+    public static func audioDirectory(for listID: UUID, in show: Show,
+                                      documentURL: URL) throws -> URL {
+        guard isPackaged(documentURL) else { throw Failure.notPackaged }
+        guard let index = show.cueLists.firstIndex(where: { $0.id == listID }) else {
+            throw Failure.invalidDestination
+        }
+        let fm = FileManager.default
+        let parent = documentURL.deletingLastPathComponent()
+            .appendingPathComponent("Audio Files", isDirectory: true)
+        let suffix = "-" + String(listID.uuidString.prefix(8))
+        let folders = try fm.contentsOfDirectory(at: parent,
+            includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+        if let existing = folders.first(where: { url in
+            url.lastPathComponent.hasSuffix(suffix)
+                && (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }) {
+            return existing
+        }
+        let folder = parent.appendingPathComponent(listFolderName(show.cueLists[index], index: index),
+                                                    isDirectory: true)
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private static func listFolderName(_ list: CueList, index: Int) -> String {
+        String(format: "%02d - %@-%@", index + 1,
+               safeName(list.name), String(list.id.uuidString.prefix(8)))
+    }
+
     /// Create "My Show/My Show.scshow" and "My Show/Audio Files/<cue list>/...".
     /// Nothing is moved into the final destination before ALL media and the show
     /// document have been written successfully into a temporary sibling folder.
@@ -98,8 +132,7 @@ public enum ShowProjectPackage {
         let extantRoot = existingProjectRoot?.standardizedFileURL
         for li in stored.cueLists.indices {
             let list = stored.cueLists[li]
-            let listFolder = String(format: "%02d - %@-%@", li + 1,
-                                    safeName(list.name), String(list.id.uuidString.prefix(8)))
+            let listFolder = listFolderName(list, index: li)
             var reusedWithinList: [String: String] = [:]
             for ci in stored.cueLists[li].cues.indices {
                 for ei in stored.cueLists[li].cues[ci].elements.indices {
