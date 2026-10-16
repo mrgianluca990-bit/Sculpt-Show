@@ -23,6 +23,30 @@ final class ShowTests: XCTestCase {
         XCTAssertEqual(decoded.cueLists[0].cues[0].name, "intro")
     }
 
+    func testCueTintPersistsDuplicatesAndDoesNotModifyAudio() throws {
+        var show = Show(name: "Color test")
+        let list = try XCTUnwrap(show.cueLists.first?.id)
+        let id = try XCTUnwrap(show.addAudio([URL(fileURLWithPath: "/tmp/stem.wav")], to: list).first)
+        let path = try XCTUnwrap(show.cue(id)?.mediaPath)
+        show.updateCue(id, in: list) { $0.tint = .purple }
+        let duplicated = try XCTUnwrap(show.duplicateCue(id, in: list))
+        XCTAssertEqual(show.cue(duplicated)?.tint, .purple)
+        XCTAssertEqual(show.cue(duplicated)?.mediaPath, path)
+        let reopened = try ShowCodec.decode(ShowCodec.encode(show))
+        XCTAssertEqual(reopened.cue(id)?.tint, .purple)
+        XCTAssertEqual(reopened.cue(duplicated)?.tint, .purple)
+        XCTAssertEqual(reopened.cue(id)?.mediaPath, path)
+    }
+
+    func testLegacyCueWithoutTintDecodesAsNone() throws {
+        let original = Cue(name: "old", mediaPath: "/tmp/old.wav")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+        json.removeValue(forKey: "tint")
+        let legacy = try JSONSerialization.data(withJSONObject: json)
+        let restored = try JSONDecoder().decode(Cue.self, from: legacy)
+        XCTAssertEqual(restored.tint, .none)
+    }
+
     func testListCannotRemoveLastList() {
         var show = Show()
         show.removeList(show.cueLists[0].id)

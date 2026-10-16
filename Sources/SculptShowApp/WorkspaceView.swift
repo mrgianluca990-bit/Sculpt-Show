@@ -14,6 +14,63 @@ private enum Skin {
 }
 
 
+private extension CueTint {
+    var swatch: Color {
+        switch self {
+        case .none: return Skin.raised
+        case .red: return Color(red: 0.93, green: 0.32, blue: 0.34)
+        case .orange: return Color(red: 0.96, green: 0.56, blue: 0.25)
+        case .yellow: return Color(red: 0.93, green: 0.78, blue: 0.34)
+        case .green: return Color(red: 0.32, green: 0.74, blue: 0.49)
+        case .blue: return Color(red: 0.36, green: 0.64, blue: 0.93)
+        case .purple: return Color(red: 0.72, green: 0.48, blue: 0.89)
+        }
+    }
+    var label: String {
+        switch self {
+        case .none: return "None"
+        case .red: return "Red"
+        case .orange: return "Orange"
+        case .yellow: return "Yellow"
+        case .green: return "Green"
+        case .blue: return "Blue"
+        case .purple: return "Purple"
+        }
+    }
+}
+
+private struct CueColorPicker: View {
+    @EnvironmentObject private var store: ShowStore
+    let cue: Cue
+    let listID: UUID
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(CueTint.allCases, id: \.self) { tint in
+                Button {
+                    store.setCueTint(cue.id, in: listID, to: tint)
+                } label: {
+                    Circle()
+                        .fill(tint == .none ? Skin.panel : tint.swatch)
+                        .frame(width: 20, height: 20)
+                        .overlay {
+                            if tint == .none {
+                                Image(systemName: "slash.circle")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(Skin.soft)
+                            }
+                        }
+                        .overlay(Circle().stroke(cue.tint == tint ? Skin.gold : Skin.stroke,
+                                                 lineWidth: cue.tint == tint ? 3 : 1))
+                }
+                .buttonStyle(.plain)
+                .help(tint == .none ? "Remove cue color" : "Set cue color to \(tint.label)")
+                .accessibilityLabel("Cue color: \(tint.label)")
+            }
+        }
+    }
+}
+
 /// Local editing state keeps text input independent from show-model redraws.
 /// Renames commit only on Save or Return; Cancel leaves the original untouched.
 private struct EditableTitle: View {
@@ -93,6 +150,9 @@ struct WorkspaceView: View {
     @State private var showingWaveforms = false
     @State private var showingPreflight = false
     @State private var selectedMarkerID: UUID?
+    @AppStorage("SculptShow.InspectorWidth.v1") private var inspectorWidth: Double = 346
+    @State private var inspectorResizeStart: Double?
+    @State private var expandedInspectorSections: Set<String> = ["COLOR", "LEVEL & WAIT", "TIMING", "STEMS & LTC"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -189,15 +249,32 @@ struct WorkspaceView: View {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(store.show.cueLists) { list in
                         CueListPanel(list: list)
-                            .frame(width: 418)
                     }
                 }
                 .padding(16)
             }
             .background(Skin.base)
-            Divider().overlay(Skin.stroke)
+            .frame(minWidth: 300)
+
+            // Drag left to widen the Inspector; right to return space to cue lists.
+            Rectangle()
+                .fill(Skin.stroke)
+                .frame(width: 8)
+                .overlay {
+                    Capsule().fill(Skin.gold.opacity(0.65))
+                        .frame(width: 3, height: 48)
+                }
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        if inspectorResizeStart == nil { inspectorResizeStart = inspectorWidth }
+                        let initial = inspectorResizeStart ?? inspectorWidth
+                        inspectorWidth = min(650, max(280, initial - Double(value.translation.width)))
+                    }
+                    .onEnded { _ in inspectorResizeStart = nil })
+                .help("Drag to resize Cue Lists and Inspector")
             inspector
-                .frame(width: 346)
+                .frame(width: min(650, max(280, inspectorWidth)))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -282,266 +359,330 @@ struct WorkspaceView: View {
     }
 
     private var transport: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Button { store.fireSelected(using: playback) } label: {
-                    Label("GO", systemImage: "play.fill")
-                        .font(.system(size: 21, weight: .black, design: .rounded))
-                        .foregroundColor(.black)
-                        .frame(width: 145, height: 53)
-                        .background(Skin.green, in: RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-                .disabled(store.selectedCue == nil)
-                .help("GO · Space")
+        HStack(spacing: 6) {
+            Button { store.fireSelected(using: playback) } label: {
+                Label("GO", systemImage: "play.fill")
+                    .font(.system(size: 17, weight: .black, design: .rounded))
+                    .foregroundColor(.black)
+                    .frame(width: 100, height: 43)
+                    .background(Skin.green, in: RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+            .disabled(store.selectedCue == nil)
+            .help("GO · Space")
 
-                globalTransportButton("PAUSE ALL", "pause.fill") { store.togglePauseAll(using: playback) }
-                globalTransportButton("STOP ALL", "stop.fill", red: true) { store.stopAll(using: playback) }
-                globalTransportButton("FADE ALL", "arrow.down.right") { store.fadeAll(using: playback) }
-                Spacer(minLength: 2)
-                Text("ACTIVE  \(playback.snapshots.count)")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+            transportAction("PAUSE", "pause.fill") { store.togglePauseAll(using: playback) }
+            transportAction("STOP", "stop.fill", destructive: true) { store.stopAll(using: playback) }
+            transportAction("FADE", "arrow.down.right") { store.fadeAll(using: playback) }
+            transportSeparator
+            transportAction("PREV", "chevron.up", compact: true) {
+                if let id = store.selectedListID { store.selectPrevious(in: id) }
+            }
+            transportAction("NEXT", "chevron.down", compact: true) {
+                if let id = store.selectedListID { store.selectNext(in: id) }
+            }
+            transportAction("NEXT LIST", "rectangle.stack", compact: true) { store.selectNextList() }
+            transportSeparator
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(store.show.cueLists.first(where: { $0.id == store.selectedListID })?.name ?? "No list")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(Skin.soft)
+                    .lineLimit(1)
+                Text(store.selectedCue?.name ?? "No cue selected")
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(Skin.gold)
+                    .lineLimit(1)
             }
-            HStack(spacing: 10) {
-                globalTransportButton("PREVIOUS", "chevron.up") {
-                    if let id = store.selectedListID { store.selectPrevious(in: id) }
-                }
-                globalTransportButton("NEXT", "chevron.down") {
-                    if let id = store.selectedListID { store.selectNext(in: id) }
-                }
-                globalTransportButton("NEXT LIST", "rectangle.stack") { store.selectNextList() }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("SELECTED: \(store.show.cueLists.first(where: { $0.id == store.selectedListID })?.name ?? "—")")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundColor(Skin.soft)
-                        .lineLimit(1)
-                    Text(store.selectedCue?.name ?? "No cue selected")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(Skin.gold)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Toggle("AUTO NEXT", isOn: $store.advanceAfterGO)
+            .frame(minWidth: 65, maxWidth: .infinity, alignment: .leading)
+
+            Toggle("AUTO", isOn: $store.advanceAfterGO)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .font(.system(size: 10, weight: .semibold))
+                .fixedSize()
+                .help("Automatically select the next cue after GO")
+
+            Button {
+                let open = !showingOutputMixer
+                showingOutputMixer = open
+                if open { showingWaveforms = false }
+            } label: {
+                Image(systemName: "slider.vertical.3")
+                    .frame(width: 24, height: 29)
+            }
+            .tint(showingOutputMixer ? Skin.gold : Skin.raised)
+            .help(showingOutputMixer ? "Hide output mixer" : "Show output mixer")
+            .accessibilityLabel("Mixer")
+
+            Button {
+                let open = !showingWaveforms
+                showingWaveforms = open
+                if open { showingOutputMixer = false }
+            } label: {
+                Image(systemName: "waveform")
+                    .frame(width: 24, height: 29)
+            }
+            .tint(showingWaveforms ? Skin.gold : Skin.raised)
+            .help("Waveform editor and markers")
+            .accessibilityLabel("Waveforms")
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { showingTimecodeReader.toggle() }
+            } label: {
+                Image(systemName: "clock")
+                    .frame(width: 24, height: 29)
+            }
+            .tint(showingTimecodeReader ? Skin.gold : Skin.raised)
+            .help("Timecode reader / LTC monitor")
+            .accessibilityLabel("Timecode")
+            
+            HStack(spacing: 3) {
+                Circle().fill(playback.routingEnabled ? Skin.green : .red)
+                    .frame(width: 6, height: 6)
+                Text(playback.routingEnabled ? "\(playback.routingOutputCount)CH" : "OFF")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                Button {
-                    let open = !showingOutputMixer
-                    showingOutputMixer = open
-                    if open { showingWaveforms = false }
-                } label: {
-                    Label("MIXER", systemImage: "slider.vertical.3")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(showingOutputMixer ? Skin.gold : Skin.raised)
-                .help(showingOutputMixer ? "Hide the docked output mixer" : "Show the docked output mixer")
-                Button {
-                    let open = !showingWaveforms
-                    showingWaveforms = open
-                    if open { showingOutputMixer = false }
-                } label: {
-                    Label("WAVEFORMS", systemImage: "waveform")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(showingWaveforms ? Skin.gold : Skin.raised)
-                .help("Open waveform editor (replaces Mixer); double-click ruler to add, drag markers to move")
-                HStack(spacing: 4) {
-                    Circle().fill(playback.routingEnabled ? Skin.green : .red)
-                        .frame(width: 7, height: 7)
-                    Text(playback.routingEnabled ? "AUDIO \(playback.routingOutputCount)CH" : "AUDIO OFF")
-                        .font(.system(size: 10, design: .monospaced))
-                }
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) { showingTimecodeReader.toggle() }
-                } label: {
-                    Label(playback.generatedLTC != nil ? "LTC OUT" : "TIMECODE", systemImage: "clock")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(showingTimecodeReader ? Skin.gold : Skin.raised)
-                .help(showingTimecodeReader ? "Hide the docked timecode reader" : "Show timecode reader, alongside or without the mixer")
             }
-            .font(.system(size: 11, weight: .semibold))
+            .fixedSize()
+            .help("Core Audio routing status")
+            Text("A\(playback.snapshots.count)")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundColor(Skin.gold)
+                .fixedSize()
+                .help("\(playback.snapshots.count) active cues")
         }
         .buttonStyle(.bordered)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 9)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .background(Skin.panel)
     }
 
-    private func globalTransportButton(_ name: String, _ symbol: String,
-                                       red: Bool = false, action: @escaping () -> Void) -> some View {
+    private var transportSeparator: some View {
+        Rectangle().fill(Skin.stroke).frame(width: 1, height: 23)
+    }
+
+    private func transportAction(_ name: String, _ symbol: String, destructive: Bool = false,
+                                 compact: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(name, systemImage: symbol)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .frame(minHeight: 33)
+            HStack(spacing: 4) {
+                Image(systemName: symbol)
+                if !compact { Text(name) }
+            }
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .frame(minHeight: 29)
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .tint(red ? .red : Skin.soft)
+        .tint(destructive ? .red : Skin.raised)
+        .help(name)
+        .accessibilityLabel(name)
     }
 
     private var inspector: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 16) {
-            Text("CUE INSPECTOR")
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .tracking(1.1)
-                .foregroundColor(Skin.gold)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("CUE INSPECTOR")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .tracking(1.1)
+                    .foregroundColor(Skin.gold)
+                    .padding(.bottom, 4)
 
-            if let listID = store.selectedListID, let cue = store.selectedCue {
-                Text("SELECTED CUE")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(Skin.soft)
-                EditableTitle(
-                    title: cue.name,
-                    context: "Cue",
-                    fontSize: 17,
-                    fontWeight: .medium
-                ) { newName in
-                    store.renameCue(cue.id, in: listID, to: newName)
-                }
-                .help("Click to rename the cue")
-
-                Divider()
-                HStack {
-                    Text("GAIN")
-                    Spacer()
-                    Text("\(Int(cue.gain * 100)) %")
-                        .monospacedDigit()
-                        .foregroundColor(Skin.gold)
-                }
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                Slider(value: Binding(
-                    get: { store.show.cue(cue.id)?.gain ?? cue.gain },
-                    set: { store.setGain(cue.id, in: listID, to: $0); playback.setGain($0, for: cue.id) }
-                ), in: 0...1)
-                .tint(Skin.gold)
-
-                Divider()
-                HStack {
-                    Text("PRE-WAIT")
-                    Spacer()
-                    Text("\(cue.preWaitSeconds, specifier: "%.1f") s")
-                        .monospacedDigit()
-                        .foregroundColor(Skin.gold)
-                }
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                Slider(value: Binding(
-                    get: { store.show.cue(cue.id)?.preWaitSeconds ?? cue.preWaitSeconds },
-                    set: { store.setPreWait(cue.id, in: listID, to: $0) }
-                ), in: 0...120, step: 0.5)
-                .tint(Skin.gold)
-                .help("Delay before a cue starts after GO. STOP cancels a waiting cue.")
-
-                CueTimingEditor(cue: cue, listID: listID)
-                    .id(cue.id) // independent draft + focus for every selected cue
-
-                Divider()
-                CueMarkersEditor(cue: cue, listID: listID,
-                                 selectedMarkerID: $selectedMarkerID)
-
-                Divider()
-                HStack {
-                    Text("FADE OUT")
-                    Spacer()
-                    Text("\(cue.fadeOutSeconds, specifier: "%.1f") s")
-                        .monospacedDigit()
-                        .foregroundColor(Skin.gold)
-                }
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                Slider(value: Binding(
-                    get: { store.show.cue(cue.id)?.fadeOutSeconds ?? cue.fadeOutSeconds },
-                    set: { store.setFade(cue.id, in: listID, to: $0) }
-                ), in: 0...30, step: 0.5)
-                .tint(Skin.gold)
-
-                HStack {
-                    Text("FADE IN")
-                    Spacer()
-                    Text("\(cue.fadeInSeconds, specifier: "%.1f") s")
-                        .monospacedDigit()
-                        .foregroundColor(Skin.gold)
-                }
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                Slider(value: Binding(
-                    get: { store.show.cue(cue.id)?.fadeInSeconds ?? cue.fadeInSeconds },
-                    set: { store.setFadeIn(cue.id, in: listID, to: $0) }
-                ), in: 0...30, step: 0.5)
-                .tint(Skin.gold)
-
-                Toggle("Loop until STOP", isOn: Binding(
-                    get: { store.show.cue(cue.id)?.loop ?? cue.loop },
-                    set: { store.setLoop(cue.id, in: listID, to: $0); playback.setLoop($0, for: cue.id) }
-                ))
-                .toggleStyle(.switch)
-                .help("Repeatedly play this audio file until stopped manually")
-
-                Toggle("Auto-follow next cue", isOn: Binding(
-                    get: { store.show.cue(cue.id)?.followOnFinish ?? cue.followOnFinish },
-                    set: { store.setFollow(cue.id, in: listID, to: $0) }
-                ))
-                .toggleStyle(.switch)
-                .disabled(cue.loop)
-                .help("At natural end, start the next enabled cue in this list; loop overrides follow")
-
-                Toggle("Cue enabled", isOn: Binding(
-                    get: { store.show.cue(cue.id)?.enabled ?? cue.enabled },
-                    set: { isEnabled in
-                        store.setEnabled(cue.id, in: listID, to: isEnabled)
-                        if !isEnabled { playback.stop(cue.id) }
+                if let listID = store.selectedListID, let cue = store.selectedCue {
+                    EditableTitle(title: cue.name, context: "Cue", fontSize: 16,
+                                  fontWeight: .medium) { newName in
+                        store.renameCue(cue.id, in: listID, to: newName)
                     }
-                ))
-                .toggleStyle(.switch)
+                    inspectorSection("COLOR") {
+                        CueColorPicker(cue: cue, listID: listID)
+                    }
+                    inspectorSection("LEVEL & WAIT") {
+                        HStack {
+                            Text("GAIN")
+                            Spacer()
+                            Text("\(Int(cue.gain * 100)) %")
+                                .monospacedDigit()
+                                .foregroundColor(Skin.gold)
+                        }
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        Slider(value: Binding(
+                            get: { store.show.cue(cue.id)?.gain ?? cue.gain },
+                            set: { store.setGain(cue.id, in: listID, to: $0); playback.setGain($0, for: cue.id) }
+                        ), in: 0...1)
+                        .tint(Skin.gold)
 
-                Divider()
-                CueContentsEditor(cue: cue, listID: listID)
+                        Divider()
+                        HStack {
+                            Text("PRE-WAIT")
+                            Spacer()
+                            Text("\(cue.preWaitSeconds, specifier: "%.1f") s")
+                                .monospacedDigit()
+                                .foregroundColor(Skin.gold)
+                        }
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        Slider(value: Binding(
+                            get: { store.show.cue(cue.id)?.preWaitSeconds ?? cue.preWaitSeconds },
+                            set: { store.setPreWait(cue.id, in: listID, to: $0) }
+                        ), in: 0...120, step: 0.5)
+                        .tint(Skin.gold)
+                        .help("Delay before a cue starts after GO. STOP cancels a waiting cue.")
 
-                if let active = playback.snapshots[cue.id] {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(active.phase == .waiting ? "START IN" : "REMAINING")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(Skin.soft)
-                        Text("−" + clock(active.remaining))
-                            .font(.system(size: 24, weight: .bold, design: .monospaced))
-                            .foregroundColor(Skin.green)
                     }
-                }
-                Button {
-                    rulesScope = .cue(cue.id, in: listID)
-                } label: {
-                    Label("Edit Interaction Rules (\(cue.rules.count))", systemImage: "arrow.triangle.branch")
-                }
-                .buttonStyle(.bordered)
+                    inspectorSection("TIMING") {
+                        CueTimingEditor(cue: cue, listID: listID)
+                            .id(cue.id) // independent draft + focus for every selected cue
 
-                HStack {
-                    Button { store.duplicateCue(cue.id, in: listID) } label: {
-                        Label("Duplicate", systemImage: "plus.square.on.square")
                     }
-                }
-                HStack {
-                    Button { store.moveCue(cue.id, in: listID, by: -1) } label: {
-                        Label("Up", systemImage: "arrow.up")
+                    inspectorSection("MARKERS") {
+                        CueMarkersEditor(cue: cue, listID: listID,
+                                         selectedMarkerID: $selectedMarkerID)
+
                     }
-                    Button { store.moveCue(cue.id, in: listID, by: 1) } label: {
-                        Label("Down", systemImage: "arrow.down")
+                    inspectorSection("FADES & PLAYBACK") {
+                        HStack {
+                            Text("FADE OUT")
+                            Spacer()
+                            Text("\(cue.fadeOutSeconds, specifier: "%.1f") s")
+                                .monospacedDigit()
+                                .foregroundColor(Skin.gold)
+                        }
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        Slider(value: Binding(
+                            get: { store.show.cue(cue.id)?.fadeOutSeconds ?? cue.fadeOutSeconds },
+                            set: { store.setFade(cue.id, in: listID, to: $0) }
+                        ), in: 0...30, step: 0.5)
+                        .tint(Skin.gold)
+
+                        HStack {
+                            Text("FADE IN")
+                            Spacer()
+                            Text("\(cue.fadeInSeconds, specifier: "%.1f") s")
+                                .monospacedDigit()
+                                .foregroundColor(Skin.gold)
+                        }
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        Slider(value: Binding(
+                            get: { store.show.cue(cue.id)?.fadeInSeconds ?? cue.fadeInSeconds },
+                            set: { store.setFadeIn(cue.id, in: listID, to: $0) }
+                        ), in: 0...30, step: 0.5)
+                        .tint(Skin.gold)
+
+                        Toggle("Loop until STOP", isOn: Binding(
+                            get: { store.show.cue(cue.id)?.loop ?? cue.loop },
+                            set: { store.setLoop(cue.id, in: listID, to: $0); playback.setLoop($0, for: cue.id) }
+                        ))
+                        .toggleStyle(.switch)
+                        .help("Repeatedly play this audio file until stopped manually")
+
+                        Toggle("Auto-follow next cue", isOn: Binding(
+                            get: { store.show.cue(cue.id)?.followOnFinish ?? cue.followOnFinish },
+                            set: { store.setFollow(cue.id, in: listID, to: $0) }
+                        ))
+                        .toggleStyle(.switch)
+                        .disabled(cue.loop)
+                        .help("At natural end, start the next enabled cue in this list; loop overrides follow")
+
+                        Toggle("Cue enabled", isOn: Binding(
+                            get: { store.show.cue(cue.id)?.enabled ?? cue.enabled },
+                            set: { isEnabled in
+                                store.setEnabled(cue.id, in: listID, to: isEnabled)
+                                if !isEnabled { playback.stop(cue.id) }
+                            }
+                        ))
+                        .toggleStyle(.switch)
+
                     }
+                    inspectorSection("STEMS & LTC") {
+                        CueContentsEditor(cue: cue, listID: listID)
+
+                    }
+                    inspectorSection("RULES & ACTIONS") {
+                        if let active = playback.snapshots[cue.id] {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(active.phase == .waiting ? "START IN" : "REMAINING")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundColor(Skin.soft)
+                                Text("−" + clock(active.remaining))
+                                    .font(.system(size: 24, weight: .bold, design: .monospaced))
+                                    .foregroundColor(Skin.green)
+                            }
+                        }
+                        Button {
+                            rulesScope = .cue(cue.id, in: listID)
+                        } label: {
+                            Label("Edit Interaction Rules (\(cue.rules.count))", systemImage: "arrow.triangle.branch")
+                        }
+                        .buttonStyle(.bordered)
+
+                        HStack {
+                            Button { store.duplicateCue(cue.id, in: listID) } label: {
+                                Label("Duplicate", systemImage: "plus.square.on.square")
+                            }
+                        }
+                        HStack {
+                            Button { store.moveCue(cue.id, in: listID, by: -1) } label: {
+                                Label("Up", systemImage: "arrow.up")
+                            }
+                            Button { store.moveCue(cue.id, in: listID, by: 1) } label: {
+                                Label("Down", systemImage: "arrow.down")
+                            }
+                        }
+                        Button(role: .destructive) {
+                            playback.stop(cue.id)
+                            store.removeCue(cue.id, from: listID)
+                        } label: {
+                            Label("Remove Cue", systemImage: "trash")
+                        }
+                    }
+                } else {
+                    Text("Select a cue to edit its properties.")
+                        .foregroundColor(Skin.soft)
+                        .multilineTextAlignment(.center)
                 }
-                Button(role: .destructive) {
-                    playback.stop(cue.id)
-                    store.removeCue(cue.id, from: listID)
-                } label: {
-                    Label("Remove Cue", systemImage: "trash")
-                }
-            } else {
-                Text("Select a cue to edit its properties.")
-                    .foregroundColor(Skin.soft)
-                    .multilineTextAlignment(.center)
             }
-            }
-            .padding(20)
+            .padding(14)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(Skin.panel)
+    }
+
+    private func inspectorSection<Content: View>(_ title: String,
+                                                  @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                if expandedInspectorSections.contains(title) {
+                    expandedInspectorSections.remove(title)
+                } else {
+                    expandedInspectorSections.insert(title)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: expandedInspectorSections.contains(title) ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 12)
+                    Text(title)
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .tracking(0.6)
+                    Spacer()
+                }
+                .foregroundColor(Skin.gold)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 11)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(title), \(expandedInspectorSections.contains(title) ? "collapse" : "expand")")
+            if expandedInspectorSections.contains(title) {
+                VStack(alignment: .leading, spacing: 10) {
+                    content()
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(Skin.raised.opacity(0.56), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Skin.stroke.opacity(0.7)))
     }
 
     private var statusBar: some View {
@@ -560,7 +701,7 @@ struct WorkspaceView: View {
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.16.2")
+            Text("SCULPT SHOW 0.18.0")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -590,6 +731,9 @@ private struct CueListPanel: View {
     @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var playback: PlaybackEngine
     @State private var editingRules = false
+    @State private var showingListOptions = false
+    @State private var panelWidth: Double = 418
+    @State private var resizeStart: Double?
     let list: CueList
 
     var body: some View {
@@ -613,21 +757,32 @@ private struct CueListPanel: View {
                 Text("\(list.cues.count)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(Skin.soft)
-                Menu {
-                    Button("Edit List Rules…") { editingRules = true }
-                    Divider()
-                    Button("Remove Cue List", role: .destructive) {
-                        for cue in list.cues { playback.stop(cue.id, notifyRules: false) }
-                        store.removeList(list.id)
-                    }
-                    .disabled(store.show.cueLists.count < 2)
+                Button {
+                    showingListOptions.toggle()
                 } label: {
                     Image(systemName: "ellipsis")
                         .foregroundColor(Skin.soft)
                         .frame(width: 24, height: 24)
                 }
-                .menuStyle(.borderlessButton)
-                .frame(width: 24)
+                .buttonStyle(.plain)
+                .help("Cue List options")
+                .popover(isPresented: $showingListOptions, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button("Edit List Rules…") {
+                            showingListOptions = false
+                            editingRules = true
+                        }
+                        Divider()
+                        Button("Remove Cue List", role: .destructive) {
+                            showingListOptions = false
+                            for cue in list.cues { playback.stop(cue.id, notifyRules: false) }
+                            store.removeList(list.id)
+                        }
+                        .disabled(store.show.cueLists.count < 2)
+                    }
+                    .padding(14)
+                    .frame(minWidth: 190)
+                }
             }
             .padding(14)
             .background(Skin.raised)
@@ -736,7 +891,31 @@ private struct CueListPanel: View {
         .background(Skin.panel, in: RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(Skin.stroke, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 9))
+        .frame(width: min(900, max(355, panelWidth)))
         .frame(maxHeight: .infinity)
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Skin.stroke.opacity(0.7))
+                .frame(width: 10)
+                .overlay {
+                    Capsule().fill(Skin.gold.opacity(0.7)).frame(width: 3, height: 36)
+                }
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        if resizeStart == nil { resizeStart = panelWidth }
+                        panelWidth = min(900, max(355, (resizeStart ?? panelWidth) + Double(value.translation.width)))
+                    }
+                    .onEnded { _ in resizeStart = nil })
+                .help("Drag horizontally to resize this Cue List")
+        }
+        .onAppear {
+            let stored = UserDefaults.standard.double(forKey: "SculptShow.CueListWidth.\(list.id.uuidString)")
+            if stored >= 355 && stored <= 900 { panelWidth = stored }
+        }
+        .onChange(of: panelWidth) { newWidth in
+            UserDefaults.standard.set(newWidth, forKey: "SculptShow.CueListWidth.\(list.id.uuidString)")
+        }
         .sheet(isPresented: $editingRules) {
             RulesEditor(scope: .cueList(list.id)).environmentObject(store)
         }
@@ -778,6 +957,14 @@ private struct CueRow: View {
         .background(dropHighlighted ? Skin.gold.opacity(0.30) : rowBackground,
                     in: RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(rowOutline, lineWidth: 1))
+        .overlay(alignment: .leading) {
+            if cue.tint != .none {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(cue.tint.swatch)
+                    .frame(width: 4)
+                    .padding(.vertical, 5)
+            }
+        }
         .opacity(cue.enabled ? 1 : 0.53)
         .onDrop(of: [UTType.plainText.identifier], isTargeted: $dropHighlighted) { providers, location in
             guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
@@ -820,6 +1007,16 @@ private struct CueRow: View {
                 editingName = true
             }
             Button("Edit Cue Rules…") { editingCueRules = true }
+            Menu("Cue Color") {
+                ForEach(CueTint.allCases, id: \.self) { tint in
+                    Button {
+                        store.setCueTint(cue.id, in: listID, to: tint)
+                    } label: {
+                        if tint == cue.tint { Label(tint.label, systemImage: "checkmark.circle.fill") }
+                        else { Text(tint.label) }
+                    }
+                }
+            }
             Button("Delete Cue", role: .destructive) {
                 playback.stop(cue.id, notifyRules: false)
                 store.removeCue(cue.id, from: listID)
@@ -862,7 +1059,8 @@ private struct CueRow: View {
     }
 
     private var rowBackground: Color {
-        selected ? Skin.gold.opacity(0.15) : Skin.raised
+        if cue.tint == .none { return selected ? Skin.gold.opacity(0.15) : Skin.raised }
+        return cue.tint.swatch.opacity(selected ? 0.32 : 0.22)
     }
 
     private var rowOutline: Color {

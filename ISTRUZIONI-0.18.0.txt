@@ -1,0 +1,24 @@
+SCULPT SHOW 0.18.0 — AGGIORNAMENTO INTERFACCIA
+
+Repository: https://github.com/mrgianluca990-bit/Sculpt-Show
+Branch: main
+
+Metodo rapido: estrarre Sculpt-Show-v0.18.0-UI-Update.zip e caricare i 5 file inclusi nello stesso percorso nel repository, senza cambiare altri file:
+  Sources/SculptShowCore/Show.swift
+  Sources/SculptShowApp/ShowStore.swift
+  Sources/SculptShowApp/WorkspaceView.swift
+  Scripts/Info.plist
+  Tests/SculptShowCoreTests/ShowTests.swift
+
+Il commit su main avvia GitHub Actions. Scaricare l'artifact Sculpt-Show-macOS solo dopo build success.
+
+TEST:
+1. CUE COLOR: clic destro sulla cue, Cue Color; riprovare nell'Inspector (COLOR). Salvare, riaprire, duplicare; verifica colori persistenti e assegnazioni audio intatte.
+2. CUE LIST WIDTH: trascinare la sottile maniglia sul lato destro di ogni lista, indipendentemente; riaprire l'app e verificare le misure memorizzate.
+3. INSPECTOR WIDTH: trascinare il divisore Cue Lists / Inspector a destra e sinistra; riaprire per controllare persistenza.
+4. ACCORDION INSPECTOR: aprire/chiudere tutte le sezioni; cambiare cue e verificare che durata/marker non siano sovrascritti durante le modifiche.
+5. LIST MENU: solo un tasto ... (senza freccetta), aprire Rules e controllare disponibilita' Remove Cue List.
+6. TRANSPORT: pulsanti su una riga anche durante il resize dell'Inspector; GO/PAUSE/STOP/FADE/PREV/NEXT/NEXT LIST funzionanti, Auto Next/Mixer/Waveforms/Timecode funzionanti.
+7. REGRESSIONI: multitraccia → DAW, LTC, Routing 64CH, Play From, marker e Rules.
+
+Test automatici locali: 132 Core; parse Swift completato. Compilazione macOS richiesta.

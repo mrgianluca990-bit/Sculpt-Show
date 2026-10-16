@@ -360,9 +360,15 @@ public enum MarkerPlanner {
     }
 }
 
+/// User-assigned display tint. This is UI metadata: it never changes playback.
+public enum CueTint: String, CaseIterable, Codable, Sendable {
+    case none, red, orange, yellow, green, blue, purple
+}
+
 public struct Cue: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID
     public var name: String
+    public var tint: CueTint
     public var elements: [CueElement]
     public var markers: [CueMarker]
     public var sortedMarkers: [CueMarker] {
@@ -450,6 +456,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
                 durationMode: CueDurationMode? = nil) {
         self.id = id
         self.name = name
+        self.tint = .none
         self.markers = []
         self.elements = mediaPath.isEmpty ? [] : [CueElement(kind: .audio,
             name: URL(fileURLWithPath: mediaPath).deletingPathExtension().lastPathComponent,
@@ -468,7 +475,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, elements, markers, durationMode, gain, fadeOutSeconds, enabled
+        case id, name, tint, elements, markers, durationMode, gain, fadeOutSeconds, enabled
         case fadeInSeconds, loop, followOnFinish, preWaitSeconds, rules, ignoreParentRules
         case durationSeconds
         // Old show fields, decoded for migration but never written into the new format.
@@ -497,6 +504,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         if let contents = try c.decodeIfPresent([CueElement].self, forKey: .elements) {
             elements = contents
         }
+        tint = try c.decodeIfPresent(CueTint.self, forKey: .tint) ?? .none
         markers = try c.decodeIfPresent([CueMarker].self, forKey: .markers) ?? []
         rules = try c.decodeIfPresent([InteractionRule].self, forKey: .rules) ?? []
         ignoreParentRules = try c.decodeIfPresent(Bool.self, forKey: .ignoreParentRules) ?? false
@@ -506,6 +514,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
+        try c.encode(tint, forKey: .tint)
         try c.encode(elements, forKey: .elements)
         try c.encode(markers, forKey: .markers)
         try c.encode(durationMode, forKey: .durationMode)

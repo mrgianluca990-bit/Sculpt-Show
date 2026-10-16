@@ -487,6 +487,10 @@ final class ShowStore: ObservableObject {
         editCue(id, list: list) { $0.name = name }
     }
 
+    func setCueTint(_ id: UUID, in list: UUID, to tint: CueTint) {
+        editCue(id, list: list) { $0.tint = tint }
+    }
+
     func setGain(_ id: UUID, in list: UUID, to gain: Double) {
         editCue(id, list: list) { $0.gain = min(max(gain, 0), 1) }
     }
