@@ -154,6 +154,69 @@ final class ShowStore: ObservableObject {
         select(cueID, in: listID)
     }
 
+    // MARK: - Sculpt Show ⇄ Sculpt DAW bridge v1
+    /// Prepare editable DAW material without changing the loaded show or audio graph.
+    /// The script is consumed by `soundcraft-cli script FILE` in Sculpt DAW.
+    func exportCueToDAW(_ cueID: UUID, in listID: UUID) {
+        do {
+            let manifest = try SculptBridge.manifest(show: show, listID: listID, cueID: cueID)
+            let supported: Set<String> = ["wav", "wave", "aif", "aiff", "flac"]
+            var rate: Int?
+            for stem in manifest.stems {
+                let url = URL(fileURLWithPath: stem.sourcePath)
+                guard url.isFileURL, supported.contains(url.pathExtension.lowercased()),
+                      let audio = try? AVAudioFile(forReading: url),
+                      (1...2).contains(Int(audio.processingFormat.channelCount)) else {
+                    errorMessage = "Cannot send to DAW: unavailable or unsupported mono/stereo WAV, AIFF or FLAC file: \(stem.name)."
+                    return
+                }
+                if rate == nil { rate = Int(audio.processingFormat.sampleRate.rounded()) }
+            }
+            let savePanel = NSSavePanel()
+            savePanel.title = "Send Cue to Sculpt DAW"
+            savePanel.allowedContentTypes = [.json]
+            let safe = manifest.cueName.replacingOccurrences(of: "/", with: "-")
+            savePanel.nameFieldStringValue = "\(safe)-bridge.json"
+            savePanel.message = "Creates JSON metadata plus a Sculpt DAW CLI import script. Does not change Show or original media."
+            guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
+            let base = url.deletingPathExtension()
+            let destination = base.appendingPathExtension("scdaw")
+            let commandsURL = URL(fileURLWithPath: base.path + "-DAW.txt")
+            let commands = try SculptBridge.dawImportScript(manifest, sampleRate: rate ?? 48000,
+                                                              destination: destination.path)
+            try SculptBridge.encode(manifest).write(to: url, options: .atomic)
+            try Data(commands.utf8).write(to: commandsURL, options: .atomic)
+            // No automatic process launch: DAW CLI availability/build differs by installation.
+        } catch {
+            errorMessage = "Sculpt Bridge export failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// User explicitly picks a bounced mono/stereo stem to replace one source.
+    /// Changes take effect on the NEXT playback, while cue/marker/routing IDs persist.
+    func receiveDAWBounce(for elementID: UUID, in cueID: UUID, listID: UUID) {
+        guard let element = show.cue(cueID)?.audioElements.first(where: { $0.id == elementID }) else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Receive DAW Bounce — \(element.name)"
+        panel.message = "Replace only this audio reference. Markers, routing and LTC remain unchanged."
+        panel.allowedContentTypes = [.audio]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let replacement = try? AVAudioFile(forReading: url),
+              (1...2).contains(Int(replacement.processingFormat.channelCount)) else {
+            errorMessage = "The DAW bounce must be a readable mono or stereo audio file."
+            return
+        }
+        // A stereo replacement cannot overflow the last available physical channel.
+        guard element.outputStartChannel + Int(replacement.processingFormat.channelCount) - 1 <= 64 else {
+            errorMessage = "The returned stem exceeds the 64-channel output routing limit."
+            return
+        }
+        relinkElement(elementID, in: cueID, listID: listID, to: url)
+    }
+
     func addTimecode(to cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
         // Attaching LTC is non-destructive; a running cue adopts it on next GO.
         editCue(cueID, list: listID) { cue in

@@ -43,6 +43,13 @@ struct CueContentsEditor: View {
                     }
                     .font(.system(size: 11, weight: .semibold))
                     if element.kind == .audio {
+                        Button {
+                            store.receiveDAWBounce(for: element.id, in: cue.id, listID: listID)
+                        } label: {
+                            Label("RECEIVE DAW BOUNCE…", systemImage: "square.and.arrow.down")
+                        }
+                        .controlSize(.small)
+                        .help("Replace this stem with an edited WAV/AIFF from DAW. Preserves the cue, element UUID, output, Rules and markers. Applies on next GO.")
                         HStack {
                             Text("ELEMENT LEVEL")
                                 .font(.system(size: 10, weight: .semibold, design: .monospaced))

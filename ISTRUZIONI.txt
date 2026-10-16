@@ -1,29 +1,29 @@
-SCULPT SHOW 0.14.2 — LTC EDITOR WORKFLOW + ONE-FRAME NUDGE
+SCULPT SHOW v0.15.0 — DURATION FIX + DAW BRIDGE PHASE 1
 
-Repository: https://github.com/mrgianluca990-bit/Sculpt-Show
-BASE GITHUB MAIN: v0.14.1 (successful macOS build 38814624727)
+UPDATE (GitHub): extract the update archive and upload its files to the
+Sculpt-Show repository root preserving the exact Sources/, Tests/, Scripts/ paths.
+Use one single GitHub commit if possible. Do not delete any existing files.
+The update includes a new Core exchange format (SculptBridge.swift),
+new regression tests and a new DAW button in the Cue Inspector.
 
-ISTRUZIONI RAPIDE PER L'AGGIORNAMENTO
-1. Estrai Sculpt-Show-v0.14.2-LTC-Editing-Update.zip.
-2. In GitHub apri il repository e carica il contenuto estratto mantenendo le cartelle Sources/, Tests/ e Scripts/.
-3. Non caricare il file ZIP stesso nella root del repository.
-4. Sostituisci i file omonimi e conferma il commit su main.
-5. GitHub Actions avviera' la compilazione automatica; l'artifact macOS sara' scaricabile dal run riuscito.
+COMPLETE SOURCE: the other archive includes the entire v0.15.0 source tree,
+including app icon, CoreAudio/LTC sources and GitHub Actions workflow.
 
-NOVITA'
-- Nuovi LTC OFFSET: -00:00:00:00; vecchi +offset non-zero conservati.
-- LTC START e TC OFFSET: Invio conferma il valore valido ed esce dalla modifica. Niente SET.
-- PLAY FROM e nome del marker: Invio conferma e chiude il campo.
-- TC OFFSET: -1F, +1F, ZERO; 24/25/29.97 DF/30 fps.
-- Cmd+D duplica la cue selezionata; disponibile anche dal menu Cues.
+QUICK TEST:
+1. Open a saved .scshow, select cue A, click its LENGTH field and type a
+   temporary value, WITHOUT Enter. Select cue B. Cue B's length must stay intact.
+2. Go back to A: old duration should still be there. Type a valid duration
+   and Enter: only A should change.
+3. On a cue with 1–2 WAV/AIFF stems, click SEND CUE TO DAW…
+   in Inspector. It exports cue metadata JSON and SculptDAW CLI script.
+4. Use the installed `soundcraft-cli script /absolute/path/Cue-bridge-DAW.txt`
+   to create an editable .scdaw session. CLI requires Sculpt DAW installed/build.
+5. Export a stem bounce from the DAW and click RECEIVE DAW BOUNCE… on the
+   corresponding audio element. The cue retains its routing, Rules, LTC, and markers.
+6. Check GO, LTC, routing, mixer and preflight did not regress.
 
-TEST SUL MAC
-A. Nuova cue LTC: OFFSET predefinito -00:00:00:00.
-B. Inserisci -00:00:00:10, Invio: focus esce, valore salvato. Prova un input invalido.
-C. Verifica +1F, -1F e ZERO, anche a 29.97 DF.
-D. PLAY FROM e nome marker: Invio conferma ed esce. GO resta sempre a zero.
-E. Seleziona una cue e fai Cmd+D; verifica settings LTC, marker, rules e media.
-F. Verifica normale PLAY, GO, HOLD, reader LTC IN/OUT e routing senza interruzioni.
+IMPORTANT: Phase 1 is FILE-BASED; not yet live IPC or automatic DAW GUI
+round-trip. The original audio and .scshow are not overwritten by bridge export.
+Local Swift Core suite: 127 tests passed. The macOS app must build on Actions.
 
-TEST LOCALI: 122 Swift/C unit test superati; controllo sintattico Swift e C.
-BUILD macOS DA VERIFICARE IN GITHUB ACTIONS. La 0.14.1 resta fallback.
+See BRIDGE-PHASE1.md for precise scope and current limitations.

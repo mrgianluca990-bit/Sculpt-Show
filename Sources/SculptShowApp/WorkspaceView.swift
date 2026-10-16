@@ -434,6 +434,7 @@ struct WorkspaceView: View {
                 .help("Delay before a cue starts after GO. STOP cancels a waiting cue.")
 
                 CueTimingEditor(cue: cue, listID: listID)
+                    .id(cue.id) // independent draft + focus for every selected cue
 
                 Divider()
                 CueMarkersEditor(cue: cue, listID: listID,
@@ -494,6 +495,26 @@ struct WorkspaceView: View {
 
                 Divider()
                 CueContentsEditor(cue: cue, listID: listID)
+
+                if cue.hasAudio {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label("SCULPT BRIDGE · DAW", systemImage: "arrow.left.arrow.right")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(Skin.gold)
+                        Button {
+                            store.exportCueToDAW(cue.id, in: listID)
+                        } label: {
+                            Label("SEND CUE TO DAW…", systemImage: "square.and.arrow.up")
+                        }
+                        .help("Export a versioned cue manifest and native Sculpt DAW CLI import script; audio files remain untouched")
+                        Text("Export aligned stems for DAW editing. Import a bounced replacement from each element below; original routing, marker and Rules stay in Show.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
 
                 if let active = playback.snapshots[cue.id] {
                     VStack(alignment: .leading, spacing: 3) {

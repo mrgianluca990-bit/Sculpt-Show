@@ -1,3 +1,23 @@
+# Sculpt Show 0.15.0 — Duration Editing Fix + Sculpt DAW Bridge (Phase 1)
+
+- Duration editor: **Return commits**, selecting another cue **discards unconfirmed text**, cue-specific identity prevents stale fields overwriting adjacent cues.
+- First native Sculpt Bridge handoff: **SEND CUE TO DAW…** exports versioned JSON with stable cue/stem IDs, routing, LTC, markers and a real `soundcraft-cli` import script based on Sculpt DAW engine commands.
+- **RECEIVE DAW BOUNCE…** on each stem replaces the media reference only, preserving the rest of the cue.
+- **Not yet live inter-app IPC or a fully automated DAW round-trip**. See `BRIDGE-PHASE1.md`.
+- 127 passing local Swift Core tests; macOS compilation requires GitHub Actions.
+
+---
+
+# Sculpt Show 0.15.0 — Duration Editing Fix + Sculpt DAW Bridge (Phase 1)
+
+- Duration editor: **Return commits**, selecting another cue **discards unconfirmed text**, cue-specific identity prevents stale fields overwriting adjacent cues.
+- First native Sculpt Bridge handoff: **SEND CUE TO DAW…** exports versioned JSON with stable cue/stem IDs, routing, LTC, markers and a real `soundcraft-cli` import script based on Sculpt DAW engine commands.
+- **RECEIVE DAW BOUNCE…** on each stem replaces the media reference only, preserving the rest of the cue.
+- **Not yet live inter-app IPC or a fully automated DAW round-trip**. See `BRIDGE-PHASE1.md`.
+- 127 passing local Swift Core tests; macOS compilation requires GitHub Actions.
+
+---
+
 # Sculpt Show 0.14.2 — Editing & LTC offset workflow
 
 Based on the operator-confirmed, successfully macOS-built **v0.14.1** baseline.
