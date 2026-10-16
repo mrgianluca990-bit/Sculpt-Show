@@ -225,6 +225,71 @@ final class ShowStore: ObservableObject {
         }
     }
 
+    // MARK: - Offline loudness normalization (REAPER-style workflow)
+    @Published private(set) var normalizingCueID: UUID?
+    @Published private(set) var normalizationReportCueID: UUID?
+    @Published private(set) var normalizationReport: String?
+
+    func normalizeCue(_ cueID: UUID, in listID: UUID,
+                      mode: NormalizationTarget, target: Double,
+                      peakLimit: Bool, using playback: PlaybackEngine) {
+        guard normalizingCueID == nil else { return }
+        guard playback.snapshots.isEmpty else {
+            errorMessage = "Stop all cue playback before normalizing. Offline file processing could affect disk performance during a live show."
+            return
+        }
+        guard let list = show.cueLists.first(where: { $0.id == listID }),
+              let cue = list.cues.first(where: { $0.id == cueID }), cue.hasAudio else { return }
+        let requested = cue.audioElements.map {
+            CueOfflineNormalizer.Request(elementID: $0.id, name: $0.name, originalPath: $0.sourcePath)
+        }
+        let showID = documentURL // not a unique document ID: guarded by cue/source check below
+        normalizingCueID = cueID
+        normalizationReportCueID = cueID
+        normalizationReport = "Analyzing and rendering \(requested.count) stem(s)…"
+        // Heavy PCM analysis and writing never run on the SwiftUI or audio thread.
+        Task {
+            do {
+                let results = try await Task.detached(priority: .userInitiated) {
+                    try CueOfflineNormalizer.normalize(requested, cueID: cueID,
+                       mode: mode, target: target, peakLimit: peakLimit)
+                }.value
+                // Do not link a file into a different show or into a changed cue.
+                guard self.documentURL == showID,
+                      let current = self.show.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == cueID }),
+                      playback.snapshots.isEmpty,
+                      results.allSatisfy({ item in
+                          current.audioElements.contains(where: {
+                              $0.id == item.elementID && $0.sourcePath == item.originalPath
+                          })
+                      }) else {
+                    for result in results { try? FileManager.default.removeItem(atPath: result.normalizedPath) }
+                    self.errorMessage = "The cue changed or playback began during normalization. No files were relinked."
+                    self.normalizingCueID = nil
+                    return
+                }
+                self.editCue(cueID, list: listID) { cue in
+                    for result in results {
+                        if let index = cue.elements.firstIndex(where: { $0.id == result.elementID }) {
+                            cue.elements[index].sourcePath = result.normalizedPath
+                        }
+                    }
+                }
+                func value(_ x: Double?) -> String {
+                    x.map { String(format: "%.1f", $0) } ?? "—"
+                }
+                self.normalizationReport = results.map {
+                    "\($0.name):  \(value($0.beforeLUFS)) LUFS  |  \(value($0.beforePeak)) dBFS peak  |  \(String(format: "%+.1f", $0.gainDB)) dB  →  \(value($0.estimatedAfterLUFS)) LUFS / \(value($0.estimatedAfterPeak)) dBFS"
+                }.joined(separator: "\n") + "\n\nNormalized copies saved in Music/Sculpt Normalized. Source files and live playback settings are unchanged. Save the Show to preserve the new references."
+                self.normalizingCueID = nil
+            } catch {
+                self.normalizingCueID = nil
+                self.normalizationReport = nil
+                self.errorMessage = "Normalize Audio: \(error.localizedDescription)"
+            }
+        }
+    }
+
     func chooseDAWCLI() {
         do {
             try SculptDAWLaunchBridge.chooseCLI()

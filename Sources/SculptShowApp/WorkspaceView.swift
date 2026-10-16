@@ -149,6 +149,7 @@ struct WorkspaceView: View {
     @State private var showingOutputMixer = false
     @State private var showingWaveforms = false
     @State private var showingPreflight = false
+    @State private var normalizeSelection: NormalizationCueSelection?
     @State private var selectedMarkerID: UUID?
     @AppStorage("SculptShow.InspectorWidth.v1") private var inspectorWidth: Double = 346
     @State private var inspectorResizeStart: Double?
@@ -160,18 +161,10 @@ struct WorkspaceView: View {
             Divider().overlay(Skin.stroke)
             transport
             Divider().overlay(Skin.stroke)
-            if showingOutputMixer || showingWaveforms {
-                // The mixer/waveform dock stays below the show editor. The LTC monitor
-                // instead docks on the right, independently of the audio graph.
-                VSplitView {
-                    mainEditor
-                        .frame(minHeight: 235)
-                    waveformAndMixer
-                        .frame(minHeight: 310, idealHeight: 370)
-                }
-            } else {
-                mainEditor
-            }
+            // Side dock is OUTSIDE the vertical mixer split: mixer and waveform may
+            // resize only the cue-list workspace and can never cover the right rail.
+            mainEditor
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             statusBar
         }
         .background(Skin.base)
@@ -210,6 +203,11 @@ struct WorkspaceView: View {
                 store.handleRuleEvent(.stopping, source: id, using: playback)
             }
         }
+        .sheet(item: $normalizeSelection) { selection in
+            CueNormalizationView(cueID: selection.cueID, listID: selection.listID)
+                .environmentObject(store)
+                .environmentObject(playback)
+        }
         .sheet(isPresented: $showingPreflight) {
             ShowPreflightPanel()
                 .environmentObject(store)
@@ -243,20 +241,40 @@ struct WorkspaceView: View {
         store.removeCue(cueID, from: listID)
     }
 
+    /// The cue-list workspace alone participates in the mixer VSplitView.
+    /// Inspector and LTC reader remain in the foreground to its right.
+    private var cueListWorkspace: some View {
+        ScrollView(.horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(store.show.cueLists) { list in
+                    CueListPanel(list: list)
+                }
+            }
+            .padding(16)
+        }
+        .background(Skin.base)
+        .frame(minWidth: 300)
+    }
+
+    private var cueListAndMixer: some View {
+        Group {
+            if showingOutputMixer || showingWaveforms {
+                VSplitView {
+                    cueListWorkspace.frame(minHeight: 235)
+                    waveformAndMixer.frame(minHeight: 240, idealHeight: 340)
+                }
+            } else {
+                cueListWorkspace
+            }
+        }
+        .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var mainEditor: some View {
         HStack(spacing: 0) {
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 12) {
-                    ForEach(store.show.cueLists) { list in
-                        CueListPanel(list: list)
-                    }
-                }
-                .padding(16)
-            }
-            .background(Skin.base)
-            .frame(minWidth: 300)
+            cueListAndMixer
 
-            // Drag left to widen the Inspector; right to return space to cue lists.
+            // Drag left to widen Inspector; the Timecode pane inherits its width.
             Rectangle()
                 .fill(Skin.stroke)
                 .frame(width: 8)
@@ -273,25 +291,31 @@ struct WorkspaceView: View {
                     }
                     .onEnded { _ in inspectorResizeStart = nil })
                 .help("Drag to resize Cue Lists and Inspector")
-            inspector
-                .frame(width: min(650, max(280, inspectorWidth)))
 
-            if showingTimecodeReader {
-                // The monitor docks on the right (rather than at the bottom),
-                // inheriting the Inspector's adjustable width. It remains
-                // independent from both the mixer and waveforms.
-                Rectangle()
-                    .fill(Skin.stroke)
-                    .frame(width: 1)
-                    .accessibilityHidden(true)
-                TimecodeReaderView()
-                    .environmentObject(timecodeReader)
-                    .environmentObject(playback)
-                    .frame(width: min(650, max(280, inspectorWidth)))
-                    .frame(maxHeight: .infinity)
-                    .background(Skin.panel)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    // The Inspector occupies the top portion of the right rail.
+                    inspector
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .layoutPriority(0)
+
+                    if showingTimecodeReader {
+                        Divider().overlay(Skin.stroke)
+                        TimecodeReaderView()
+                            .environmentObject(timecodeReader)
+                            .environmentObject(playback)
+                            // The LTC monitor fills the lower Inspector, never the mixer.
+                            // Capped so the Inspector always retains usable vertical space.
+                            .frame(height: min(405, max(225, geometry.size.height * 0.46)))
+                            .frame(maxWidth: .infinity)
+                            .background(Skin.panel)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .background(Skin.panel)
             }
+            .frame(width: min(650, max(280, inspectorWidth)))
+            .zIndex(2) // Keep the right rail above the mixer during split resizing.
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -519,6 +543,24 @@ struct WorkspaceView: View {
                         .help("Delay before a cue starts after GO. STOP cancels a waiting cue.")
 
                     }
+                    if cue.hasAudio {
+                        inspectorSection("LOUDNESS / NORMALIZE") {
+                            Button {
+                                normalizeSelection = NormalizationCueSelection(cueID: cue.id, listID: listID)
+                            } label: {
+                                Label("NORMALIZE AUDIO…", systemImage: "waveform.path")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(store.normalizingCueID != nil || !playback.snapshots.isEmpty)
+                            .help("Offline LUFS-I or Peak normalization, default -18 LUFS. Makes new media copies; leaves original audio untouched.")
+                            if store.normalizingCueID == cue.id {
+                                HStack {
+                                    ProgressView().controlSize(.small)
+                                    Text("Analyzing / rendering…").font(.caption)
+                                }
+                            }
+                        }
+                    }
                     inspectorSection("TIMING") {
                         CueTimingEditor(cue: cue, listID: listID)
                             .id(cue.id) // independent draft + focus for every selected cue
@@ -693,7 +735,7 @@ struct WorkspaceView: View {
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.18.0")
+            Text("SCULPT SHOW 0.18.2")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -926,6 +968,12 @@ private struct CueListPanel: View {
     }
 }
 
+private struct NormalizationCueSelection: Identifiable {
+    let cueID: UUID
+    let listID: UUID
+    var id: UUID { cueID }
+}
+
 private struct CueRow: View {
     @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var playback: PlaybackEngine
@@ -938,6 +986,7 @@ private struct CueRow: View {
     @State private var pendingSeek: Double?
     @State private var editingName = false
     @State private var editingCueRules = false
+    @State private var showingRowNormalization = false
     @State private var nameDraft = ""
     @State private var dropHighlighted = false
 
@@ -999,6 +1048,10 @@ private struct CueRow: View {
                 editingName = true
             }
             Button("Edit Cue Rules…") { editingCueRules = true }
+            if cue.hasAudio {
+                Button("Normalize Audio…") { showingRowNormalization = true }
+                    .disabled(store.normalizingCueID != nil || !playback.snapshots.isEmpty)
+            }
             Menu("Cue Color") {
                 ForEach(CueTint.allCases, id: \.self) { tint in
                     Button {
@@ -1021,6 +1074,11 @@ private struct CueRow: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showingRowNormalization) {
+            CueNormalizationView(cueID: cue.id, listID: listID)
+                .environmentObject(store)
+                .environmentObject(playback)
         }
         .sheet(isPresented: $editingCueRules) {
             RulesEditor(scope: .cue(cue.id, in: listID)).environmentObject(store)

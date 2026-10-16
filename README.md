@@ -1,3 +1,69 @@
+# Sculpt Show v0.18.2 — Inspector/LTC dock + offline Normalize Audio
+
+## Layout
+- Inspector and its Timecode monitor share a permanent right-hand rail, outside the mixer/waveform `VSplitView`. Opening or resizing the mixer cannot cover the right rail.
+- Timecode occupies the bottom of the Inspector (approximately 46% of the available right-rail height); Inspector sections remain scrollable above it. Timecode inherits the Inspector's width and can be shown/hidden independently.
+- All Inspector sections remain collapsed by default, as in v0.18.1.
+
+## REAPER-inspired offline normalization
+- Right-click an audio cue → **Normalize Audio…**, or open Inspector → **LOUDNESS / NORMALIZE**.
+- Modes: **Integrated LUFS** (default −18 LUFS-I), **Sample Peak** (default −1 dBFS).
+- LUFS analysis: offline K-weighted mono/stereo PCM, 400 ms blocks, 100 ms hops, EBU R128-style absolute/relative gating. Not a certified loudness analyzer and not a true-peak meter.
+- Optional sample-peak safety ceiling −1 dBFS (enabled by default). This can prevent achieving the requested LUFS target; the report shows the actual applied gain.
+- Every stem is normalized independently, preserving mono/stereo format, timing, routing assignments and marker/LTC data. Relative track balance will change if stems have different loudness.
+- 32-bit float WAV output at source sample rate in **~/Music/Sculpt Normalized/<cue-id>/**. Files are copied, not overwritten; old sources remain untouched. Each successful cue action relinks **all** stems to newly rendered files at once; on failure nothing is relinked.
+- Cue, element and master faders remain as they were. Positive normalization gain is baked into the new WAV instead of forcing >100% into the playout faders.
+- Normalization is disabled while any cue is playing, to avoid heavy file I/O during a show. Save the `.scshow` after normalization to persist references.
+- Output may consume significant additional storage for long multitracks. Underlying source audio remains unchanged.
+
+### Verification
+- Swift syntax checked for the complete project; 138 Linux Core tests passed including 6 normalization tests. **macOS app compilation/AVAudioFile write and interactive dock behavior must be validated in GitHub Actions and on the operator's Mac**.
+- Baseline: v0.18.1 compiled and operator-tested. No intentional changes to routing, timecode DSP or DAW bridge.
+
+---
+
+# Sculpt Show v0.18.0 — Cue colors and flexible workspace
+
+This release builds on the verified v0.17.0 baseline. UI-only changes (plus optional cue display metadata):
+
+- Cue color palette in the Cue Inspector and the Cue row context menu; colors are saved into `.scshow`, copied on cue duplication and default to no color for old shows.
+- Individual Cue List panel widths can be dragged at the right edge (355–900 pt) and persist per-list in local app preferences.
+- Inspector width can be dragged at the vertical divider (280–650 pt) and persists across launches.
+- Inspector sections expand and collapse independently: Color; Level & Wait; Timing; Markers; Fades & Playback; Stems & LTC; Rules & Actions.
+- List options display only one ellipsis button (no extra disclosure arrow), with the original rules/remove commands.
+- GO, Pause, Stop, Fade, Previous, Next, Next List, Auto, Mixer, Waveforms and Timecode share a compact single transport row. Small buttons include hover tooltips.
+
+The audio engine, LTC, markers, routing, Rules and Show→DAW bridge are unchanged. The native macOS build still needs verification in GitHub Actions. Core tests: 132 passing on Linux; all Swift sources parse.
+
+# Sculpt Show v0.17.0 — Mixer dinamico e import marker nella DAW
+
+- Mixer nascosto al lancio e meter che seguono l'altezza del pannello ridimensionabile.
+- Bridge CLI: crea una traccia mono/stereo per stem, importa marker e copia mute/gain.
+- Percorsi output di Show memorizzati nella sessione DAW come OutputPath/track comments.
+- **Limitazione:** il renderer audio DAW attuale ignora ancora Route::Hardware;
+  per prevenire tracce mute, l'ascolto delle tracce importate resta su Main.
+  L'attivazione delle uscite fisiche richiede sviluppo e test separati sulla DAW.
+- Vedi README-v0.17.0.md e BRIDGE-ROUTING-PHASE3.md.
+
+---
+
+# Sculpt Show 0.16.2 — One-click DAW edit per cue
+
+- `EDIT IN SCULPT DAW` is now a single gold-icon button on each audio cue row, alongside Play/Pause/Fade/Stop.
+- The entire `SCULPT BRIDGE · DAW` Inspector section was removed, including `EXPORT MANIFEST` and `LOCATE CLI` buttons.
+- The currently working CLI-based handoff stays unchanged. It is not reimplemented in this update.
+- Per-stem `RECEIVE DAW BOUNCE` remains temporarily in the contents editor to preserve the current working manual return path.
+- The pending DAW operation has one shared busy guard and a spinner **only on the initiating cue**; success status is shown on the global status bar.
+- No change to audio, SMPTE LTC, Cue Rules, saved show format, or CLI permissions.
+
+## DAW physical routing evaluation
+
+See `BRIDGE-ROUTING-DESIGN.md`. The currently working SculptBridge v1 JSON already preserves each stem's `outputStartChannel` and UUID but its CLI script **does not configure DAW hardware outputs yet**. A future coordinated DAW update should preserve mono/stereo per source, create matching mono/stereo DAW output paths, assign every track to the destination and validate device channel counts. Mono splitting of stereo sources should be opt-in rather than automatic to preserve return-path identity. No hardware routing is claimed in v0.16.2.
+
+For GitHub upload: copy the three changed files keeping directories (see `ISTRUZIONI.txt`). GitHub Actions builds universal macOS app. Validate on Mac after build.
+
+---
+
 # Sculpt Show 0.16.0 — Direct Edit in Sculpt DAW (Bridge Phase 2)
 
 - **EDIT IN SCULPT DAW** creates an isolated editable DAW session (named `.scraft`) and automatically launches Sculpt DAW with the cue's stems **aligned at zero**, using `soundcraft-cli` from the existing DAW package. For multiple stems the CLI is required to guarantee alignment.

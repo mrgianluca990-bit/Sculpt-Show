@@ -1,0 +1,8 @@
+SCULPT SHOW v0.18.2 — ISTRUZIONI
+
+Carica nello stesso repository Sculpt-Show i file estratti da questo ZIP, mantenendo i percorsi originali.
+Esegui GitHub Actions per compilare la app universale macOS; la build va verificata prima dell’installazione.
+
+Test: (1) Apri inspector + timecode: il LTC deve apparire in fondo all’inspector, non in una terza colonna. (2) Apri MIXER e WAVEFORMS: il pannello destro non deve essere coperto. (3) A mixer aperto ridimensiona inspector e la finestra. (4) Con show FERMO scegli cue mono/stereo, click destro > Normalize Audio; verifica −18 LUFS-I e Peak, report, nuove copie WAV, reload show e percorsi originali immutati. (5) Verifica cue multitraccia, routing, marker, LTC e DAW bridge.
+
+Nota: il target LUFS può risultare inferiore se il peak guard −1 dBFS è attivo. La misurazione è simile allo standard BS.1770/R128, non un meter con certificazione true-peak.
