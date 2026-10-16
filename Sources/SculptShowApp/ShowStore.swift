@@ -195,6 +195,7 @@ final class ShowStore: ObservableObject {
     /// Show -> DAW Phase 2: direct, non-destructive, editable session handoff.
     /// Does not stop any cue or mutate Show's audio graph / saved document.
     @Published private(set) var dawBridgeBusy = false
+    @Published private(set) var dawBridgeCueID: UUID?
     @Published var dawBridgeMessage: String?
 
     func editCueInDAW(_ cueID: UUID, in listID: UUID) {
@@ -203,10 +204,12 @@ final class ShowStore: ObservableObject {
             let manifest = try SculptBridge.manifest(show: show, listID: listID, cueID: cueID)
             let preparation = try SculptDAWLaunchBridge.prepare(manifest)
             dawBridgeBusy = true
+            dawBridgeCueID = cueID
             dawBridgeMessage = "Preparing Sculpt DAW session…"
             SculptDAWLaunchBridge.run(preparation) { [weak self] result in
                 guard let self else { return }
                 self.dawBridgeBusy = false
+                self.dawBridgeCueID = nil
                 switch result {
                 case .success(let message): self.dawBridgeMessage = message
                 case .failure(let error):

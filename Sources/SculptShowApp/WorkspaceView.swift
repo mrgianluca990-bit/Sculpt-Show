@@ -496,43 +496,6 @@ struct WorkspaceView: View {
                 Divider()
                 CueContentsEditor(cue: cue, listID: listID)
 
-                if cue.hasAudio {
-                    Divider()
-                    VStack(alignment: .leading, spacing: 7) {
-                        Label("SCULPT BRIDGE · DAW", systemImage: "arrow.left.arrow.right")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(Skin.gold)
-                        Button {
-                            store.editCueInDAW(cue.id, in: listID)
-                        } label: {
-                            Label("EDIT IN SCULPT DAW", systemImage: "waveform.path.ecg.rectangle")
-                        }
-                        .disabled(store.dawBridgeBusy)
-                        .help("Create a new independent, editable DAW session from this cue and open Sculpt DAW automatically")
-                        if store.dawBridgeBusy {
-                            HStack(spacing: 7) {
-                                ProgressView().controlSize(.small)
-                                Text("Preparing DAW session…")
-                            }.font(.caption)
-                        }
-                        HStack(spacing: 12) {
-                            Button("EXPORT MANIFEST…") { store.exportCueToDAW(cue.id, in: listID) }
-                            Button("LOCATE CLI…") { store.chooseDAWCLI() }
-                        }
-                        if let message = store.dawBridgeMessage {
-                            Text(message)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                        Text("Open aligned stems directly in the DAW for region edits, levels and plugin processing. Original Show media and cue routing are untouched.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-
                 if let active = playback.snapshots[cue.id] {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(active.phase == .waiting ? "START IN" : "REMAINING")
@@ -585,12 +548,19 @@ struct WorkspaceView: View {
         HStack {
             Circle().fill(Skin.green).frame(width: 7, height: 7)
             Text("CORE AUDIO  •  SYSTEM DEFAULT OUTPUT")
+            if let message = store.dawBridgeMessage {
+                Text(message)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 380, alignment: .leading)
+                    .help(message)
+            }
             Spacer()
             Text("\(store.show.cueLists.count) CUE LISTS")
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
             Spacer()
-            Text("SCULPT SHOW 0.10.0")
+            Text("SCULPT SHOW 0.16.2")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -909,6 +879,21 @@ private struct CueRow: View {
                 .help("Drag this handle to reorder or move to another list")
             selectionButton
             statusIndicator
+            if cue.hasAudio {
+                Button {
+                    store.editCueInDAW(cue.id, in: listID)
+                } label: {
+                    if store.dawBridgeBusy && store.dawBridgeCueID == cue.id {
+                        ProgressView().controlSize(.mini).frame(width: 21, height: 21)
+                    } else {
+                        Image(systemName: "waveform.path.ecg.rectangle")
+                            .foregroundColor(Skin.gold)
+                    }
+                }
+                .disabled(store.dawBridgeBusy)
+                .help("EDIT IN SCULPT DAW — open this cue as an editable DAW session")
+                .accessibilityLabel("Edit cue in Sculpt DAW")
+            }
             cueActions
         }
         .buttonStyle(.borderless)

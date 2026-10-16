@@ -1,34 +1,12 @@
-SCULPT SHOW 0.16.0 — DIRECT EDIT IN SCULPT DAW (PHASE 2)
+Sculpt Show 0.16.2 — single button on cue, DAW routing design
 
-1. Extract Sculpt-Show-v0.16.0-DAW-Direct-Edit-Update.zip.
-2. On github.com/mrgianluca990-bit/Sculpt-Show open Add file > Upload files
-   and upload the files preserving EXACT folder paths. If GitHub's web UI
-   doesn't preserve paths when uploading loose files, use GitHub Desktop
-   or drag the top-level folders from the unzipped source on GitHub's uploader.
-3. Commit all changed files TOGETHER in one commit to main.
-4. Wait for the GitHub Actions macOS build. Download the new artifact.
-
-Only Show needs compiling for this phase; the existing Sculpt DAW build already
-supports loading .scraft sessions from startup arguments and includes
-soundcraft-cli. The update does NOT modify the DAW repository.
-
-The update changes/adds:
-  Scripts/Info.plist
-  Sources/SculptShowApp/SculptDAWLaunchBridge.swift (new)
-  Sources/SculptShowApp/ShowStore.swift
+Upload the 3 files below to GitHub mrgianluca990-bit/Sculpt-Show, branch main, preserving paths:
   Sources/SculptShowApp/WorkspaceView.swift
-  Sources/SculptShowCore/SculptBridge.swift
-  Tests/SculptShowCoreTests/SculptBridgeTests.swift
-  BRIDGE-PHASE2.md (new)
-  ISTRUZIONI.txt, README.md
+  Sources/SculptShowApp/ShowStore.swift
+  Scripts/Info.plist
 
-FIRST TEST:
-  - Select a 2-stem cue and click EDIT IN SCULPT DAW.
-  - If necessary, select Sculpt DAW.app, and the soundcraft-cli binary included
-    alongside the app in the downloaded DAW ZIP.
-  - Confirm DAW opens a native named .scraft session with both clips at 00:00.
-  - Split/move a clip, adjust gain, insert a plugin, save and reopen the session.
-  - Check no changes occurred to the Show cue or original WAVs.
+The .zip update contains only those changed code files (plus docs). Do not delete/replace any other project files. No DAW repository changes are included in this update.
 
-For the full setup and what is still missing, see BRIDGE-PHASE2.md.
-This is NOT yet a two-way live bridge. No macOS build of 0.16.0 has been confirmed.
+Expected: audio cue row has single DAW icon (hover text EDIT IN SCULPT DAW), no Bridge section in inspector. Import behavior remains the previously tested CLI method. `RECEIVE DAW BOUNCE` at stem level is intentionally retained until automatic return exists.
+
+The proposed automatic physical output assignment is **not yet implemented**. See BRIDGE-ROUTING-DESIGN.md for grounded technical plan and tests.
