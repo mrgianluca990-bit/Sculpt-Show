@@ -56,7 +56,9 @@ public enum ShowProjectPackage {
             url.lastPathComponent.hasSuffix(suffix)
                 && (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
         }) {
-            return existing
+            // Preserve the spelling of the project's root URL; FileManager may
+            // canonicalize /var to /private/var while enumerating directories.
+            return parent.appendingPathComponent(existing.lastPathComponent, isDirectory: true)
         }
         let folder = parent.appendingPathComponent(listFolderName(show.cueLists[index], index: index),
                                                     isDirectory: true)
