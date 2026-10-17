@@ -154,6 +154,7 @@ struct WorkspaceView: View {
     @AppStorage("SculptShow.InspectorWidth.v1") private var inspectorWidth: Double = 346
     @State private var inspectorResizeStart: Double?
     @State private var expandedInspectorSections: Set<String> = []
+    @State private var inspectorTab = "GENERAL"
     @State private var keyboardMonitor: Any?
 
     var body: some View {
@@ -345,6 +346,14 @@ struct WorkspaceView: View {
             switch key {
             case "p": self.store.togglePauseAll(using: self.playback)
             case "f": self.store.fadeAll(using: self.playback)
+            case "m":
+                guard let listID = self.store.selectedListID,
+                      let cue = self.store.selectedCue else { return event }
+                if !event.isARepeat {
+                    let position = self.playback.snapshots[cue.id]?.elapsed
+                        ?? self.playback.cuePlayCursor(cue.id)
+                    self.selectedMarkerID = self.store.addMarker(to: cue.id, in: listID, at: position)
+                }
             case "n": self.store.selectNextList()
             default: return event
             }
@@ -627,10 +636,23 @@ struct WorkspaceView: View {
                                   fontWeight: .medium) { newName in
                         store.renameCue(cue.id, in: listID, to: newName)
                     }
-                    inspectorSection("COLOR") {
-                        CueColorPicker(cue: cue, listID: listID)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 5) {
+                            ForEach(["GENERAL", "MARKER", "STEMS LTC", "RULES & ACTIONS"], id: \.self) { tab in
+                                Button(tab) { inspectorTab = tab }
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 8)
+                                    .foregroundStyle(inspectorTab == tab ? Color.black : Skin.gold)
+                                    .background(inspectorTab == tab ? Skin.gold : Skin.raised,
+                                                in: RoundedRectangle(cornerRadius: 5))
+                            }
+                        }
                     }
-                    inspectorSection("LEVEL & WAIT") {
+                    Group {
+                        if inspectorTab == "GENERAL" {
+                            VStack(alignment: .leading, spacing: 12) {
+                        CueColorPicker(cue: cue, listID: listID)                                Divider()
                         HStack {
                             Text("GAIN")
                             Spacer()
@@ -660,37 +682,10 @@ struct WorkspaceView: View {
                         ), in: 0...120, step: 0.5)
                         .tint(Skin.gold)
                         .help("Delay before a cue starts after GO. STOP cancels a waiting cue.")
-
-                    }
-                    if cue.hasAudio {
-                        inspectorSection("LOUDNESS / NORMALIZE") {
-                            Button {
-                                normalizeSelection = NormalizationCueSelection(cueID: cue.id, listID: listID)
-                            } label: {
-                                Label("NORMALIZE AUDIO…", systemImage: "waveform.path")
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(store.normalizingCueID != nil || !playback.snapshots.isEmpty)
-                            .help("Offline LUFS-I or Peak normalization, default -18 LUFS. Makes new media copies; leaves original audio untouched.")
-                            if store.normalizingCueID == cue.id {
-                                HStack {
-                                    ProgressView().controlSize(.small)
-                                    Text("Analyzing / rendering…").font(.caption)
-                                }
-                            }
-                        }
-                    }
-                    inspectorSection("TIMING") {
+                                Divider()
                         CueTimingEditor(cue: cue, listID: listID)
                             .id(cue.id) // independent draft + focus for every selected cue
-
-                    }
-                    inspectorSection("MARKERS") {
-                        CueMarkersEditor(cue: cue, listID: listID,
-                                         selectedMarkerID: $selectedMarkerID)
-
-                    }
-                    inspectorSection("FADES & PLAYBACK") {
+                                Divider()
                         HStack {
                             Text("FADE OUT")
                             Spacer()
@@ -742,13 +737,13 @@ struct WorkspaceView: View {
                             }
                         ))
                         .toggleStyle(.switch)
-
-                    }
-                    inspectorSection("STEMS & LTC") {
+                            }
+                        } else if inspectorTab == "MARKER" {
+                        CueMarkersEditor(cue: cue, listID: listID,
+                                         selectedMarkerID: $selectedMarkerID)
+                        } else if inspectorTab == "STEMS LTC" {
                         CueContentsEditor(cue: cue, listID: listID)
-
-                    }
-                    inspectorSection("RULES & ACTIONS") {
+                        } else {
                         if let active = playback.snapshots[cue.id] {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(active.phase == .waiting ? "START IN" : "REMAINING")
@@ -784,8 +779,24 @@ struct WorkspaceView: View {
                             store.removeCue(cue.id, from: listID)
                         } label: {
                             Label("Remove Cue", systemImage: "trash")
+                        }                            if cue.hasAudio {
+                            Button {
+                                normalizeSelection = NormalizationCueSelection(cueID: cue.id, listID: listID)
+                            } label: {
+                                Label("NORMALIZE AUDIO…", systemImage: "waveform.path")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(store.normalizingCueID != nil || !playback.snapshots.isEmpty)
+                            .help("Offline LUFS-I or Peak normalization, default -18 LUFS. Makes new media copies; leaves original audio untouched.")
+                            if store.normalizingCueID == cue.id {
+                                HStack {
+                                    ProgressView().controlSize(.small)
+                                    Text("Analyzing / rendering…").font(.caption)
+                                }
+                            }                            }
                         }
                     }
+
                 } else {
                     Text("Select a cue to edit its properties.")
                         .foregroundColor(Skin.soft)
