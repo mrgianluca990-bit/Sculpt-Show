@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 @main
 struct SculptShowApp: App {
@@ -6,6 +7,17 @@ struct SculptShowApp: App {
     @StateObject private var playback = PlaybackEngine()
     @StateObject private var midi = MIDIControl()
     @State private var showingAudioMIDISetup = false
+
+    /// Text editors own Cmd-Z/Cmd-Shift-Z while the insertion cursor is active.
+    /// Do not accidentally undo a cue edit when undoing typed text.
+    private func focusedTextUndo(redo: Bool) -> Bool {
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return false }
+        if let manager = editor.undoManager {
+            if redo && manager.canRedo { manager.redo() }
+            if !redo && manager.canUndo { manager.undo() }
+        }
+        return true
+    }
 
     var body: some Scene {
         WindowGroup("Sculpt Show") {
@@ -27,6 +39,16 @@ struct SculptShowApp: App {
         }
         .defaultSize(width: 1300, height: 850)
         .commands {
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") {
+                    if !focusedTextUndo(redo: false) { showStore.undoEdit(using: playback) }
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                Button("Redo") {
+                    if !focusedTextUndo(redo: true) { showStore.redoEdit(using: playback) }
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Show") {
                     if showStore.newShow() { showStore.stopAll(using: playback) }

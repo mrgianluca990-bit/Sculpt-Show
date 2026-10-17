@@ -21,6 +21,84 @@ final class ShowStore: ObservableObject {
     private var eventGeneration = UUID()
     private var eventTimestamps: [Date] = []
     private var suppressRuleEvents = false
+
+    /// Reversible Show-document state. No audio bytes are deleted by Undo.
+    /// Selection is recorded along with content so undoing a deleted cue or
+    /// cue list restores a usable cursor position.
+    private struct HistoryItem {
+        let show: Show
+        let selectedListID: UUID?
+        let selectedCueID: UUID?
+    }
+    private var undoStack: [HistoryItem] = []
+    private var redoStack: [HistoryItem] = []
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
+
+    private func snapshot() -> HistoryItem {
+        HistoryItem(show: show, selectedListID: selectedListID, selectedCueID: selectedCueID)
+    }
+
+    private func syncHistoryFlags() {
+        canUndo = !undoStack.isEmpty
+        canRedo = !redoStack.isEmpty
+    }
+
+    private func clearHistory() {
+        undoStack.removeAll()
+        redoStack.removeAll()
+        syncHistoryFlags()
+    }
+
+    private func restore(_ item: HistoryItem) {
+        show = item.show
+        if let id = item.selectedListID, show.cueLists.contains(where: { $0.id == id }) {
+            selectedListID = id
+        } else {
+            selectedListID = show.cueLists.first?.id
+        }
+        if let id = item.selectedCueID,
+           show.cueLists.first(where: { $0.id == selectedListID })?.cues.contains(where: { $0.id == id }) == true {
+            selectedCueID = id
+        } else {
+            selectedCueID = show.cueLists.first(where: { $0.id == selectedListID })?.cues.first?.id
+        }
+        // Disk saves are not undone; reverting the show marks it as changed.
+        dirty = true
+    }
+
+    /// Undo every document-model edit, including imported or normalized media
+    /// references. Running playback cannot be atomically rewound in this model,
+    /// so document Undo is intentionally blocked during live playout.
+    func undoEdit(using playback: PlaybackEngine) {
+        guard !isLoadingProject, pendingAudioImports == 0,
+              normalizingCueID == nil, normalizingListID == nil else { return }
+        guard playback.snapshots.isEmpty else {
+            errorMessage = "Stop playback before Undo: live audio cannot safely roll back."
+            return
+        }
+        guard let previous = undoStack.popLast() else { return }
+        redoStack.append(snapshot())
+        cancelPendingRules()
+        playingLists.removeAll()
+        restore(previous)
+        syncHistoryFlags()
+    }
+
+    func redoEdit(using playback: PlaybackEngine) {
+        guard !isLoadingProject, pendingAudioImports == 0,
+              normalizingCueID == nil, normalizingListID == nil else { return }
+        guard playback.snapshots.isEmpty else {
+            errorMessage = "Stop playback before Redo: live audio cannot safely roll back."
+            return
+        }
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(snapshot())
+        cancelPendingRules()
+        playingLists.removeAll()
+        restore(next)
+        syncHistoryFlags()
+    }
     @Published private(set) var pendingAudioImports = 0
     /// The previous Show stays visible until every existing stem has been scanned.
     @Published private(set) var isLoadingProject = false
@@ -53,6 +131,7 @@ final class ShowStore: ObservableObject {
         cancelPendingRules()
         playingLists.removeAll()
         show = Show()
+        clearHistory()
         documentURL = nil
         dirty = false
         selectedCueID = nil
@@ -1011,6 +1090,7 @@ final class ShowStore: ObservableObject {
                 cancelPendingRules()
                 playingLists.removeAll()
                 show = next
+                clearHistory()
                 documentURL = url
                 selectedListID = next.cueLists.first?.id
                 selectedCueID = next.cueLists.first?.cues.first(where: { $0.enabled })?.id
@@ -1290,7 +1370,12 @@ final class ShowStore: ObservableObject {
     }
 
     private func commit(_ updated: Show) {
+        guard updated != show else { return }
+        undoStack.append(snapshot())
+        if undoStack.count > 100 { undoStack.removeFirst(undoStack.count - 100) }
+        redoStack.removeAll()
         show = updated
         dirty = true
+        syncHistoryFlags()
     }
 }

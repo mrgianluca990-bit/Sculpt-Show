@@ -92,10 +92,19 @@ enum CueOfflineNormalizer {
                 } catch NormalizationError.silence { throw Failure.empty(request.name) }
                 catch { throw Failure.operation(request.name, "computing gain", explain(error)) }
 
-                let stem = source.deletingPathExtension().lastPathComponent.prefix(60)
-                    .replacingOccurrences(of: "/", with: "-")
-                let filename = "\(stem)-\(request.elementID.uuidString.prefix(8))-\(UUID().uuidString.prefix(8)).wav"
-                let output = folder.appendingPathComponent(filename)
+                // Keep the source name; each newly normalized copy is a human-
+                // readable _normalized.wav rather than a random UUID filename.
+                var stem = source.deletingPathExtension().lastPathComponent
+                if stem.hasSuffix("_normalized") {
+                    stem.removeLast("_normalized".count)
+                }
+                stem = stem.replacingOccurrences(of: "/", with: "-")
+                var output = folder.appendingPathComponent("\(stem)_normalized.wav")
+                var collisionIndex = 2
+                while fm.fileExists(atPath: output.path) {
+                    output = folder.appendingPathComponent("\(stem)_normalized_\(collisionIndex).wav")
+                    collisionIndex += 1
+                }
                 created.append(output)
 
                 do {

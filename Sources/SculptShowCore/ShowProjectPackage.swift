@@ -16,6 +16,7 @@ public enum ShowProjectPackage {
         case missingSource(String)
         case unsafeReference(String)
         case notPackaged
+        case duplicateListName(String)
 
         public var errorDescription: String? {
             switch self {
@@ -24,6 +25,7 @@ public enum ShowProjectPackage {
             case .missingSource(let path): return "Project media is missing or unreadable: \(path)"
             case .unsafeReference(let path): return "Unsafe media path in Show document: \(path)"
             case .notPackaged: return "This is a legacy stand-alone .scshow. Use Save As to create a portable Show folder."
+            case .duplicateListName(let name): return "Two Cue Lists would use the same audio folder: \(name). Rename one list before saving."
             }
         }
     }
@@ -35,40 +37,37 @@ public enum ShowProjectPackage {
             && FileManager.default.fileExists(atPath: folder.appendingPathComponent("Audio Files", isDirectory: true).path)
     }
 
-    /// Locate the permanent audio directory for a cue list. A renamed/reordered
-    /// list retains its original folder (the UUID suffix is stable), so rendered
-    /// files are never placed in a duplicate directory merely after a rename.
-    /// Called before offline normalization: files are written directly into
-    /// the portable project, not to Application Support.
+    /// Media directories use the readable Cue List name without numbering or IDs.
+    /// Renamed lists are migrated to their new media folder on the next Save.
     public static func audioDirectory(for listID: UUID, in show: Show,
                                       documentURL: URL) throws -> URL {
         guard isPackaged(documentURL) else { throw Failure.notPackaged }
-        guard let index = show.cueLists.firstIndex(where: { $0.id == listID }) else {
+        try validateUniqueListFolders(show)
+        guard let list = show.cueLists.first(where: { $0.id == listID }) else {
             throw Failure.invalidDestination
         }
-        let fm = FileManager.default
-        let parent = documentURL.deletingLastPathComponent()
+        let folder = documentURL.deletingLastPathComponent()
             .appendingPathComponent("Audio Files", isDirectory: true)
-        let suffix = "-" + String(listID.uuidString.prefix(8))
-        let folders = try fm.contentsOfDirectory(at: parent,
-            includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-        if let existing = folders.first(where: { url in
-            url.lastPathComponent.hasSuffix(suffix)
-                && (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        }) {
-            // Preserve the spelling of the project's root URL; FileManager may
-            // canonicalize /var to /private/var while enumerating directories.
-            return parent.appendingPathComponent(existing.lastPathComponent, isDirectory: true)
-        }
-        let folder = parent.appendingPathComponent(listFolderName(show.cueLists[index], index: index),
-                                                    isDirectory: true)
-        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            .appendingPathComponent(listFolderName(list), isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder
     }
 
-    private static func listFolderName(_ list: CueList, index: Int) -> String {
-        String(format: "%02d - %@-%@", index + 1,
-               safeName(list.name), String(list.id.uuidString.prefix(8)))
+    private static func listFolderName(_ list: CueList) -> String {
+        safeName(list.name)
+    }
+
+    /// Prevent duplicate folders on case-insensitive macOS volumes and after
+    /// sanitizing illegal path characters. Collisions are explicit errors.
+    private static func validateUniqueListFolders(_ show: Show) throws {
+        var names: Set<String> = []
+        for list in show.cueLists {
+            let name = listFolderName(list)
+            guard names.insert(name.folding(options: [.caseInsensitive, .diacriticInsensitive],
+                                            locale: Locale(identifier: "en_US_POSIX"))).inserted else {
+                throw Failure.duplicateListName(name)
+            }
+        }
     }
 
     /// Create "My Show/My Show.scshow" and "My Show/Audio Files/<cue list>/...".
@@ -86,6 +85,7 @@ public enum ShowProjectPackage {
         defer { try? fm.removeItem(at: stage) }
         // Ensure even shows without audio contain the standard project structure.
         try fm.createDirectory(at: stage.appendingPathComponent("Audio Files", isDirectory: true), withIntermediateDirectories: true)
+        try validateUniqueListFolders(show)
         let stored = try prepare(show, copyInto: stage, existingProjectRoot: nil)
         let stageDocument = stage.appendingPathComponent(filename)
         try ShowCodec.encode(stored).write(to: stageDocument, options: .atomic)
@@ -101,6 +101,7 @@ public enum ShowProjectPackage {
     public static func save(_ show: Show, documentURL: URL) throws -> Saved {
         guard isPackaged(documentURL) else { throw Failure.notPackaged }
         let root = documentURL.deletingLastPathComponent()
+        try validateUniqueListFolders(show)
         let stored = try prepare(show, copyInto: root, existingProjectRoot: root)
         try ShowCodec.encode(stored).write(to: documentURL, options: .atomic)
         return Saved(documentURL: documentURL, runtimeShow: try resolve(stored, documentURL: documentURL))
@@ -132,9 +133,10 @@ public enum ShowProjectPackage {
         let fm = FileManager.default
         var stored = show
         let extantRoot = existingProjectRoot?.standardizedFileURL
+        try validateUniqueListFolders(show)
         for li in stored.cueLists.indices {
             let list = stored.cueLists[li]
-            let listFolder = listFolderName(list, index: li)
+            let folder = listFolderName(list)
             var reusedWithinList: [String: String] = [:]
             for ci in stored.cueLists[li].cues.indices {
                 for ei in stored.cueLists[li].cues[ci].elements.indices {
@@ -144,29 +146,38 @@ public enum ShowProjectPackage {
                     guard fm.fileExists(atPath: source.path), fm.isReadableFile(atPath: source.path) else {
                         throw Failure.missingSource(source.path)
                     }
-                    // Existing media inside the package stays at its current
-                    // path: saving again never duplicates or overwrites it.
-                    if let extantRoot, source.path.hasPrefix(extantRoot.path + "/") {
-                        let rel = String(source.path.dropFirst(extantRoot.path.count + 1))
-                        stored.cueLists[li].cues[ci].elements[ei].sourcePath = rel
+                    if let previous = reusedWithinList[source.path] {
+                        stored.cueLists[li].cues[ci].elements[ei].sourcePath = previous
                         continue
                     }
-                    if let relative = reusedWithinList[source.path] {
-                        stored.cueLists[li].cues[ci].elements[ei].sourcePath = relative
+                    let subdirectory = "Audio Files/\(folder)"
+                    let inPackage = extantRoot.map { source.path.hasPrefix($0.path + "/") } ?? false
+                    let currentRelative: String? = inPackage && extantRoot != nil
+                        ? String(source.path.dropFirst(extantRoot!.path.count + 1)) : nil
+                    let legacy = currentRelative?.hasPrefix("Audio Files/") == true &&
+                        currentRelative?.hasPrefix(subdirectory + "/") == false
+                    let proposed = legacy ? restoredFilename(source.lastPathComponent, in: list)
+                                          : source.lastPathComponent
+                    let name = safeFilename(proposed)
+                    // Already in the right folder with a readable name: do not copy.
+                    if let currentRelative, currentRelative.hasPrefix(subdirectory + "/"),
+                       source.lastPathComponent == name {
+                        reusedWithinList[source.path] = currentRelative
+                        stored.cueLists[li].cues[ci].elements[ei].sourcePath = currentRelative
                         continue
                     }
-                    let fileExt = source.pathExtension
-                    let basename = safeName(source.deletingPathExtension().lastPathComponent)
-                    let shortID = String(element.id.uuidString.prefix(8))
-                    let unique = "\(basename)-\(shortID)"
-                    let subdirectory = "Audio Files/\(listFolder)"
-                    var relative = "\(subdirectory)/\(unique)\(fileExt.isEmpty ? "" : "." + fileExt)"
+                    var relative = "\(subdirectory)/\(name)"
                     var destination = root.appendingPathComponent(relative)
-                    // A different source using the same element ID must never
-                    // overwrite the previously packaged audio.
+                    let candidate = URL(fileURLWithPath: name)
+                    let stem = candidate.deletingPathExtension().lastPathComponent
+                    let ext = candidate.pathExtension
+                    var suffix = 2
+                    // Same-name media must never overwrite a different source.
                     while fm.fileExists(atPath: destination.path) {
-                        relative = "\(subdirectory)/\(unique)-\(UUID().uuidString.prefix(8))\(fileExt.isEmpty ? "" : "." + fileExt)"
+                        let newName = "\(stem)_\(suffix)\(ext.isEmpty ? "" : "." + ext)"
+                        relative = "\(subdirectory)/\(newName)"
                         destination = root.appendingPathComponent(relative)
+                        suffix += 1
                     }
                     try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                     do { try fm.copyItem(at: source, to: destination) }
@@ -177,6 +188,36 @@ public enum ShowProjectPackage {
             }
         }
         return stored
+    }
+
+    /// Older packages suffixed media with eight hex characters derived from
+    /// their element ID. Remove only a suffix matching an element in this list.
+    private static func restoredFilename(_ name: String, in list: CueList) -> String {
+        let url = URL(fileURLWithPath: name)
+        var stem = url.deletingPathExtension().lastPathComponent
+        let ids = Set(list.cues.flatMap { $0.audioElements.map { String($0.id.uuidString.prefix(8)) } })
+        let parts = stem.split(separator: "-")
+        // Early Sculpt normalization used <name>-<element-id>-<random-id>.wav.
+        // Recover the original stem and append the stable _normalized suffix.
+        if parts.count >= 3,
+           parts[parts.count - 1].count == 8,
+           parts[parts.count - 1].allSatisfy({ $0.isHexDigit }),
+           ids.contains(String(parts[parts.count - 2])) {
+            stem = parts.dropLast(2).joined(separator: "-") + "_normalized"
+        } else if let suffix = parts.last,
+                  suffix.count == 8, ids.contains(String(suffix)) {
+            stem.removeLast(9)
+        }
+        return stem + (url.pathExtension.isEmpty ? "" : "." + url.pathExtension)
+    }
+
+    /// Sanitize only path-hostile characters, retaining original case, spaces,
+    /// musical accents and the extension. No opaque ID in normal filenames.
+    private static func safeFilename(_ name: String) -> String {
+        let url = URL(fileURLWithPath: name)
+        let ext = url.pathExtension
+        let base = safeName(url.deletingPathExtension().lastPathComponent)
+        return base + (ext.isEmpty ? "" : "." + ext)
     }
 
     private static func safeName(_ raw: String) -> String {

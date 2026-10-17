@@ -92,7 +92,7 @@ final class ShowProjectPackageTests: XCTestCase {
         XCTAssertEqual(try ShowCodec.decode(contentsOf: saved.documentURL), empty)
     }
 
-    func testNormalizedAudioDirectoryStaysInProjectAfterListRename() throws {
+    func testNormalizedAudioDirectoryFollowsCleanCueListNameAfterRename() throws {
         let dir = try sandbox()
         defer { try? FileManager.default.removeItem(at: dir) }
         let source = try audioFile(dir, name: "original.wav")
@@ -107,15 +107,47 @@ final class ShowProjectPackageTests: XCTestCase {
         let directory = try ShowProjectPackage.audioDirectory(for: id,
             in: saved.runtimeShow, documentURL: saved.documentURL)
         XCTAssertEqual(directory.deletingLastPathComponent(), audioRoot)
-        XCTAssertTrue(directory.lastPathComponent.contains("Drums"))
-
-        // Renaming/reordering must not generate new media folder for the same UUID.
+        XCTAssertEqual(directory.lastPathComponent, "Drums")
         var edited = saved.runtimeShow
         edited.cueLists[0].name = "Percussion"
-        let sameDirectory = try ShowProjectPackage.audioDirectory(for: id,
+        let renamed = try ShowProjectPackage.audioDirectory(for: id,
             in: edited, documentURL: saved.documentURL)
-        XCTAssertEqual(sameDirectory, directory)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertEqual(renamed.lastPathComponent, "Percussion")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: renamed.path))
+        let savedAgain = try ShowProjectPackage.save(edited, documentURL: saved.documentURL)
+        let referenced = savedAgain.runtimeShow.cueLists[0].cues[0].mediaPath
+        XCTAssertTrue(referenced.contains("/Audio Files/Percussion/"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: referenced))
+    }
+
+    func testCleanAudioNamesAndCollisionSuffixes() throws {
+        let dir = try sandbox()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let a = dir.appendingPathComponent("A", isDirectory: true)
+        let b = dir.appendingPathComponent("B", isDirectory: true)
+        try FileManager.default.createDirectory(at: a, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: b, withIntermediateDirectories: true)
+        let first = try audioFile(a, name: "music.wav")
+        let second = try audioFile(b, name: "music.wav")
+        let show = Show(name: "Concert", cueLists: [CueList(name: "Background Music", cues: [
+            Cue(name: "First", mediaPath: first.path), Cue(name: "Second", mediaPath: second.path)
+        ])])
+        let saved = try ShowProjectPackage.create(show,
+            requestedDocumentURL: dir.appendingPathComponent("Concert.scshow"))
+        let stored = try ShowCodec.decode(contentsOf: saved.documentURL)
+        let paths = stored.cueLists[0].cues.map { $0.audioElements[0].sourcePath }
+        XCTAssertEqual(paths[0], "Audio Files/Background Music/music.wav")
+        XCTAssertEqual(paths[1], "Audio Files/Background Music/music_2.wav")
+    }
+
+    func testDuplicateCueListNamesFailWithoutOverwritingAudio() throws {
+        let dir = try sandbox()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let show = Show(name: "Concert", cueLists: [
+            CueList(name: "Audio"), CueList(name: "audio")
+        ])
+        XCTAssertThrowsError(try ShowProjectPackage.create(show,
+            requestedDocumentURL: dir.appendingPathComponent("Concert.scshow")))
     }
 
     func testNormalizedWAVIsPortableWithItsCueAfterSaveAndRelocation() throws {
