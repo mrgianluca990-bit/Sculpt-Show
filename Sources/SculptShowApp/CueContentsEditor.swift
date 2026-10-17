@@ -10,9 +10,13 @@ struct CueContentsEditor: View {
     let listID: UUID
     @State private var audioChannelCache: [String: Int] = [:]
 
+    @MainActor
     private func audioChannelCount(at path: String) -> Int {
-        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) else { return 2 }
-        return Int(file.processingFormat.channelCount)
+        if let prepared = ShowWaveformCache.shared.channels(at: path) { return prepared }
+        // Header-only fallback for old sessions; never label a mono stem stereo
+        // merely because waveform analysis is not finished.
+        if let file = try? SculptPCMReader(URL(fileURLWithPath: path)) { return file.channels }
+        return 0
     }
 
     var body: some View {
@@ -154,6 +158,7 @@ struct CueContentsEditor: View {
         .onChange(of: cue.elements) { _ in updateChannelCache() }
     }
 
+    @MainActor
     private func updateChannelCache() {
         for element in cue.audioElements where audioChannelCache[element.sourcePath] == nil {
             audioChannelCache[element.sourcePath] = audioChannelCount(at: element.sourcePath)

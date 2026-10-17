@@ -21,6 +21,7 @@ final class ShowStore: ObservableObject {
     private var eventGeneration = UUID()
     private var eventTimestamps: [Date] = []
     private var suppressRuleEvents = false
+    @Published private(set) var pendingAudioImports = 0
 
     init() {
         selectedListID = show.cueLists.first?.id
@@ -100,21 +101,33 @@ final class ShowStore: ObservableObject {
     }
 
     func addAudio(_ urls: [URL], to listID: UUID) {
-        guard !urls.isEmpty else { return }
-        var updated = show
-        let newIDs = updated.addAudio(urls, to: listID)
-        guard !newIDs.isEmpty else { return }
-        // Newly imported audio is still inside a normal, independently timed cue.
-        // Initial duration defaults to the media length where available.
-        for (id, url) in zip(newIDs, urls.filter(\.isFileURL)) {
-            let length = (try? AVAudioPlayer(contentsOf: url))?.duration ?? 5
-            updated.updateCue(id, in: listID) {
-                $0.durationSeconds = max(0.1, length)
-                $0.durationMode = .fixed
+        let files = urls.filter(\.isFileURL)
+        guard !files.isEmpty else { return }
+        pendingAudioImports += 1
+        Task {
+            defer { pendingAudioImports -= 1 }
+            let failed = await ShowWaveformCache.shared.prepare(paths: files.map(\.path))
+            guard failed.isEmpty else {
+                errorMessage = "Audio import cancelled: waveform/PCM analysis failed for " +
+                    failed.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", ")
+                return
             }
+            // Do not display or select new cues until metadata and waveforms exist.
+            guard show.cueLists.contains(where: { $0.id == listID }) else { return }
+            var updated = show
+            let newIDs = updated.addAudio(files, to: listID)
+            guard !newIDs.isEmpty else { return }
+            for (id, url) in zip(newIDs, files) {
+                let length = (try? AVAudioPlayer(contentsOf: url))?.duration ??
+                    ShowWaveformCache.shared.envelopes[url.path]?.duration ?? 5
+                updated.updateCue(id, in: listID) {
+                    $0.durationSeconds = max(0.1, length)
+                    $0.durationMode = .fixed
+                }
+            }
+            commit(updated)
+            select(newIDs[0], in: listID)
         }
-        commit(updated)
-        select(newIDs[0], in: listID)
     }
 
     func addEmptyCue(to listID: UUID) {
@@ -138,20 +151,30 @@ final class ShowStore: ObservableObject {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
-        playback.stop(cueID, notifyRules: false)
-        editCue(cueID, list: listID) { cue in
-            cue.elements.append(contentsOf: panel.urls.map(CueElement.audio))
-        }
+        attachAudioURLs(panel.urls, to: cueID, in: listID, using: playback)
     }
 
     func attachAudioURLs(_ urls: [URL], to cueID: UUID, in listID: UUID,
                          using playback: PlaybackEngine) {
-        guard !urls.isEmpty else { return }
-        var updated = show
-        guard updated.appendAudio(urls, to: cueID) else { return }
-        playback.stop(cueID, notifyRules: false)
-        commit(updated)
-        select(cueID, in: listID)
+        let files = urls.filter(\.isFileURL)
+        guard !files.isEmpty else { return }
+        pendingAudioImports += 1
+        Task {
+            defer { pendingAudioImports -= 1 }
+            let failed = await ShowWaveformCache.shared.prepare(paths: files.map(\.path))
+            guard failed.isEmpty else {
+                errorMessage = "Audio attachment cancelled: cannot analyze " +
+                    failed.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", ")
+                return
+            }
+            guard show.cueLists.contains(where: { $0.id == listID &&
+                $0.cues.contains(where: { $0.id == cueID }) }) else { return }
+            var updated = show
+            guard updated.appendAudio(files, to: cueID) else { return }
+            playback.stop(cueID, notifyRules: false)
+            commit(updated)
+            select(cueID, in: listID)
+        }
     }
 
     // MARK: - Sculpt Show ⇄ Sculpt DAW bridge v1
@@ -268,6 +291,15 @@ final class ShowStore: ObservableObject {
                        outputDirectory: outputDirectory,
                        mode: mode, target: target, peakLimit: peakLimit)
                 }.value
+                // A normalized cue must display a ready waveform on relink.
+                let unreadable = await ShowWaveformCache.shared.prepare(
+                    paths: results.map(\.normalizedPath))
+                guard unreadable.isEmpty else {
+                    for result in results { try? FileManager.default.removeItem(atPath: result.normalizedPath) }
+                    self.errorMessage = "The new normalized WAV cannot be decoded for its waveform. Cue unchanged."
+                    self.normalizingCueID = nil
+                    return
+                }
                 // Do not link a file into a different show or into a changed cue.
                 guard self.documentURL == showID,
                       let current = self.show.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == cueID }),

@@ -45,82 +45,11 @@ enum CueOfflineNormalizer {
         }
     }
 
-    /// Format-neutral, Float32 planar frame reader with an independent seek state.
-    /// WAV PCM uses native Swift; AIFF/other formats use Core Audio only to decode.
-    private enum Reader {
-        case wave(WavePCMReader)
-        case core(CoreAudioDecoder)
-
-        var sampleRate: Double {
-            switch self {
-            case .wave(let r): return r.sampleRate
-            case .core(let r): return r.sampleRate
-            }
-        }
-        var channels: Int {
-            switch self {
-            case .wave(let r): return r.channels
-            case .core(let r): return r.channels
-            }
-        }
-        func next() throws -> [[Float]] {
-            switch self {
-            case .wave(let r): return try r.readFrames()
-            case .core(let r): return try r.next()
-            }
-        }
-    }
-
-    private final class CoreAudioDecoder {
-        let audio: AVAudioFile
-        let buffer: AVAudioPCMBuffer
-        let sampleRate: Double
-        let channels: Int
-
-        init(_ url: URL) throws {
-            let reader = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
-            let format = reader.processingFormat
-            guard (1...2).contains(Int(format.channelCount)),
-                  format.commonFormat == .pcmFormatFloat32, !format.isInterleaved,
-                  format.sampleRate.isFinite, (8000...384000).contains(format.sampleRate),
-                  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192) else {
-                throw Failure.unsupported(url.lastPathComponent)
-            }
-            self.audio = reader
-            self.buffer = buffer
-            self.sampleRate = format.sampleRate
-            self.channels = Int(format.channelCount)
-        }
-        func next() throws -> [[Float]] {
-            try audio.read(into: buffer, frameCount: 8192)
-            let count = Int(buffer.frameLength)
-            guard count > 0 else { return Array(repeating: [], count: channels) }
-            guard let channelsData = buffer.floatChannelData else {
-                throw Failure.unsupported(audio.url.lastPathComponent)
-            }
-            return (0..<channels).map { ch in Array(UnsafeBufferPointer(start: channelsData[ch], count: count)) }
-        }
-    }
-
-    private static func makeReader(_ url: URL, name: String) throws -> Reader {
-        let ext = url.pathExtension.lowercased()
-        if ["wav", "wave", "bwf"].contains(ext) {
-            do { return .wave(try WavePCMReader(url: url)) }
-            catch {
-                // Real-world stereo WAVs may be RF64, WAVE64, compressed RIFF,
-                // contain nonstandard metadata, or use valid PCM layouts that
-                // the strict Swift parser does not recognize. Ask Core Audio
-                // to decode as a second path; retain BOTH errors if it fails.
-                let directError = explain(error)
-                do { return .core(try CoreAudioDecoder(url)) }
-                catch {
-                    throw Failure.operation(name, "decoding source WAV",
-                        "Direct PCM: \(directError); Core Audio: \(explain(error))")
-                }
-            }
-        }
-        do { return .core(try CoreAudioDecoder(url)) }
-        catch { throw Failure.operation(name, "decoding source audio", explain(error)) }
+    // Native WAV + Extended Audio File decoder, shared with waveform preflight.
+    // ExtAudioFileRead bypasses the AVAudioFile.read GenericObjCError on some media.
+    private static func makeReader(_ url: URL, name: String) throws -> SculptPCMReader {
+        do { return try SculptPCMReader(url) }
+        catch { throw Failure.operation(name, "opening source audio", explain(error)) }
     }
 
     private static func explain(_ error: Error) -> String {

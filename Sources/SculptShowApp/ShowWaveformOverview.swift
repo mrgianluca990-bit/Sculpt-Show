@@ -4,51 +4,70 @@ import SculptShowCore
 
 /// Reduced-resolution sample peaks, computed off the main thread. Original
 /// audio is never modified. Mono/stereo files have independent channel lanes.
-private struct ShowWaveformEnvelope {
+struct ShowWaveformEnvelope: Sendable {
     let duration: Double
     let peaks: [[Float]]
 }
 
 private enum ShowWaveformDecoder {
     static func scan(_ path: String, bins: Int = 1800) -> ShowWaveformEnvelope? {
-        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: path)),
-              file.processingFormat.commonFormat == .pcmFormatFloat32,
-              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 8192),
-              file.processingFormat.sampleRate > 0, file.length > 0 else { return nil }
-        let channels = min(2, Int(file.processingFormat.channelCount))
-        guard channels > 0 else { return nil }
-        let totalFrames = file.length
-        let slotCount = max(64, bins)
-        var output = [[Float]](repeating: [Float](repeating: 0, count: slotCount), count: channels)
-        var seen: AVAudioFramePosition = 0
+        guard let source = try? SculptPCMReader(URL(fileURLWithPath: path)),
+              source.sampleRate > 0, source.frameCount > 0 else { return nil }
+        let count = max(64, bins)
+        let total = Double(source.frameCount)
+        var output = [[Float]](repeating: [Float](repeating: 0, count: count),
+                               count: source.channels)
+        var seen: Int64 = 0
         do {
-            while seen < totalFrames {
-                try file.read(into: buffer, frameCount: AVAudioFrameCount(min(Int64(8192), totalFrames - seen)))
-                let n = Int(buffer.frameLength)
-                guard n > 0, let samples = buffer.floatChannelData else { break }
-                for frame in 0..<n {
-                    let bin = min(slotCount - 1, Int((Double(seen) + Double(frame)) / Double(totalFrames) * Double(slotCount)))
-                    for channel in 0..<channels {
-                        let value = abs(samples[channel][frame])
+            while true {
+                let pcm = try source.next()
+                guard let first = pcm.first, !first.isEmpty else { break }
+                for frame in 0..<first.count {
+                    let bin = min(count - 1, max(0,
+                        Int(((Double(seen) + Double(frame)) / total) * Double(count))))
+                    for channel in 0..<source.channels {
+                        let value = abs(pcm[channel][frame])
                         if value.isFinite { output[channel][bin] = max(output[channel][bin], value) }
                     }
                 }
-                seen += AVAudioFramePosition(n)
+                seen += Int64(first.count)
             }
         } catch { return nil }
-        return ShowWaveformEnvelope(duration: Double(totalFrames) / file.processingFormat.sampleRate,
+        guard seen > 0 else { return nil }
+        return ShowWaveformEnvelope(duration: Double(seen) / source.sampleRate,
                                     peaks: output)
     }
 }
 
-/// Shared cache ensures that switching cues, resizing the dock and the Inspector
-/// don't continually decode the same files. No disk caches, no audio graph calls.
+/// Preflight before importing: commit a cue only when its waveforms are ready.
+/// Previously waveform requests ran after the cue was displayed, requiring
+/// users to switch cue to force a refreshed waveform/channel layout.
 @MainActor
-private final class ShowWaveformCache: ObservableObject {
+final class ShowWaveformCache: ObservableObject {
     static let shared = ShowWaveformCache()
     @Published private(set) var envelopes: [String: ShowWaveformEnvelope] = [:]
     @Published private(set) var failed: Set<String> = []
     private var pending: Set<String> = []
+
+    func channels(at path: String) -> Int? { envelopes[path]?.peaks.count }
+
+    func prepare(paths: [String]) async -> [String] {
+        let unique = Array(Set(paths))
+        let todo = unique.filter { envelopes[$0] == nil }
+        guard !todo.isEmpty else { return [] }
+        let scans = await Task.detached(priority: .userInitiated) {
+            todo.map { ($0, ShowWaveformDecoder.scan($0)) }
+        }.value
+        for (path, envelope) in scans {
+            if let envelope {
+                envelopes[path] = envelope
+                failed.remove(path)
+            } else {
+                failed.insert(path)
+            }
+        }
+        return unique.filter { envelopes[$0] == nil }
+    }
 
     func request(_ path: String) {
         guard !pending.contains(path), envelopes[path] == nil, !failed.contains(path) else { return }

@@ -734,6 +734,10 @@ struct WorkspaceView: View {
             Text("\(store.show.cueLists.count) CUE LISTS")
             Text("•")
             Text("\(store.show.cueLists.reduce(0) { $0 + $1.cues.count }) CUES")
+            if store.pendingAudioImports > 0 {
+                ProgressView().controlSize(.mini)
+                Text("ANALYZING AUDIO IMPORT…")
+            }
             Spacer()
             Text("SCULPT SHOW 0.18.2")
         }
