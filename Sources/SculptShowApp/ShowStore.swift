@@ -172,6 +172,15 @@ final class ShowStore: ObservableObject {
         commit(updated)
     }
 
+    /// Save one Undo step for a whole list's VCA-style trim, not every cue gain.
+    func setCueListTrim(_ id: UUID, decibels: Double) {
+        guard decibels.isFinite,
+              let index = show.cueLists.firstIndex(where: { $0.id == id }) else { return }
+        var updated = show
+        updated.cueLists[index].trimDB = max(-60, min(6, decibels))
+        commit(updated)
+    }
+
     func importAudio(to listID: UUID) {
         let panel = NSOpenPanel()
         panel.message = "Import audio as new cue containers"
@@ -253,18 +262,15 @@ final class ShowStore: ObservableObject {
             guard show.cueLists.contains(where: { $0.id == listID &&
                 $0.cues.contains(where: { $0.id == cueID }) }) else { return }
             var updated = show
-            // Empty cue containers inherit the real imported media length.
-            // For multiple stems, use the longest source. Existing non-empty
-            // cues retain their manually configured timing.
-            let wasEmpty = updated.cue(cueID)?.audioElements.isEmpty == true
+            // A newly attached stem can extend the cue, even when it already
+            // contains audio. Never shorten a manually configured duration.
+            let previousLength = updated.cue(cueID)?.durationSeconds ?? 0
             guard updated.appendAudio(files, to: cueID) else { return }
-            if wasEmpty {
-                let longest = files.compactMap { ShowWaveformCache.shared.envelopes[$0.path]?.duration }.max()
-                if let longest, longest.isFinite, longest > 0 {
-                    updated.updateCue(cueID, in: listID) {
-                        $0.durationSeconds = max(0.1, longest)
-                        $0.durationMode = .fixed
-                    }
+            let longest = files.compactMap { ShowWaveformCache.shared.envelopes[$0.path]?.duration }.max()
+            if let longest, longest.isFinite, longest > previousLength {
+                updated.updateCue(cueID, in: listID) {
+                    $0.durationSeconds = max(0.1, longest)
+                    $0.durationMode = .fixed
                 }
             }
             playback.stop(cueID, notifyRules: false)

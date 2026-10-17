@@ -10,7 +10,10 @@ struct ShowWaveformEnvelope: Sendable {
 }
 
 private enum ShowWaveformDecoder {
-    static func scan(_ path: String, bins: Int = 1800) -> ShowWaveformEnvelope? {
+    // Increased temporal resolution: on a 4-minute cue 16k bins provide
+    // approximately 15ms peak windows, compared to ~133ms at 1800 bins.
+    // The canvas below aggregates peaks per screen pixel to keep UI responsive.
+    static func scan(_ path: String, bins: Int = 16000) -> ShowWaveformEnvelope? {
         guard let source = try? SculptPCMReader(URL(fileURLWithPath: path)),
               source.sampleRate > 0, source.frameCount > 0 else { return nil }
         let count = max(64, bins)
@@ -37,6 +40,55 @@ private enum ShowWaveformDecoder {
         return ShowWaveformEnvelope(duration: Double(seen) / source.sampleRate,
                                     peaks: output)
     }
+
+    /// Detect attacks at approximately 5ms hop size directly from PCM;
+    /// never infer transients from a screen-resolution waveform.
+    static func transients(_ path: String) -> [Double] {
+        guard let reader = try? SculptPCMReader(URL(fileURLWithPath: path)),
+              reader.sampleRate > 0, reader.frameCount > 0 else { return [] }
+        let hop = max(48, Int(reader.sampleRate * 0.005))
+        var peaks: [Float] = []
+        var framesInHop = 0
+        var peak: Float = 0
+        var globalPeak: Float = 0
+        do {
+            while true {
+                let channels = try reader.next()
+                guard let first = channels.first, !first.isEmpty else { break }
+                for i in first.indices {
+                    var amplitude: Float = 0
+                    for ch in channels {
+                        amplitude = max(amplitude, abs(ch[i]))
+                    }
+                    if amplitude.isFinite { peak = max(peak, amplitude) }
+                    framesInHop += 1
+                    if framesInHop == hop {
+                        peaks.append(peak)
+                        globalPeak = max(globalPeak, peak)
+                        peak = 0
+                        framesInHop = 0
+                    }
+                }
+            }
+        } catch { return [] }
+        guard globalPeak > 0.0001 else { return [] }
+        let threshold = max(0.006, globalPeak * 0.065)
+        var baseline: Float = 0
+        var attacks: [Double] = []
+        var lastHit = -1.0
+        for (index, samplePeak) in peaks.enumerated() {
+            let seconds = Double(index * hop) / reader.sampleRate
+            if samplePeak >= threshold,
+               samplePeak > baseline * 1.55,
+               samplePeak - baseline > max(0.004, globalPeak * 0.025),
+               seconds - lastHit >= 0.045 {
+                attacks.append(seconds)
+                lastHit = seconds
+            }
+            baseline = baseline * 0.88 + samplePeak * 0.12
+        }
+        return attacks
+    }
 }
 
 /// Preflight before importing: commit a cue only when its waveforms are ready.
@@ -48,6 +100,21 @@ final class ShowWaveformCache: ObservableObject {
     @Published private(set) var envelopes: [String: ShowWaveformEnvelope] = [:]
     @Published private(set) var failed: Set<String> = []
     private var pending: Set<String> = []
+    private var transientCache: [String: [Double]] = [:]
+    /// Clicking a waveform stem selects the track that Tab follows.
+    var focusedTransientPath: String?
+
+    func nextTransient(in cue: Cue, after seconds: Double) async -> Double? {
+        let paths = cue.audioElements.map(\.sourcePath)
+        guard let path = (focusedTransientPath.flatMap { paths.contains($0) ? $0 : nil }) ?? paths.first else { return nil }
+        if transientCache[path] == nil {
+            let hits = await Task.detached(priority: .userInitiated) {
+                ShowWaveformDecoder.transients(path)
+            }.value
+            transientCache[path] = hits
+        }
+        return transientCache[path]?.first(where: { $0 > seconds + 0.002 })
+    }
 
     func channels(at path: String) -> Int? { envelopes[path]?.peaks.count }
 
@@ -144,7 +211,7 @@ struct ShowWaveformOverview: View {
                 .disabled(store.isLoadingProject || store.pendingAudioImports > 0)
                 .help("Import audio into the selected cue, or create a new cue if none is selected")
                 Button("FIT") { zoom = 1 }.controlSize(.small).help("Zoom to full cue")
-                Slider(value: $zoom, in: 1...12, step: 1).frame(width: 95)
+                Slider(value: $zoom, in: 1...64, step: 1).frame(width: 95)
                 Text("\(Int(zoom))×").font(.system(size: 10, design: .monospaced))
                 Picker("SNAP", selection: $snap) {
                     Text("1 ms").tag(0.001)
@@ -160,6 +227,9 @@ struct ShowWaveformOverview: View {
                     CuePlayFromEditor(cue: cue)
                         .environmentObject(playback)
                     Spacer(minLength: 3)
+                    Text("TAB → TRANSIENT")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
                     Button("+ MARK") {
                         let current = playback.snapshots[cue.id]?.elapsed ?? playback.cuePlayCursor(cue.id)
                         addMarker(cue, listID: listID, at: min(timelineDuration(cue), current))
@@ -447,6 +517,8 @@ private struct WaveformStemLane: View {
                     let seconds = MarkerTimelineGeometry.clampedTime(
                         x: Double(tap.location.x), width: Double(geometry.size.width),
                         duration: duration, snap: snap)
+                    // Tab-to-Transient follows the last clicked stem.
+                    ShowWaveformCache.shared.focusedTransientPath = element.sourcePath
                     // A click locates the local audition cursor even if no cue
                     // is currently playing. The real SHOW GO ignores it.
                     playback.setCuePlayCursor(cue.id, to: seconds)
@@ -462,7 +534,7 @@ private struct WaveformStemLane: View {
     }
 }
 
-/// The expensive 1800-bin PCM strokes are isolated from playhead updates.
+/// Cached PCM peak strokes are isolated from playhead updates.
 /// SwiftUI compares only stable file identity and cue duration; audio buffers
 /// stay cached separately. Zoom/resize still redraw because geometry changes.
 private struct StaticWaveformDrawing: View, Equatable {
@@ -473,7 +545,8 @@ private struct StaticWaveformDrawing: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.path == rhs.path && lhs.duration == rhs.duration &&
         lhs.envelope.duration == rhs.envelope.duration &&
-        lhs.envelope.peaks.count == rhs.envelope.peaks.count
+        lhs.envelope.peaks.count == rhs.envelope.peaks.count &&
+        lhs.envelope.peaks.first?.count == rhs.envelope.peaks.first?.count
     }
 
     var body: some View {
@@ -485,11 +558,22 @@ private struct StaticWaveformDrawing: View, Equatable {
                 let midY = CGFloat(channel) * channelHeight + channelHeight / 2
                 let height = channelHeight * 0.45
                 var line = Path()
-                for (index, peak) in peaks.enumerated() {
-                    let seconds = Double(index) / Double(max(1, peaks.count)) * envelope.duration
-                    if seconds > duration { break }
+                // Aggregate all peaks represented by one screen pixel: at FIT
+                // this draws ~one stroke per pixel, not 16k strokes per track.
+                let maxX = max(1, Int(size.width))
+                let used = min(peaks.count,
+                    Int(ceil(Double(peaks.count) * min(duration, envelope.duration) / envelope.duration)))
+                let columns = min(maxX, max(1, used))
+                for column in 0..<columns {
+                    let start = column * used / columns
+                    let end = max(start + 1, (column + 1) * used / columns)
+                    var top: Float = 0
+                    if start < peaks.count {
+                        for k in start..<min(end, peaks.count) { top = max(top, peaks[k]) }
+                    }
+                    let seconds = Double(column) / Double(columns) * min(duration, envelope.duration)
                     let x = size.width * CGFloat(seconds / duration)
-                    let strength = min(CGFloat(peak), 1) * height
+                    let strength = min(CGFloat(top), 1) * height
                     line.move(to: CGPoint(x: x, y: midY - strength))
                     line.addLine(to: CGPoint(x: x, y: midY + strength))
                 }

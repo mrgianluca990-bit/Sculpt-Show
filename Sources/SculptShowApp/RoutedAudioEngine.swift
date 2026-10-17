@@ -58,6 +58,16 @@ final class RoutedAudioEngine {
     private var engine: AVAudioEngine?
     private var matrix: AVAudioUnit?
     private var voices: [Voice] = []
+    /// Cache open AVAudioFile descriptors by stem identity to avoid 64 file
+    /// opens on every marker seek (and to preserve native resampling metadata).
+    private var fileCache: [UUID: (path: String, file: AVAudioFile)] = [:]
+
+    private func preparedFile(for stem: CueElement) throws -> AVAudioFile {
+        if let entry = fileCache[stem.id], entry.path == stem.sourcePath { return entry.file }
+        let opened = try AVAudioFile(forReading: URL(fileURLWithPath: stem.sourcePath))
+        fileCache[stem.id] = (stem.sourcePath, opened)
+        return opened
+    }
     private(set) var selectedDevice: OutputDevice?
     private var cueToVoices: [UUID: [Int]] = [:]
     /// Exactly one SMPTE LTC transport can own the dedicated matrix input.
@@ -336,6 +346,7 @@ final class RoutedAudioEngine {
         for voice in voices { voice.node.stop() }
         engine?.stop()
         voices = []
+        fileCache.removeAll()
         cueToVoices.removeAll()
         matrix = nil
         engine = nil
@@ -375,7 +386,7 @@ final class RoutedAudioEngine {
         }
         if let output = ltcOutput, ltcOwner != cue.id {
             for stem in cue.alignedAudioElements {
-                let f = try AVAudioFile(forReading: URL(fileURLWithPath: stem.sourcePath))
+                let f = try preparedFile(for: stem)
                 if stem.outputStartChannel == output || (f.processingFormat.channelCount == 2 && stem.outputStartChannel + 1 == output) {
                     throw RoutingError.ltcConflict("OUT \(output) is reserved for active LTC. Choose another audio output.")
                 }
@@ -385,7 +396,7 @@ final class RoutedAudioEngine {
         stop(cue.id)
         var files: [(CueElement, AVAudioFile)] = []
         for stem in cue.alignedAudioElements {
-            let f = try AVAudioFile(forReading: URL(fileURLWithPath: stem.sourcePath))
+            let f = try preparedFile(for: stem)
             let count = Int(f.processingFormat.channelCount)
             guard count == 1 || count == 2 else { throw RoutingError.unsupportedSource(stem.name, count) }
             guard AudioRoutePlan.crosspoints(firstOutput: stem.outputStartChannel,

@@ -193,6 +193,7 @@ struct WorkspaceView: View {
         .onDeleteCommand(perform: deleteSelectedCue)
         .onAppear {
             installKeyboardShortcuts()
+            playback.applyCueListTrims(store.show)
             Task { @MainActor in await playback.startRoutingAutomatically() }
             midi.onCommand = { [weak store, weak playback] command in
                 guard let store, let playback else { return }
@@ -225,6 +226,9 @@ struct WorkspaceView: View {
                 store.didStopCue(id)
                 store.handleRuleEvent(.stopping, source: id, using: playback)
             }
+        }
+        .onChange(of: store.show) { next in
+            playback.applyCueListTrims(next)
         }
         .onDisappear {
             if let keyboardMonitor {
@@ -281,6 +285,19 @@ struct WorkspaceView: View {
             switch event.keyCode {
             case 49: // Space = GO. Never fire multiple GO on key repeat.
                 if !event.isARepeat { self.store.fireSelected(using: self.playback) }
+                return nil
+            case 48: // Tab to transient when waveform editor is visible.
+                guard self.showingWaveforms,
+                      let cue = self.store.selectedCue, cue.hasAudio else { return event }
+                if !event.isARepeat {
+                    let from = self.playback.cuePlayCursor(cue.id)
+                    Task { @MainActor in
+                        if let seconds = await ShowWaveformCache.shared.nextTransient(in: cue, after: from),
+                           self.store.selectedCueID == cue.id {
+                            self.playback.setCuePlayCursor(cue.id, to: seconds)
+                        }
+                    }
+                }
                 return nil
             case 53: // Escape = STOP ALL
                 self.store.stopAll(using: self.playback)
@@ -849,6 +866,7 @@ private struct CueListPanel: View {
     @EnvironmentObject private var playback: PlaybackEngine
     @State private var editingRules = false
     @State private var showingListOptions = false
+    @State private var trimDraft: Double = 0
     @State private var showingBulkFade = false
     @State private var bulkFadeDraft = "5"
     @State private var panelWidth: Double = 418
@@ -877,6 +895,7 @@ private struct CueListPanel: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(Skin.soft)
                 Button {
+                    trimDraft = list.trimDB
                     showingListOptions.toggle()
                 } label: {
                     Label("MENU", systemImage: "ellipsis.circle.fill")
@@ -893,6 +912,30 @@ private struct CueListPanel: View {
                             showingListOptions = false
                             editingRules = true
                         }
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack {
+                                Text("LIST TRIM (VCA)")
+                                Spacer()
+                                Text(String(format: "%+.1f dB", trimDraft))
+                                    .monospacedDigit()
+                            }
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            Slider(value: $trimDraft, in: -60...6, step: 0.5,
+                                   onEditingChanged: { editing in
+                                if !editing { store.setCueListTrim(list.id, decibels: trimDraft) }
+                            })
+                            .onChange(of: trimDraft) { level in
+                                playback.previewCueListTrim(list, db: level)
+                            }
+                            .help("Live gain trim on all cues in this list; does not move individual cue gains")
+                            Button("RESET TRIM 0 dB") {
+                                trimDraft = 0
+                                store.setCueListTrim(list.id, decibels: 0)
+                            }
+                            .font(.system(size: 10, design: .monospaced))
+                        }
+                        .frame(width: 265)
+                        Divider()
                         Button("SET FADE OUT FOR ALL CUES…") {
                             showingListOptions = false
                             bulkFadeDraft = "5"
@@ -923,6 +966,7 @@ private struct CueListPanel: View {
                     }
                     .padding(14)
                     .frame(minWidth: 190)
+                    .onDisappear { playback.applyCueListTrims(store.show) }
                 }
             }
             .padding(14)

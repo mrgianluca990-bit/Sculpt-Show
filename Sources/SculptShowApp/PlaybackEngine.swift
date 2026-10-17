@@ -112,6 +112,33 @@ final class PlaybackEngine: ObservableObject {
     private var pendingDeadlines: [UUID: Date] = [:]
     private var fadeTokens: [UUID: UUID] = [:]
     private var dimFactors: [UUID: Float] = [:]
+    /// Per-cue gain trim inherited from the parent Cue List (VCA-style).
+    private var listTrimFactors: [UUID: Float] = [:]
+
+    private func trimFactor(_ id: UUID) -> Float { listTrimFactors[id] ?? 1 }
+
+    /// Keeps VCA trim live without changing stored individual cue faders.
+    func applyCueListTrims(_ show: Show) {
+        var next: [UUID: Float] = [:]
+        for list in show.cueLists {
+            let db = list.trimDB.isFinite ? max(-60, min(6, list.trimDB)) : 0
+            let factor = Float(pow(10.0, db / 20.0))
+            for cue in list.cues { next[cue.id] = factor }
+        }
+        let changed = activeCues.keys.filter { abs((next[$0] ?? 1) - trimFactor($0)) > 0.00001 }
+        listTrimFactors = next
+        for id in changed { refreshAudio(for: id, elapsed: cueElapsed(id)) }
+    }
+
+    /// Transient slider preview changes only live gain; Commit stores one Undo step.
+    func previewCueListTrim(_ list: CueList, db: Double) {
+        guard db.isFinite else { return }
+        let factor = Float(pow(10.0, max(-60, min(6, db)) / 20.0))
+        for cue in list.cues {
+            listTrimFactors[cue.id] = factor
+            if activeCues[cue.id] != nil { refreshAudio(for: cue.id, elapsed: cueElapsed(cue.id)) }
+        }
+    }
     private var durationCache: [String: Double] = [:]
     private var updateTimer: Timer?
     // Optional engine: does not run unless the operator enables hardware routing.
@@ -413,6 +440,10 @@ final class PlaybackEngine: ObservableObject {
             let position = min(max(0, requestedPosition), max(0, length - 0.001))
             let lead = try routedAudio.start(cue, from: position,
                 fade: cue.fadeInSeconds > 0 ? 0 : 1)
+            // Apply list trim before the scheduled first audible frame.
+            routedAudio.updateMix(cue,
+                fadeFactor: cue.fadeInSeconds > 0 ? 0 : 1,
+                dimFactor: (dimFactors[cue.id] ?? 1) * trimFactor(cue.id))
             routedCues.insert(cue.id)
             activeCues[cue.id] = cue
             tracks[cue.id] = []
@@ -476,7 +507,7 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func playerGain(_ id: UUID) -> Float {
-        Float(activeCues[id]?.gain ?? 1) * (dimFactors[id] ?? 1)
+        Float(activeCues[id]?.gain ?? 1) * (dimFactors[id] ?? 1) * trimFactor(id)
     }
 
     /// Combine the cue-level gain and dim with this element's individual fader/mute.
@@ -590,7 +621,7 @@ final class PlaybackEngine: ObservableObject {
                 fadeOutFactor = Float(max(0, 1 - elapsedFade / max(0.001, data.seconds)))
             }
             routedAudio.updateMix(cue, fadeFactor: fadeInFactor * fadeOutFactor,
-                                  dimFactor: dimFactors[id] ?? 1)
+                                  dimFactor: (dimFactors[id] ?? 1) * trimFactor(id))
             return
         }
         guard var list = tracks[id], let cue = activeCues[id] else { return }
@@ -749,10 +780,12 @@ final class PlaybackEngine: ObservableObject {
         lastMarkerPosition[id] = position
         snapshots[id]?.elapsed = position
         if state.phase == .playing {
-            // A marker jump is an immediate transport move, not a new GO.
-            // Avoid the 220ms host scheduling pre-roll used for fresh cues.
+            // Every stem must be armed BEFORE the same future hardware
+            // timestamp. Zero lead creates drift at 48-64 active voices.
+            let count = activeCues[id]?.alignedAudioElements.count ?? 0
+            let lead: Double = count >= 48 ? 0.52 : (count >= 24 ? 0.34 : 0.12)
             armAudio(for: id, from: position,
-                     leadOverride: routedCues.contains(id) ? 0 : nil)
+                     leadOverride: routedCues.contains(id) ? lead : nil)
         } else {
             if routedCues.contains(id) { routedAudio.stop(id) }
             for track in tracks[id] ?? [] { track.player.stop() }
