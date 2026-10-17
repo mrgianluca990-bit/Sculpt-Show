@@ -168,6 +168,27 @@ struct WorkspaceView: View {
             statusBar
         }
         .background(Skin.base)
+        .overlay {
+            if store.isLoadingProject {
+                ZStack {
+                    Skin.base.opacity(0.95)
+                    VStack(spacing: 15) {
+                        ProgressView().controlSize(.large)
+                        Text("PREPARAZIONE PROGETTO")
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
+                        Text("Analisi file audio, canali mono/stereo e forme d’onda…")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Text("Il progetto verrà visualizzato quando gli audio saranno pronti.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(28)
+                    .background(Skin.panel, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
         .onDeleteCommand(perform: deleteSelectedCue)
         .onAppear {
             Task { @MainActor in await playback.startRoutingAutomatically() }

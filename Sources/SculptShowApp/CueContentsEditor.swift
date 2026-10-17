@@ -39,6 +39,18 @@ struct CueContentsEditor: View {
                         Image(systemName: element.kind == .audio ? "waveform" : "clock.arrow.circlepath")
                         Text(element.name).lineLimit(1)
                         Spacer()
+                        if element.kind == .audio && cue.audioElements.count > 1 {
+                            Button {
+                                store.moveAudioStem(element.id, in: cue.id, listID: listID, by: -1)
+                            } label: { Image(systemName: "arrow.up") }
+                            .disabled(cue.audioElements.first?.id == element.id)
+                            .help("Move stem up")
+                            Button {
+                                store.moveAudioStem(element.id, in: cue.id, listID: listID, by: 1)
+                            } label: { Image(systemName: "arrow.down") }
+                            .disabled(cue.audioElements.last?.id == element.id)
+                            .help("Move stem down")
+                        }
                         Button(role: .destructive) {
                             store.removeElement(element.id, from: cue.id, in: listID, using: playback)
                         } label: { Image(systemName: "xmark.circle.fill") }

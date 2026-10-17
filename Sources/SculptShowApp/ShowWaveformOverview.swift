@@ -104,6 +104,19 @@ struct ShowWaveformOverview: View {
                         .font(.system(size: 11, design: .monospaced))
                 }
                 Spacer(minLength: 3)
+                Button {
+                    guard let listID = store.selectedListID else { return }
+                    if let cueID = store.selectedCueID {
+                        store.attachAudio(to: cueID, in: listID, using: playback)
+                    } else {
+                        store.importAudio(to: listID)
+                    }
+                } label: {
+                    Label("IMPORT", systemImage: "square.and.arrow.down")
+                }
+                .controlSize(.small)
+                .disabled(store.isLoadingProject || store.pendingAudioImports > 0)
+                .help("Import audio into the selected cue, or create a new cue if none is selected")
                 Button("FIT") { zoom = 1 }.controlSize(.small).help("Zoom to full cue")
                 Slider(value: $zoom, in: 1...12, step: 1).frame(width: 95)
                 Text("\(Int(zoom))×").font(.system(size: 10, design: .monospaced))
@@ -316,6 +329,7 @@ private struct MarkerWaveformRuler: View {
 }
 
 private struct WaveformStemLane: View {
+    @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var playback: PlaybackEngine
     let cue: Cue
     let element: CueElement
@@ -333,9 +347,30 @@ private struct WaveformStemLane: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(element.name).font(.system(size: 10, weight: .bold))
                     .lineLimit(1)
-                Text("OUT \(element.outputStartChannel)" +
-                     ((envelope?.peaks.count ?? 1) > 1 ? "/\(element.outputStartChannel + 1)" : ""))
-                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                HStack(spacing: 3) {
+                    Text("OUT \(element.outputStartChannel)" +
+                         ((envelope?.peaks.count ?? 1) > 1 ? "/\(element.outputStartChannel + 1)" : ""))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 2)
+                    if cue.audioElements.count > 1 {
+                        Button {
+                            store.moveAudioStem(element.id, in: cue.id, listID: listID, by: -1)
+                        } label: {
+                            Image(systemName: "chevron.up")
+                        }
+                        .disabled(cue.audioElements.first?.id == element.id)
+                        .help("Move stem up")
+                        Button {
+                            store.moveAudioStem(element.id, in: cue.id, listID: listID, by: 1)
+                        } label: {
+                            Image(systemName: "chevron.down")
+                        }
+                        .disabled(cue.audioElements.last?.id == element.id)
+                        .help("Move stem down")
+                    }
+                }
+                .buttonStyle(.plain)
             }
             .frame(width: 135, alignment: .leading)
             GeometryReader { geometry in

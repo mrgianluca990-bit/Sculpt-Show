@@ -22,6 +22,9 @@ final class ShowStore: ObservableObject {
     private var eventTimestamps: [Date] = []
     private var suppressRuleEvents = false
     @Published private(set) var pendingAudioImports = 0
+    /// The previous Show stays visible until every existing stem has been scanned.
+    @Published private(set) var isLoadingProject = false
+    private var showOpenGeneration = UUID()
 
     init() {
         selectedListID = show.cueLists.first?.id
@@ -45,7 +48,8 @@ final class ShowStore: ObservableObject {
 
     @discardableResult
     func newShow() -> Bool {
-        guard confirmDiscard() else { return false }
+        guard !isLoadingProject, confirmDiscard() else { return false }
+        showOpenGeneration = UUID()
         cancelPendingRules()
         playingLists.removeAll()
         show = Show()
@@ -170,10 +174,38 @@ final class ShowStore: ObservableObject {
             guard show.cueLists.contains(where: { $0.id == listID &&
                 $0.cues.contains(where: { $0.id == cueID }) }) else { return }
             var updated = show
+            // Empty cue containers inherit the real imported media length.
+            // For multiple stems, use the longest source. Existing non-empty
+            // cues retain their manually configured timing.
+            let wasEmpty = updated.cue(cueID)?.audioElements.isEmpty == true
             guard updated.appendAudio(files, to: cueID) else { return }
+            if wasEmpty {
+                let longest = files.compactMap { ShowWaveformCache.shared.envelopes[$0.path]?.duration }.max()
+                if let longest, longest.isFinite, longest > 0 {
+                    updated.updateCue(cueID, in: listID) {
+                        $0.durationSeconds = max(0.1, longest)
+                        $0.durationMode = .fixed
+                    }
+                }
+            }
             playback.stop(cueID, notifyRules: false)
             commit(updated)
             select(cueID, in: listID)
+        }
+    }
+
+    /// Rearrange audio stems only. LTC and other non-audio elements retain
+    /// their positions, and cue/element identities and routing stay unchanged.
+    func moveAudioStem(_ elementID: UUID, in cueID: UUID, listID: UUID, by direction: Int) {
+        guard direction == -1 || direction == 1,
+              let cue = show.cue(cueID) else { return }
+        let positions = cue.elements.indices.filter { cue.elements[$0].kind == .audio }
+        guard let position = positions.firstIndex(where: { cue.elements[$0].id == elementID }),
+              positions.indices.contains(position + direction) else { return }
+        let sourceIndex = positions[position]
+        let targetIndex = positions[position + direction]
+        editCue(cueID, list: listID) { item in
+            item.elements.swapAt(sourceIndex, targetIndex)
         }
     }
 
@@ -866,6 +898,7 @@ final class ShowStore: ObservableObject {
     /// directly in Finder. The same decoder and unsaved-changes guard apply.
     @discardableResult
     func openShow(at url: URL) -> Bool {
+        guard !isLoadingProject else { return false }
         guard url.isFileURL, url.pathExtension.lowercased() == "scshow" else {
             errorMessage = "Only Sculpt Show .scshow documents can be opened."
             return false
@@ -874,15 +907,32 @@ final class ShowStore: ObservableObject {
             let decoded = try ShowCodec.decode(contentsOf: url)
             let next = try ShowProjectPackage.resolve(decoded, documentURL: url)
             guard confirmDiscard() else { return false }
-            cancelPendingRules()
-            playingLists.removeAll()
-            show = next
-            documentURL = url
-            selectedListID = next.cueLists.first?.id
-            selectedCueID = next.cueLists.first?.cues.first(where: { $0.enabled })?.id
-            dirty = false
+            let generation = UUID()
+            showOpenGeneration = generation
+            isLoadingProject = true
+            // Full media preflight BEFORE publishing next Show. This prevents
+            // existing mono stems appearing as stereo and stale waveform views.
+            let allPaths = next.cueLists.flatMap { list in
+                list.cues.flatMap { cue in cue.audioElements.map(\.sourcePath) }
+            }
+            Task { @MainActor in
+                let unreadable = await ShowWaveformCache.shared.prepare(paths: allPaths)
+                guard showOpenGeneration == generation else { return }
+                cancelPendingRules()
+                playingLists.removeAll()
+                show = next
+                documentURL = url
+                selectedListID = next.cueLists.first?.id
+                selectedCueID = next.cueLists.first?.cues.first(where: { $0.enabled })?.id
+                dirty = false
+                isLoadingProject = false
+                if !unreadable.isEmpty {
+                    errorMessage = "Show opened, but \(unreadable.count) audio file(s) could not be analyzed. Check missing media or unsupported formats in the cue Inspector."
+                }
+            }
             return true
         } catch {
+            isLoadingProject = false
             errorMessage = "Unable to open show: \(error.localizedDescription)"
             return false
         }
