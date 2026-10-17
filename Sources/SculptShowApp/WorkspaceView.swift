@@ -154,6 +154,7 @@ struct WorkspaceView: View {
     @AppStorage("SculptShow.InspectorWidth.v1") private var inspectorWidth: Double = 346
     @State private var inspectorResizeStart: Double?
     @State private var expandedInspectorSections: Set<String> = []
+    @State private var keyboardMonitor: Any?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -191,6 +192,7 @@ struct WorkspaceView: View {
         }
         .onDeleteCommand(perform: deleteSelectedCue)
         .onAppear {
+            installKeyboardShortcuts()
             Task { @MainActor in await playback.startRoutingAutomatically() }
             midi.onCommand = { [weak store, weak playback] command in
                 guard let store, let playback else { return }
@@ -224,6 +226,12 @@ struct WorkspaceView: View {
                 store.handleRuleEvent(.stopping, source: id, using: playback)
             }
         }
+        .onDisappear {
+            if let keyboardMonitor {
+                NSEvent.removeMonitor(keyboardMonitor)
+                self.keyboardMonitor = nil
+            }
+        }
         .sheet(item: $normalizeSelection) { selection in
             CueNormalizationView(cueID: selection.cueID, listID: selection.listID)
                 .environmentObject(store)
@@ -237,16 +245,66 @@ struct WorkspaceView: View {
         .sheet(item: $rulesScope) { scope in
             RulesEditor(scope: scope).environmentObject(store)
         }
-        .alert("Sculpt Show", isPresented: Binding(
-            get: { store.errorMessage != nil || playback.errorMessage != nil },
-            set: { if !$0 { store.errorMessage = nil; playback.errorMessage = nil } }
+        .alert(store.listNormalizationSummary != nil ? "Cue List Normalization" : "Sculpt Show",
+               isPresented: Binding(
+            get: { store.errorMessage != nil || playback.errorMessage != nil ||
+                   store.listNormalizationSummary != nil },
+            set: { if !$0 {
+                store.errorMessage = nil
+                playback.errorMessage = nil
+                store.listNormalizationSummary = nil
+            } }
         )) {
             Button("OK", role: .cancel) {
                 store.errorMessage = nil
                 playback.errorMessage = nil
+                store.listNormalizationSummary = nil
             }
         } message: {
-            Text(store.errorMessage ?? playback.errorMessage ?? "")
+            Text(store.listNormalizationSummary ?? store.errorMessage ?? playback.errorMessage ?? "")
+        }
+    }
+
+    /// Show-control shortcuts work without modifier keys. Only handle keys
+    /// belonging to the main Show window; native dialogs, sheets, alerts,
+    /// text editing, Cmd/Option/Ctrl shortcuts remain untouched.
+    private func installKeyboardShortcuts() {
+        guard keyboardMonitor == nil else { return }
+        keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard let window = NSApp.keyWindow,
+                  !(window is NSPanel), !window.isSheet,
+                  window.attachedSheet == nil,
+                  !(window.firstResponder is NSTextView),
+                  !(window.firstResponder is NSTextField),
+                  event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+                  !self.store.isLoadingProject else { return event }
+            switch event.keyCode {
+            case 49: // Space = GO. Never fire multiple GO on key repeat.
+                if !event.isARepeat { self.store.fireSelected(using: self.playback) }
+                return nil
+            case 53: // Escape = STOP ALL
+                self.store.stopAll(using: self.playback)
+                return nil
+            case 126: // Up arrow = previous cue
+                if let listID = self.store.selectedListID {
+                    self.store.selectPrevious(in: listID)
+                }
+                return nil
+            case 125: // Down arrow = next cue
+                if let listID = self.store.selectedListID {
+                    self.store.selectNext(in: listID)
+                }
+                return nil
+            default: break
+            }
+            guard let key = event.charactersIgnoringModifiers?.lowercased() else { return event }
+            switch key {
+            case "p": self.store.togglePauseAll(using: self.playback)
+            case "f": self.store.fadeAll(using: self.playback)
+            case "n": self.store.selectNextList()
+            default: return event
+            }
+            return nil
         }
     }
 
@@ -427,11 +485,14 @@ struct WorkspaceView: View {
                     .foregroundColor(Skin.soft)
                     .lineLimit(1)
                 Text(store.selectedCue?.name ?? "No cue selected")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
                     .foregroundColor(Skin.gold)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .truncationMode(.middle)
+                    .help(store.selectedCue?.name ?? "No cue selected")
             }
-            .frame(minWidth: 65, maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 125, maxWidth: .infinity, alignment: .leading)
 
             Toggle("AUTO", isOn: $store.advanceAfterGO)
                 .toggleStyle(.switch)
@@ -759,6 +820,10 @@ struct WorkspaceView: View {
                 ProgressView().controlSize(.mini)
                 Text("ANALYZING AUDIO IMPORT…")
             }
+            if store.normalizingListID != nil {
+                ProgressView().controlSize(.mini)
+                Text("NORMALIZING CUE LIST…")
+            }
             Spacer()
             Text("SCULPT SHOW 0.18.2")
         }
@@ -819,18 +884,34 @@ private struct CueListPanel: View {
                 Button {
                     showingListOptions.toggle()
                 } label: {
-                    Image(systemName: "ellipsis")
-                        .foregroundColor(Skin.soft)
-                        .frame(width: 24, height: 24)
+                    Label("MENU", systemImage: "ellipsis.circle.fill")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(Skin.gold)
+                        .frame(minWidth: 82, minHeight: 36)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .help("Cue List options")
+                .buttonStyle(.bordered)
+                .help("Open Cue List menu")
                 .popover(isPresented: $showingListOptions, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 8) {
                         Button("Edit List Rules…") {
                             showingListOptions = false
                             editingRules = true
                         }
+                        Divider()
+                        Button {
+                            showingListOptions = false
+                            store.normalizeCueList(list.id, using: playback)
+                        } label: {
+                            Label("NORMALIZE LIST  -18 LUFS", systemImage: "waveform.path")
+                        }
+                        .disabled(!list.cues.contains(where: { $0.hasAudio }) ||
+                                  store.normalizingCueID != nil ||
+                                  store.normalizingListID != nil ||
+                                  store.isLoadingProject ||
+                                  store.pendingAudioImports > 0 ||
+                                  !playback.snapshots.isEmpty)
+                        .help("Normalize every mono/stereo stem in this Cue List. Preset -18 LUFS-I, sample peak ceiling -1 dBFS")
                         Divider()
                         Button("Remove Cue List", role: .destructive) {
                             showingListOptions = false

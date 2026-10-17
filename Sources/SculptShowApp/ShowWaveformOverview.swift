@@ -51,6 +51,32 @@ final class ShowWaveformCache: ObservableObject {
 
     func channels(at path: String) -> Int? { envelopes[path]?.peaks.count }
 
+    /// Saving a portable Show copies its media under Audio Files and relinks
+    /// each stem to that copy. The bytes are identical: transfer prepared peaks
+    /// immediately instead of showing an empty waveform until a cue switch.
+    func adoptSavedMedia(from previous: Show, to saved: Show) {
+        var oldPaths: [UUID: String] = [:]
+        for list in previous.cueLists {
+            for cue in list.cues {
+                for element in cue.audioElements { oldPaths[element.id] = element.sourcePath }
+            }
+        }
+        for list in saved.cueLists {
+            for cue in list.cues {
+                for element in cue.audioElements {
+                    let path = element.sourcePath
+                    if let oldPath = oldPaths[element.id],
+                       let previousEnvelope = envelopes[oldPath] {
+                        envelopes[path] = previousEnvelope
+                        failed.remove(path)
+                    } else {
+                        request(path)
+                    }
+                }
+            }
+        }
+    }
+
     func prepare(paths: [String]) async -> [String] {
         let unique = Array(Set(paths))
         let todo = unique.filter { envelopes[$0] == nil }

@@ -81,7 +81,8 @@ struct CueNormalizationView: View {
                         target: target, peakLimit: limitPeak, using: playback)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(busy || store.normalizingCueID != nil || !playback.snapshots.isEmpty)
+                .disabled(busy || store.normalizingCueID != nil ||
+                          store.normalizingListID != nil || !playback.snapshots.isEmpty)
             }
         }
         .padding(22)

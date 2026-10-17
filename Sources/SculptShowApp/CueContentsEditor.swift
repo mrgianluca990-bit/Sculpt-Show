@@ -8,11 +8,13 @@ struct CueContentsEditor: View {
     @EnvironmentObject private var playback: PlaybackEngine
     let cue: Cue
     let listID: UUID
-    @State private var audioChannelCache: [String: Int] = [:]
+    // Observing the shared cache makes channel routing refresh as soon as
+    // prepared mono/stereo metadata arrives, without selecting another cue.
+    @ObservedObject private var waveformCache = ShowWaveformCache.shared
 
     @MainActor
     private func audioChannelCount(at path: String) -> Int {
-        if let prepared = ShowWaveformCache.shared.channels(at: path) { return prepared }
+        if let prepared = waveformCache.channels(at: path) { return prepared }
         // Header-only fallback for old sessions; never label a mono stem stereo
         // merely because waveform analysis is not finished.
         if let file = try? SculptPCMReader(URL(fileURLWithPath: path)) { return file.channels }
@@ -95,13 +97,13 @@ struct CueContentsEditor: View {
                                 get: { store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.outputStartChannel ?? element.outputStartChannel },
                                 set: { store.setElementOutput(element.id, in: cue.id, listID: listID, to: $0, using: playback) }
                             )) {
-                                ForEach(1...max(1, playback.routingOutputCount - ((audioChannelCache[element.sourcePath] ?? 2) == 2 ? 1 : 0)), id: \.self) { channel in
-                                    Text(AudioRoutePlan.label(firstOutput: channel, sourceChannels: (audioChannelCache[element.sourcePath] ?? 2) == 1 ? 1 : 2)).tag(channel)
+                                ForEach(1...max(1, playback.routingOutputCount - (audioChannelCount(at: element.sourcePath) == 2 ? 1 : 0)), id: \.self) { channel in
+                                    Text(AudioRoutePlan.label(firstOutput: channel, sourceChannels: audioChannelCount(at: element.sourcePath) == 1 ? 1 : 2)).tag(channel)
                                 }
                             }
                             .frame(width: 142)
                             .disabled(!playback.routingEnabled)
-                            .help("Current destination: \(AudioRoutePlan.label(firstOutput: store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.outputStartChannel ?? element.outputStartChannel, sourceChannels: (audioChannelCache[element.sourcePath] ?? 2) == 1 ? 1 : 2)). Changing routing never restarts playback.")
+                            .help("Current destination: \(AudioRoutePlan.label(firstOutput: store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.outputStartChannel ?? element.outputStartChannel, sourceChannels: audioChannelCount(at: element.sourcePath) == 1 ? 1 : 2)). Changing routing never restarts playback.")
                         }
                         if !playback.routingEnabled {
                             Text("Audio routing is initializing. Select a device in File → Audio/MIDI Setup if required.")
@@ -166,16 +168,9 @@ struct CueContentsEditor: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
         }
-        .onAppear { updateChannelCache() }
-        .onChange(of: cue.elements) { _ in updateChannelCache() }
+        // Source changes and cache publication now drive the View directly.
     }
 
-    @MainActor
-    private func updateChannelCache() {
-        for element in cue.audioElements where audioChannelCache[element.sourcePath] == nil {
-            audioChannelCache[element.sourcePath] = audioChannelCount(at: element.sourcePath)
-        }
-    }
 }
 
 private struct TimecodeEntry: View {

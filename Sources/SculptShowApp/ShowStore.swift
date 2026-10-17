@@ -282,13 +282,15 @@ final class ShowStore: ObservableObject {
 
     // MARK: - Offline loudness normalization (REAPER-style workflow)
     @Published private(set) var normalizingCueID: UUID?
+    @Published private(set) var normalizingListID: UUID?
+    @Published var listNormalizationSummary: String?
     @Published private(set) var normalizationReportCueID: UUID?
     @Published private(set) var normalizationReport: String?
 
     func normalizeCue(_ cueID: UUID, in listID: UUID,
                       mode: NormalizationTarget, target: Double,
                       peakLimit: Bool, using playback: PlaybackEngine) {
-        guard normalizingCueID == nil else { return }
+        guard normalizingCueID == nil, normalizingListID == nil else { return }
         guard playback.snapshots.isEmpty else {
             errorMessage = "Stop all cue playback before normalizing. Offline file processing could affect disk performance during a live show."
             return
@@ -364,6 +366,93 @@ final class ShowStore: ObservableObject {
                 self.normalizingCueID = nil
                 self.normalizationReport = nil
                 self.errorMessage = "Normalize Audio: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// One-click, non-destructive -18 LUFS-I normalization for an entire cue
+    /// list. Empty/timecode-only cues are skipped. Every mono/stereo stem is
+    /// normalized independently, with the existing -1 dBFS sample-peak guard.
+    /// A failure rolls back the entire batch; no partial cue-list relinking.
+    func normalizeCueList(_ listID: UUID, using playback: PlaybackEngine) {
+        guard normalizingCueID == nil, normalizingListID == nil,
+              !isLoadingProject, pendingAudioImports == 0 else { return }
+        guard playback.snapshots.isEmpty else {
+            errorMessage = "Stop playback before normalizing the cue list."
+            return
+        }
+        guard let list = show.cueLists.first(where: { $0.id == listID }) else { return }
+        let requests = list.cues.flatMap { cue in
+            cue.audioElements.map { element in
+                CueOfflineNormalizer.Request(elementID: element.id,
+                    name: "\(cue.name) / \(element.name)", originalPath: element.sourcePath)
+            }
+        }
+        guard !requests.isEmpty else {
+            errorMessage = "This cue list has no audio to normalize."
+            return
+        }
+        guard let showID = documentURL, ShowProjectPackage.isPackaged(showID) else {
+            errorMessage = "Save the Show as a portable project before normalizing (File > Save As)."
+            return
+        }
+        let folder: URL
+        do {
+            folder = try ShowProjectPackage.audioDirectory(for: listID, in: show,
+                                                            documentURL: showID)
+        } catch {
+            errorMessage = "Cannot access cue-list media folder: \(error.localizedDescription)"
+            return
+        }
+        normalizingListID = listID
+        listNormalizationSummary = nil
+        Task {
+            do {
+                let results = try await Task.detached(priority: .userInitiated) {
+                    try CueOfflineNormalizer.normalize(requests, outputDirectory: folder,
+                        mode: .integratedLUFS, target: -18, peakLimit: true)
+                }.value
+                // Preload waveforms before publishing any changed source paths.
+                let failed = await ShowWaveformCache.shared.prepare(
+                    paths: results.map(\.normalizedPath))
+                let current = self.show.cueLists.first(where: { $0.id == listID })
+                let currentAudio = current?.cues.flatMap { $0.audioElements } ?? []
+                let unchanged = currentAudio.count == requests.count &&
+                    currentAudio.allSatisfy { element in
+                        requests.contains { $0.elementID == element.id &&
+                                            $0.originalPath == element.sourcePath }
+                    }
+                guard failed.isEmpty, self.documentURL == showID,
+                      playback.snapshots.isEmpty, unchanged else {
+                    for result in results {
+                        try? FileManager.default.removeItem(atPath: result.normalizedPath)
+                    }
+                    self.normalizingListID = nil
+                    self.errorMessage = failed.isEmpty
+                        ? "The Show changed during normalization. No cue-list files were relinked."
+                        : "A normalized waveform could not be verified. Cue list unchanged."
+                    return
+                }
+                let newPaths = Dictionary(uniqueKeysWithValues:
+                    results.map { ($0.elementID, $0.normalizedPath) })
+                var updated = self.show
+                if let li = updated.cueLists.firstIndex(where: { $0.id == listID }) {
+                    for ci in updated.cueLists[li].cues.indices {
+                        for ei in updated.cueLists[li].cues[ci].elements.indices {
+                            let id = updated.cueLists[li].cues[ci].elements[ei].id
+                            if let path = newPaths[id] {
+                                updated.cueLists[li].cues[ci].elements[ei].sourcePath = path
+                            }
+                        }
+                    }
+                }
+                self.commit(updated)
+                self.normalizingListID = nil
+                let songCount = list.cues.filter { $0.hasAudio }.count
+                self.listNormalizationSummary = "Normalized \(results.count) audio stems across \(songCount) cues in '\(list.name)' toward -18 LUFS-I. Original audio was preserved; normalized files are in Audio Files. Peak protection at -1 dBFS may prevent some files from reaching exactly -18 LUFS. Save the Show to keep the new references."
+            } catch {
+                self.normalizingListID = nil
+                self.errorMessage = "Cue List normalization failed: \(error.localizedDescription)"
             }
         }
     }
@@ -876,6 +965,7 @@ final class ShowStore: ObservableObject {
         let destination = url.pathExtension == "scshow" ? url : url.appendingPathExtension("scshow")
         do {
             let saved = try ShowProjectPackage.create(show, requestedDocumentURL: destination)
+            ShowWaveformCache.shared.adoptSavedMedia(from: show, to: saved.runtimeShow)
             show = saved.runtimeShow
             documentURL = saved.documentURL
             dirty = false
@@ -1184,6 +1274,7 @@ final class ShowStore: ObservableObject {
     private func write(to url: URL) {
         do {
             let saved = try ShowProjectPackage.save(show, documentURL: url)
+            ShowWaveformCache.shared.adoptSavedMedia(from: show, to: saved.runtimeShow)
             show = saved.runtimeShow
             documentURL = saved.documentURL
             dirty = false
