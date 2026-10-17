@@ -652,7 +652,8 @@ struct WorkspaceView: View {
                     Group {
                         if inspectorTab == "GENERAL" {
                             VStack(alignment: .leading, spacing: 12) {
-                        CueColorPicker(cue: cue, listID: listID)                                Divider()
+                        CueColorPicker(cue: cue, listID: listID)
+                                Divider()
                         HStack {
                             Text("GAIN")
                             Spacer()
@@ -779,7 +780,8 @@ struct WorkspaceView: View {
                             store.removeCue(cue.id, from: listID)
                         } label: {
                             Label("Remove Cue", systemImage: "trash")
-                        }                            if cue.hasAudio {
+                        }
+                            if cue.hasAudio {
                             Button {
                                 normalizeSelection = NormalizationCueSelection(cueID: cue.id, listID: listID)
                             } label: {
@@ -793,7 +795,8 @@ struct WorkspaceView: View {
                                     ProgressView().controlSize(.small)
                                     Text("Analyzing / rendering…").font(.caption)
                                 }
-                            }                            }
+                            }
+                            }
                         }
                     }
 
