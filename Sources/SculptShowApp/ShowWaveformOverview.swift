@@ -13,7 +13,7 @@ private enum ShowWaveformDecoder {
     // Increased temporal resolution: on a 4-minute cue 16k bins provide
     // approximately 15ms peak windows, compared to ~133ms at 1800 bins.
     // The canvas below aggregates peaks per screen pixel to keep UI responsive.
-    static func scan(_ path: String, bins: Int = 16000) -> ShowWaveformEnvelope? {
+    static func scan(_ path: String, bins: Int = 64000) -> ShowWaveformEnvelope? {
         guard let source = try? SculptPCMReader(URL(fileURLWithPath: path)),
               source.sampleRate > 0, source.frameCount > 0 else { return nil }
         let count = max(64, bins)
@@ -144,20 +144,23 @@ final class ShowWaveformCache: ObservableObject {
         }
     }
 
-    func prepare(paths: [String]) async -> [String] {
+    /// Report actual completed file scans to import UI; other callers remain compatible.
+    func prepare(paths: [String], onProgress: ((Int, Int) -> Void)? = nil) async -> [String] {
         let unique = Array(Set(paths))
         let todo = unique.filter { envelopes[$0] == nil }
-        guard !todo.isEmpty else { return [] }
-        let scans = await Task.detached(priority: .userInitiated) {
-            todo.map { ($0, ShowWaveformDecoder.scan($0)) }
-        }.value
-        for (path, envelope) in scans {
+        guard !todo.isEmpty else { onProgress?(unique.count, unique.count); return [] }
+        onProgress?(0, todo.count)
+        for (index, path) in todo.enumerated() {
+            let envelope = await Task.detached(priority: .userInitiated) {
+                ShowWaveformDecoder.scan(path)
+            }.value
             if let envelope {
                 envelopes[path] = envelope
                 failed.remove(path)
             } else {
                 failed.insert(path)
             }
+            onProgress?(index + 1, todo.count)
         }
         return unique.filter { envelopes[$0] == nil }
     }
@@ -550,39 +553,58 @@ private struct StaticWaveformDrawing: View, Equatable {
     }
 
     var body: some View {
-        Canvas { context, size in
-            let lanes = envelope.peaks
-            guard !lanes.isEmpty else { return }
-            let channelHeight = size.height / CGFloat(lanes.count)
-            for (channel, peaks) in lanes.enumerated() {
-                let midY = CGFloat(channel) * channelHeight + channelHeight / 2
-                let height = channelHeight * 0.45
-                var line = Path()
-                // Aggregate all peaks represented by one screen pixel: at FIT
-                // this draws ~one stroke per pixel, not 16k strokes per track.
-                let maxX = max(1, Int(size.width))
-                let used = min(peaks.count,
-                    Int(ceil(Double(peaks.count) * min(duration, envelope.duration) / envelope.duration)))
-                let columns = min(maxX, max(1, used))
-                for column in 0..<columns {
-                    let start = column * used / columns
-                    let end = max(start + 1, (column + 1) * used / columns)
-                    var top: Float = 0
-                    if start < peaks.count {
-                        for k in start..<min(end, peaks.count) { top = max(top, peaks[k]) }
+        GeometryReader { geometry in
+            // Split very wide (64× zoom) waveforms into viewport-sized tiles.
+            // A single 60k-pixel Canvas can exceed the GPU's texture limits.
+            let fullWidth = max(1, Double(geometry.size.width))
+            let tileWidth = 1536.0
+            let tiles = max(1, Int(ceil(fullWidth / tileWidth)))
+            LazyHStack(spacing: 0) {
+                ForEach(0..<tiles, id: \.self) { tile in
+                    let offset = Double(tile) * tileWidth
+                    let width = min(tileWidth, fullWidth - offset)
+                    Canvas { context, size in
+                        let lanes = envelope.peaks
+                        guard !lanes.isEmpty, duration > 0, envelope.duration > 0 else { return }
+                        let channelHeight = size.height / CGFloat(lanes.count)
+                        let secondsStart = (offset / fullWidth) * duration
+                        let secondsEnd = ((offset + width) / fullWidth) * duration
+                        for (channel, peaks) in lanes.enumerated() {
+                            let midY = CGFloat(channel) * channelHeight + channelHeight / 2
+                            let height = channelHeight * 0.45
+                            var waveform = Path()
+                            let columns = max(1, Int(width))
+                            for column in 0..<columns {
+                                let seconds = secondsStart +
+                                    Double(column) / Double(columns) * (secondsEnd - secondsStart)
+                                if seconds > min(duration, envelope.duration) { break }
+                                let nextSeconds = secondsStart +
+                                    Double(column + 1) / Double(columns) * (secondsEnd - secondsStart)
+                                let begin = max(0, min(peaks.count - 1,
+                                    Int(seconds / envelope.duration * Double(peaks.count))))
+                                let end = max(begin + 1, min(peaks.count,
+                                    Int(ceil(nextSeconds / envelope.duration * Double(peaks.count)))))
+                                var peak: Float = 0
+                                if !peaks.isEmpty {
+                                    for i in begin..<end { peak = max(peak, peaks[i]) }
+                                }
+                                let x = CGFloat(column) / CGFloat(columns) * size.width
+                                let strength = min(CGFloat(peak), 1) * height
+                                waveform.move(to: CGPoint(x: x, y: midY - strength))
+                                waveform.addLine(to: CGPoint(x: x, y: midY + strength))
+                            }
+                            context.stroke(waveform, with: .color(
+                                channel == 0 ? .green.opacity(0.85) : .cyan.opacity(0.85)), lineWidth: 1)
+                            var center = Path()
+                            center.move(to: CGPoint(x: 0, y: midY))
+                            center.addLine(to: CGPoint(x: size.width, y: midY))
+                            context.stroke(center, with: .color(.gray.opacity(0.24)), lineWidth: 0.6)
+                        }
                     }
-                    let seconds = Double(column) / Double(columns) * min(duration, envelope.duration)
-                    let x = size.width * CGFloat(seconds / duration)
-                    let strength = min(CGFloat(top), 1) * height
-                    line.move(to: CGPoint(x: x, y: midY - strength))
-                    line.addLine(to: CGPoint(x: x, y: midY + strength))
+                    .frame(width: CGFloat(width), height: geometry.size.height)
                 }
-                context.stroke(line, with: .color(channel == 0 ? .green.opacity(0.85) : .cyan.opacity(0.85)), lineWidth: 1)
-                var center = Path()
-                center.move(to: CGPoint(x: 0, y: midY))
-                center.addLine(to: CGPoint(x: size.width, y: midY))
-                context.stroke(center, with: .color(.gray.opacity(0.24)), lineWidth: 0.6)
             }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
         }
     }
 }

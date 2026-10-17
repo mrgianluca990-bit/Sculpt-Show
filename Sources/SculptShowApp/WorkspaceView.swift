@@ -190,6 +190,33 @@ struct WorkspaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .overlay {
+            if store.pendingAudioImports > 0 || store.normalizingCueID != nil ||
+               store.normalizingListID != nil || store.dawBridgeBusy {
+                ZStack {
+                    Skin.base.opacity(0.88)
+                    VStack(spacing: 14) {
+                        ProgressView().controlSize(.large)
+                        Text(store.pendingAudioImports > 0 ? "IMPORTAZIONE AUDIO" :
+                            (store.normalizingCueID != nil || store.normalizingListID != nil) ?
+                            "NORMALIZZAZIONE AUDIO" : "PREPARAZIONE SCULPT DAW")
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
+                        if store.pendingAudioImports > 0 {
+                            Text("Analisi file e forme d'onda: " + store.audioImportProgress)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Operazione in corso. Non chiudere il progetto.")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(28)
+                    .background(Skin.panel, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
         .onDeleteCommand(perform: deleteSelectedCue)
         .onAppear {
             installKeyboardShortcuts()

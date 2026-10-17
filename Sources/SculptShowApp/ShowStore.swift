@@ -100,6 +100,8 @@ final class ShowStore: ObservableObject {
         syncHistoryFlags()
     }
     @Published private(set) var pendingAudioImports = 0
+    /// Visible file-level progress for media analysis; not a synthetic timer.
+    @Published private(set) var audioImportProgress = ""
     /// The previous Show stays visible until every existing stem has been scanned.
     @Published private(set) var isLoadingProject = false
     private var showOpenGeneration = UUID()
@@ -195,10 +197,17 @@ final class ShowStore: ObservableObject {
     func addAudio(_ urls: [URL], to listID: UUID) {
         let files = urls.filter(\.isFileURL)
         guard !files.isEmpty else { return }
+        guard pendingAudioImports == 0 else {
+            errorMessage = "Complete the previous audio import first."
+            return
+        }
         pendingAudioImports += 1
+        audioImportProgress = "0/\(files.count)"
         Task {
-            defer { pendingAudioImports -= 1 }
-            let failed = await ShowWaveformCache.shared.prepare(paths: files.map(\.path))
+            defer { pendingAudioImports -= 1; audioImportProgress = "" }
+            let failed = await ShowWaveformCache.shared.prepare(paths: files.map(\.path)) { completed, total in
+                self.audioImportProgress = "\(completed)/\(total)"
+            }
             guard failed.isEmpty else {
                 errorMessage = "Audio import cancelled: waveform/PCM analysis failed for " +
                     failed.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", ")
@@ -250,10 +259,17 @@ final class ShowStore: ObservableObject {
                          using playback: PlaybackEngine) {
         let files = urls.filter(\.isFileURL)
         guard !files.isEmpty else { return }
+        guard pendingAudioImports == 0 else {
+            errorMessage = "Complete the previous audio import first."
+            return
+        }
         pendingAudioImports += 1
+        audioImportProgress = "0/\(files.count)"
         Task {
-            defer { pendingAudioImports -= 1 }
-            let failed = await ShowWaveformCache.shared.prepare(paths: files.map(\.path))
+            defer { pendingAudioImports -= 1; audioImportProgress = "" }
+            let failed = await ShowWaveformCache.shared.prepare(paths: files.map(\.path)) { completed, total in
+                self.audioImportProgress = "\(completed)/\(total)"
+            }
             guard failed.isEmpty else {
                 errorMessage = "Audio attachment cancelled: cannot analyze " +
                     failed.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", ")
@@ -265,7 +281,25 @@ final class ShowStore: ObservableObject {
             // A newly attached stem can extend the cue, even when it already
             // contains audio. Never shorten a manually configured duration.
             let previousLength = updated.cue(cueID)?.durationSeconds ?? 0
+            let previousStemIDs = Set(updated.cue(cueID)?.audioElements.map(\.id) ?? [])
             guard updated.appendAudio(files, to: cueID) else { return }
+            // Assign newly added stems to consecutive physical outputs.
+            // Preserve existing user routes, and account for stereo width.
+            updated.updateCue(cueID, in: listID) { cue in
+                let existing = cue.audioElements.filter { previousStemIDs.contains($0.id) }
+                var output = existing.reduce(1) { maximum, stem in
+                    let channels = ShowWaveformCache.shared.channels(at: stem.sourcePath) ?? 2
+                    return max(maximum, stem.outputStartChannel + channels)
+                }
+                for i in cue.elements.indices where cue.elements[i].kind == .audio &&
+                    !previousStemIDs.contains(cue.elements[i].id) {
+                    let channels = ShowWaveformCache.shared.channels(at: cue.elements[i].sourcePath) ?? 2
+                    // Hardware routing supports OUT 1…64; wrap only after capacity.
+                    if output + channels - 1 > 64 { output = 1 }
+                    cue.elements[i].outputStartChannel = output
+                    output += channels
+                }
+            }
             let longest = files.compactMap { ShowWaveformCache.shared.envelopes[$0.path]?.duration }.max()
             if let longest, longest.isFinite, longest > previousLength {
                 updated.updateCue(cueID, in: listID) {
