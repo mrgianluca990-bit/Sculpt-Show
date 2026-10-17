@@ -447,7 +447,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     }
 
     public init(id: UUID = UUID(), name: String, mediaPath: String = "",
-                gain: Double = 1.0, fadeOutSeconds: Double = 2.0,
+                gain: Double = 1.0, fadeOutSeconds: Double = 5.0,
                 enabled: Bool = true, fadeInSeconds: Double = 0,
                 loop: Bool = false, followOnFinish: Bool = false,
                 preWaitSeconds: Double = 0,

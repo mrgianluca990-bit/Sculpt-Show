@@ -2,6 +2,7 @@ import Foundation
 import AVFAudio
 import AudioToolbox
 import CoreAudio
+import Accelerate
 import SculptShowCore
 import SculptLTCCore
 
@@ -249,16 +250,14 @@ final class RoutedAudioEngine {
             var peaks = [Float](repeating: 0, count: count)
             var rms = [Float](repeating: 0, count: count)
             for ch in 0..<count {
-                let source = data[ch]
+                // Accelerate runs the 64-channel RMS/peak reductions in vectorized DSP.
+                // Never execute per-sample Swift loops inside an audio tap.
                 var peak: Float = 0
-                var squareSum: Double = 0
-                for index in 0..<frames {
-                    let sample = source[index].isFinite ? source[index] : 0
-                    peak = max(peak, abs(sample))
-                    squareSum += Double(sample) * Double(sample)
-                }
-                peaks[ch] = peak
-                rms[ch] = Float(sqrt(squareSum / Double(frames)))
+                var rootMeanSquare: Float = 0
+                vDSP_maxmgv(data[ch], 1, &peak, vDSP_Length(frames))
+                vDSP_rmsqv(data[ch], 1, &rootMeanSquare, vDSP_Length(frames))
+                peaks[ch] = peak.isFinite ? peak : 0
+                rms[ch] = rootMeanSquare.isFinite ? rootMeanSquare : 0
             }
             DispatchQueue.main.async { meterSink?(peaks, rms) }
         }
@@ -425,7 +424,9 @@ final class RoutedAudioEngine {
                 }
                 voices[index].gainNode.outputVolume = fade * Float(cue.gain * entry.0.gain) * (entry.0.muted ? 0 : 1)
             }
-            let deadline = AudioGetCurrentHostTime() + AVAudioTime.hostTime(forSeconds: hostLead)
+            let synchronizedLead = hostLead <= 0.01 ? hostLead :
+                max(hostLead, files.count >= 48 ? 0.45 : (files.count >= 24 ? 0.32 : hostLead))
+            let deadline = AudioGetCurrentHostTime() + AVAudioTime.hostTime(forSeconds: synchronizedLead)
             if let timecode {
                 try startLTC(timecode, owner: cue.id, hostDeadline: deadline,
                              from: elapsed, duration: cue.timelineLength(audioEnds: files.map {
@@ -439,7 +440,7 @@ final class RoutedAudioEngine {
                     voices[index].node.play(at: AVAudioTime(hostTime: deadline))
                 }
             }
-            return hostLead
+            return synchronizedLead
         } catch {
             stop(cue.id)
             throw error

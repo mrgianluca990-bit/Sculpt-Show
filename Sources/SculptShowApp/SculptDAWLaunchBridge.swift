@@ -20,7 +20,7 @@ enum SculptDAWLaunchBridge {
             case .noApplication: return "Sculpt DAW was not selected. No changes were made."
             case .incorrectApplication: return "Select Sculpt DAW.app (audio.sculpt.daw), not another application."
             case .invalidAudio(let message): return "Cannot open this cue in DAW: \(message)"
-            case .invalidCLI: return "The selected soundcraft-cli is not an executable file."
+            case .invalidCLI: return "The selected file is not an executable Sculpt DAW CLI. Select Sculpt DAW.app (with its Contents/Helpers/soundcraft-cli) or a valid soundcraft-cli executable."
             case .cliRequired: return "Importing several aligned stems requires soundcraft-cli (included alongside Sculpt DAW.app in the downloaded ZIP). Choose it to open the cue in the DAW."
             case .importFailed(let message): return "Sculpt DAW session preparation failed: \(message)"
             case .missingSession: return "The import command finished but did not create the DAW session."
@@ -51,7 +51,7 @@ enum SculptDAWLaunchBridge {
         // DAW's standalone audio-arguments mode has no explicit alignment
         // guarantees between consecutive imports. For multi-stem cue editing,
         // insist on the CLI's single import command with `at = 0`.
-        if cli == nil && manifest.stems.count > 1 {
+        if cli == nil && (manifest.stems.count > 1 || !manifest.markers.isEmpty) {
             cli = try chooseCLI(required: true)
         }
         let workspace = try createWorkspace(for: manifest)
@@ -110,7 +110,7 @@ enum SculptDAWLaunchBridge {
     static func chooseCLI(required: Bool = false) throws -> URL? {
         let panel = NSOpenPanel()
         panel.title = "Choose Sculpt DAW Command-Line Tool"
-        panel.message = "Select soundcraft-cli from the Sculpt DAW download. It creates and saves a native session before the DAW opens."
+        panel.message = "Select Sculpt DAW.app (recommended; CLI is in Contents/Helpers), or select an executable soundcraft-cli."
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
@@ -118,10 +118,16 @@ enum SculptDAWLaunchBridge {
             if required { throw LaunchError.cliRequired }
             return nil
         }
-        guard FileManager.default.isExecutableFile(atPath: url.path),
-              url.lastPathComponent == "soundcraft-cli" else { throw LaunchError.invalidCLI }
-        UserDefaults.standard.set(url.path, forKey: cliPreference)
-        return url
+        // Sculpt DAW Core22 bundles its signed CLI as an application helper.
+        // Accept either the whole app or a directly selected CLI executable.
+        let tool = url.pathExtension.lowercased() == "app"
+            ? url.appendingPathComponent("Contents/Helpers/soundcraft-cli") : url
+        guard tool.lastPathComponent == "soundcraft-cli",
+              FileManager.default.isExecutableFile(atPath: tool.path) else {
+            throw LaunchError.invalidCLI
+        }
+        UserDefaults.standard.set(tool.path, forKey: cliPreference)
+        return tool
     }
 
     private static func locateApplication() throws -> URL {
@@ -153,8 +159,11 @@ enum SculptDAWLaunchBridge {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
         let candidatePaths: [String?] = [
-            UserDefaults.standard.string(forKey: cliPreference),
+            // Current Sculpt DAW universal package; always prefer its own CLI.
+            app.appendingPathComponent("Contents/Helpers/soundcraft-cli").path,
+            // Legacy releases can still have a sidecar executable.
             app.deletingLastPathComponent().appendingPathComponent("soundcraft-cli").path,
+            UserDefaults.standard.string(forKey: cliPreference),
             home.appendingPathComponent("Downloads/soundcraft-cli").path,
             home.appendingPathComponent("Applications/soundcraft-cli").path,
             "/usr/local/bin/soundcraft-cli", "/opt/homebrew/bin/soundcraft-cli"

@@ -160,8 +160,15 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
+    private var lastMeterUIUpdate: TimeInterval = 0
+
     private func updateMeterLevels(peaks: [Float], rms: [Float]) {
         guard routingEnabled else { return }
+        // A 64-output MatrixMixer already produces meter data at ~24Hz.
+        // Rate-limit published display changes to 12Hz, off the render thread.
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastMeterUIUpdate >= 1.0 / 12.0 else { return }
+        lastMeterUIUpdate = now
         meterMonitor.observe(peaks: peaks, rms: rms)
     }
     var routingOutputCount: Int { routedAudio.selectedDevice?.channels ?? 0 }
@@ -391,8 +398,12 @@ final class PlaybackEngine: ObservableObject {
         do {
             var audioEnds: [Double] = []
             for element in cue.alignedAudioElements {
-                let file = try AVAudioFile(forReading: URL(fileURLWithPath: element.sourcePath))
-                audioEnds.append(Double(file.length) / file.processingFormat.sampleRate)
+                if let ready = ShowWaveformCache.shared.envelopes[element.sourcePath] {
+                    audioEnds.append(ready.duration)
+                } else {
+                    let file = try AVAudioFile(forReading: URL(fileURLWithPath: element.sourcePath))
+                    audioEnds.append(Double(file.length) / file.processingFormat.sampleRate)
+                }
             }
             let length = cue.timelineLength(audioEnds: audioEnds)
             guard length > 0.001 else {

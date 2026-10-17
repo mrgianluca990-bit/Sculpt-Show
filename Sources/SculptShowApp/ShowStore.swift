@@ -844,6 +844,18 @@ final class ShowStore: ObservableObject {
     func setFade(_ id: UUID, in list: UUID, to seconds: Double) {
         editCue(id, list: list) { $0.fadeOutSeconds = max(seconds, 0) }
     }
+    /// One undoable edit for all cues in the selected list.
+    /// New default is 5 seconds, but existing cues retain their own fade until changed.
+    func setFadeOutForList(_ listID: UUID, to seconds: Double) {
+        guard seconds.isFinite, (0...600).contains(seconds),
+              let i = show.cueLists.firstIndex(where: { $0.id == listID }) else { return }
+        var updated = show
+        for c in updated.cueLists[i].cues.indices {
+            updated.cueLists[i].cues[c].fadeOutSeconds = seconds
+        }
+        commit(updated)
+    }
+
 
     func setPreWait(_ id: UUID, in list: UUID, to seconds: Double) {
         editCue(id, list: list) { $0.preWaitSeconds = min(max(seconds, 0), 600) }
@@ -1049,6 +1061,7 @@ final class ShowStore: ObservableObject {
         }
         do {
             let saved = try ShowProjectPackage.saveVersion(show, documentURL: current)
+            ProjectDocumentIcon.apply(to: saved.documentURL)
             // Keep this Show's active document and Undo/Redo history unchanged.
             dawBridgeMessage = "Version saved: " + saved.documentURL.lastPathComponent
         } catch {
@@ -1065,6 +1078,7 @@ final class ShowStore: ObservableObject {
         let destination = url.pathExtension == "scshow" ? url : url.appendingPathExtension("scshow")
         do {
             let saved = try ShowProjectPackage.create(show, requestedDocumentURL: destination)
+            ProjectDocumentIcon.apply(to: saved.documentURL)
             ShowWaveformCache.shared.adoptSavedMedia(from: show, to: saved.runtimeShow)
             show = saved.runtimeShow
             documentURL = saved.documentURL
@@ -1375,6 +1389,7 @@ final class ShowStore: ObservableObject {
     private func write(to url: URL) {
         do {
             let saved = try ShowProjectPackage.save(show, documentURL: url)
+            ProjectDocumentIcon.apply(to: saved.documentURL)
             ShowWaveformCache.shared.adoptSavedMedia(from: show, to: saved.runtimeShow)
             show = saved.runtimeShow
             documentURL = saved.documentURL

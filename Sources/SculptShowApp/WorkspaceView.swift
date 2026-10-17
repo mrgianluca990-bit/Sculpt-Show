@@ -849,6 +849,8 @@ private struct CueListPanel: View {
     @EnvironmentObject private var playback: PlaybackEngine
     @State private var editingRules = false
     @State private var showingListOptions = false
+    @State private var showingBulkFade = false
+    @State private var bulkFadeDraft = "5"
     @State private var panelWidth: Double = 418
     @State private var resizeStart: Double?
     let list: CueList
@@ -891,6 +893,12 @@ private struct CueListPanel: View {
                             showingListOptions = false
                             editingRules = true
                         }
+                        Button("SET FADE OUT FOR ALL CUES…") {
+                            showingListOptions = false
+                            bulkFadeDraft = "5"
+                            showingBulkFade = true
+                        }
+                        .disabled(list.cues.isEmpty)
                         Divider()
                         Button {
                             showingListOptions = false
@@ -1051,6 +1059,36 @@ private struct CueListPanel: View {
         }
         .sheet(isPresented: $editingRules) {
             RulesEditor(scope: .cueList(list.id)).environmentObject(store)
+        }
+        .sheet(isPresented: $showingBulkFade) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("SET CUE LIST FADE OUT")
+                    .font(.system(size: 15, weight: .bold, design: .monospaced))
+                Text("Apply the same fade-out duration to every cue in ‘\(list.name)’. Undo with Cmd+Z.")
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("Seconds")
+                    TextField("Fade out", text: $bulkFadeDraft).frame(width: 110)
+                }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { showingBulkFade = false }
+                    Button("Apply") {
+                        if let value = Double(bulkFadeDraft.replacingOccurrences(of: ",", with: ".")),
+                           value.isFinite, (0...600).contains(value) {
+                            store.setFadeOutForList(list.id, to: value)
+                            showingBulkFade = false
+                        }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled({
+                        guard let value = Double(bulkFadeDraft.replacingOccurrences(of: ",", with: ".")) else { return true }
+                        return !value.isFinite || !(0...600).contains(value)
+                    }())
+                }
+            }
+            .padding(24)
+            .frame(width: 430)
         }
     }
 
