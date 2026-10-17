@@ -624,7 +624,7 @@ struct WorkspaceView: View {
 
     private var inspector: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 Text("CUE INSPECTOR")
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
                     .tracking(1.1)
@@ -643,9 +643,10 @@ struct WorkspaceView: View {
                                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                                     .padding(.horizontal, 9)
                                     .padding(.vertical, 8)
-                                    .foregroundStyle(inspectorTab == tab ? Color.black : Skin.gold)
-                                    .background(inspectorTab == tab ? Skin.gold : Skin.raised,
+                                    .foregroundStyle(inspectorTab == tab ? Color.white : Skin.soft)
+                                    .background(inspectorTab == tab ? Color(red: 0.22, green: 0.29, blue: 0.38) : Skin.raised,
                                                 in: RoundedRectangle(cornerRadius: 5))
+                                    .buttonStyle(.plain)
                             }
                         }
                     }
@@ -910,6 +911,10 @@ private struct CueListPanel: View {
     @State private var trimDraft: Double = 0
     @State private var showingBulkFade = false
     @State private var bulkFadeDraft = "5"
+    @State private var showingNormalizeList = false
+    @State private var listNormalizeTarget: Double = -18
+    @State private var listNormalizeMode: NormalizationTarget = .integratedLUFS
+    @State private var listPeakGuard = true
     @State private var panelWidth: Double = 418
     @State private var resizeStart: Double?
     let list: CueList
@@ -986,9 +991,9 @@ private struct CueListPanel: View {
                         Divider()
                         Button {
                             showingListOptions = false
-                            store.normalizeCueList(list.id, using: playback)
+                            showingNormalizeList = true
                         } label: {
-                            Label("NORMALIZE LIST  -18 LUFS", systemImage: "waveform.path")
+                            Label("NORMALIZE CUE LIST…", systemImage: "waveform.path")
                         }
                         .disabled(!list.cues.contains(where: { $0.hasAudio }) ||
                                   store.normalizingCueID != nil ||
@@ -996,7 +1001,7 @@ private struct CueListPanel: View {
                                   store.isLoadingProject ||
                                   store.pendingAudioImports > 0 ||
                                   !playback.snapshots.isEmpty)
-                        .help("Normalize every mono/stereo stem in this Cue List. Preset -18 LUFS-I, sample peak ceiling -1 dBFS")
+                        .help("Choose a LUFS-I or sample peak target for every stem in this Cue List")
                         Divider()
                         Button("Remove Cue List", role: .destructive) {
                             showingListOptions = false
@@ -1144,6 +1149,42 @@ private struct CueListPanel: View {
         }
         .sheet(isPresented: $editingRules) {
             RulesEditor(scope: .cueList(list.id)).environmentObject(store)
+        }
+        .sheet(isPresented: $showingNormalizeList) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("NORMALIZE CUE LIST")
+                    .font(.system(size: 17, weight: .bold, design: .monospaced))
+                Text("Normalizes each audio stem to the selected target. Makes WAV copies; original audio remains unchanged.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Picker("Measure", selection: $listNormalizeMode) {
+                    Text("Integrated LUFS").tag(NormalizationTarget.integratedLUFS)
+                    Text("Sample Peak").tag(NormalizationTarget.samplePeak)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: listNormalizeMode) { newValue in
+                    listNormalizeTarget = newValue == .integratedLUFS ? -18 : -1
+                }
+                Stepper(value: $listNormalizeTarget,
+                        in: listNormalizeMode == .integratedLUFS ? -36 ... -5 : -24 ... 0,
+                        step: 0.5) {
+                    Text("Target: \(listNormalizeTarget, specifier: "%.1f") " +
+                         (listNormalizeMode == .integratedLUFS ? "LUFS-I" : "dBFS"))
+                        .monospacedDigit()
+                }
+                Toggle("Limit sample peak to −1 dBFS", isOn: $listPeakGuard)
+                HStack {
+                    Button("Cancel") { showingNormalizeList = false }
+                    Spacer()
+                    Button("NORMALIZE LIST") {
+                        showingNormalizeList = false
+                        store.normalizeCueList(list.id, mode: listNormalizeMode,
+                            target: listNormalizeTarget, peakLimit: listPeakGuard, using: playback)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(22)
+            .frame(width: 490)
         }
         .sheet(isPresented: $showingBulkFade) {
             VStack(alignment: .leading, spacing: 14) {

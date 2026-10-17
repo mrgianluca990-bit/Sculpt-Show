@@ -213,6 +213,15 @@ struct ShowWaveformOverview: View {
                 .controlSize(.small)
                 .disabled(store.isLoadingProject || store.pendingAudioImports > 0)
                 .help("Import audio into the selected cue, or create a new cue if none is selected")
+                Button {
+                    guard let listID = store.selectedListID else { return }
+                    store.importFromDAW(to: listID)
+                } label: {
+                    Label("IMPORT FROM DAW", systemImage: "arrow.down.doc")
+                }
+                .controlSize(.small)
+                .disabled(store.isLoadingProject || store.pendingAudioImports > 0)
+                .help("Import a Sculpt DAW .scraft project as a NEW cue with aligned stems and markers")
                 Button("FIT") { zoom = 1 }.controlSize(.small).help("Zoom to full cue")
                 Slider(value: $zoom, in: 1...64, step: 1).frame(width: 95)
                 Text("\(Int(zoom))×").font(.system(size: 10, design: .monospaced))

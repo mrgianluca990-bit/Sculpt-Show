@@ -503,7 +503,12 @@ final class PlaybackEngine: ObservableObject {
 
     private func cueElapsed(_ id: UUID) -> Double {
         let base = elapsedAtStart[id] ?? 0
-        return max(0, base + (startedAt[id].map { Date().timeIntervalSince($0) } ?? 0))
+        let linear = max(0, base + (startedAt[id].map { Date().timeIntervalSince($0) } ?? 0))
+        if let loop = routedAudio.nativeLoop(for: id), linear >= loop.outSeconds {
+            let length = loop.outSeconds - loop.inSeconds
+            if length > 0 { return loop.inSeconds + (linear - loop.outSeconds).truncatingRemainder(dividingBy: length) }
+        }
+        return linear
     }
 
     private func playerGain(_ id: UUID) -> Float {
@@ -536,7 +541,7 @@ final class PlaybackEngine: ObservableObject {
     private func armAudio(for id: UUID, from elapsed: Double, leadOverride: Double? = nil) {
         if routedCues.contains(id), let cue = activeCues[id] {
             do {
-                let lead = try routedAudio.start(cue, from: elapsed,
+                let lead = try routedAudio.jump(cue, from: elapsed,
                     fade: cue.fadeInSeconds > 0 ? 0 : 1,
                     hostLead: leadOverride ?? 0.22)
                 elapsedAtStart[id] = elapsed
@@ -798,8 +803,12 @@ final class PlaybackEngine: ObservableObject {
     private func emitCrossedMarkers(_ id: UUID, at elapsed: Double, duration: Double) {
         guard let cue = activeCues[id], !cue.markers.isEmpty else { return }
         let previous = lastMarkerPosition[id] ?? elapsed
-        let reached = MarkerPlanner.crossed(cue.markers, from: previous,
+        let native = routedAudio.nativeLoop(for: id)
+        let effectivePrevious: Double = native != nil && elapsed < previous
+            ? (native!.inSeconds - 0.0001) : previous
+        let reached = MarkerPlanner.crossed(cue.markers, from: effectivePrevious,
                                             to: min(elapsed, duration), duration: duration)
+            .filter { $0.id != native?.triggerMarkerID }
         lastMarkerPosition[id] = min(elapsed, duration)
         if !reached.isEmpty { onMarkersReached?(id, reached.map(\.id)) }
     }

@@ -231,6 +231,58 @@ final class ShowStore: ObservableObject {
         }
     }
 
+    /// Native Sculpt DAW (.scraft) import; creates a new cue without touching the
+    /// current audio or document. Unsupported DAW edits must be bounced first.
+    func importFromDAW(to listID: UUID) {
+        guard pendingAudioImports == 0, !isLoadingProject else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Import Sculpt DAW Session"
+        panel.message = "Select an aligned, consolidated .scraft session. Split or processed regions require a bounce in Sculpt DAW."
+        panel.allowedContentTypes = [UTType(filenameExtension: "scraft") ?? .json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        pendingAudioImports += 1
+        audioImportProgress = "READING DAW SESSION"
+        Task {
+            defer { pendingAudioImports -= 1; audioImportProgress = "" }
+            do {
+                let session = try await Task.detached(priority: .userInitiated) {
+                    try SculptDAWSessionImport.read(at: url)
+                }.value
+                audioImportProgress = "ANALYZING \(session.stems.count) STEMS"
+                let failed = await ShowWaveformCache.shared.prepare(paths: session.audioPaths) { completed, total in
+                    self.audioImportProgress = "\(completed)/\(total)"
+                }
+                guard failed.isEmpty else {
+                    errorMessage = "DAW import cancelled: unreadable media " + failed.joined(separator: ", ")
+                    return
+                }
+                guard let i = show.cueLists.firstIndex(where: { $0.id == listID }) else { return }
+                var updated = show
+                var cue = Cue(name: session.name)
+                cue.elements = session.stems.map { stem in
+                    var element = CueElement.audio(URL(fileURLWithPath: stem.path))
+                    element.name = stem.name
+                    element.outputStartChannel = stem.output
+                    element.gain = stem.gain
+                    element.muted = stem.muted
+                    return element
+                }
+                cue.durationMode = .fixed
+                cue.durationSeconds = min(86400, max(0.1, session.duration))
+                cue.markers = session.markers.map { CueMarker(name: $0.name, positionSeconds: $0.seconds) }
+                updated.cueLists[i].cues.append(cue)
+                commit(updated)
+                select(cue.id, in: listID)
+                dawBridgeMessage = "DAW session imported: \(session.stems.count) stems, \(session.markers.count) markers."
+            } catch {
+                errorMessage = "Import from DAW failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     func addEmptyCue(to listID: UUID) {
         var updated = show
         let after = selectedListID == listID ? selectedCueID : nil
@@ -493,7 +545,10 @@ final class ShowStore: ObservableObject {
     /// list. Empty/timecode-only cues are skipped. Every mono/stereo stem is
     /// normalized independently, with the existing -1 dBFS sample-peak guard.
     /// A failure rolls back the entire batch; no partial cue-list relinking.
-    func normalizeCueList(_ listID: UUID, using playback: PlaybackEngine) {
+    func normalizeCueList(_ listID: UUID, mode: NormalizationTarget = .integratedLUFS,
+                          target: Double = -18, peakLimit: Bool = true,
+                          using playback: PlaybackEngine) {
+        guard target.isFinite else { return }
         guard normalizingCueID == nil, normalizingListID == nil,
               !isLoadingProject, pendingAudioImports == 0 else { return }
         guard playback.snapshots.isEmpty else {
@@ -529,7 +584,7 @@ final class ShowStore: ObservableObject {
             do {
                 let results = try await Task.detached(priority: .userInitiated) {
                     try CueOfflineNormalizer.normalize(requests, outputDirectory: folder,
-                        mode: .integratedLUFS, target: -18, peakLimit: true)
+                        mode: mode, target: target, peakLimit: peakLimit)
                 }.value
                 // Preload waveforms before publishing any changed source paths.
                 let failed = await ShowWaveformCache.shared.prepare(

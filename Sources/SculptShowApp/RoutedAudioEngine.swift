@@ -70,6 +70,61 @@ final class RoutedAudioEngine {
     }
     private(set) var selectedDevice: OutputDevice?
     private var cueToVoices: [UUID: [Int]] = [:]
+
+    struct NativeMarkerLoop: Equatable {
+        let triggerMarkerID: UUID
+        let inSeconds: Double
+        let outSeconds: Double
+    }
+    private struct ActiveMarkerLoop {
+        let plan: NativeMarkerLoop
+        let token: UUID
+    }
+    private var activeMarkerLoops: [UUID: ActiveMarkerLoop] = [:]
+
+    /// Only unambiguous zero-delay self-loop rules are rendered ahead of time.
+    /// Other Rules keep the existing event engine for full compatibility.
+    private static func markerLoop(in cue: Cue) -> NativeMarkerLoop? {
+        guard !cue.hasTimecode else { return nil }
+        let markers = cue.sortedMarkers
+        var matches: [NativeMarkerLoop] = []
+        for (i, marker) in markers.enumerated() where i > 0 {
+            let rules = marker.rules.filter(\.enabled)
+            guard rules.count == 1, let rule = rules.first,
+                  rule.action == .fire,
+                  (rule.target == .itself || (rule.target == .specificCue && rule.targetID == cue.id)),
+                  rule.delaySeconds == 0, rule.conditionCueID == nil,
+                  rule.fireAtMarkerID == nil else { continue }
+            let start = markers[i - 1].positionSeconds
+            let end = marker.positionSeconds
+            guard end - start >= 0.4 && end - start <= 600 else { continue }
+            matches.append(NativeMarkerLoop(triggerMarkerID: marker.id,
+                                             inSeconds: start, outSeconds: end))
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    func nativeLoop(for cueID: UUID) -> NativeMarkerLoop? { activeMarkerLoops[cueID]?.plan }
+
+    /// The callback is fired AFTER playback of one queued segment, leaving
+    /// three segments already queued. It never restarts a node or its routing.
+    private func appendLoopSegment(cueID: UUID, voice: Int, token: UUID) {
+        guard let state = activeMarkerLoops[cueID], state.token == token,
+              voices.indices.contains(voice), voices[voice].owner == cueID,
+              let file = voices[voice].file else { return }
+        let rate = file.processingFormat.sampleRate
+        let start = AVAudioFramePosition((state.plan.inSeconds * rate).rounded())
+        let end = AVAudioFramePosition((state.plan.outSeconds * rate).rounded())
+        guard end > start, end <= file.length,
+              end - start <= Int64(UInt32.max) else { return }
+        voices[voice].node.scheduleSegment(file, startingFrame: start,
+            frameCount: AVAudioFrameCount(end - start), at: nil,
+            completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.appendLoopSegment(cueID: cueID, voice: voice, token: token)
+            }
+        }
+    }
     /// Exactly one SMPTE LTC transport can own the dedicated matrix input.
     private var ltcSource: AVAudioSourceNode?
     private var ltcRealtime: LTCRealtimeState?
@@ -348,6 +403,7 @@ final class RoutedAudioEngine {
         voices = []
         fileCache.removeAll()
         cueToVoices.removeAll()
+        activeMarkerLoops.removeAll()
         matrix = nil
         engine = nil
         ltcSource = nil
@@ -413,6 +469,19 @@ final class RoutedAudioEngine {
         let free = voices.indices.filter { voices[$0].owner == nil }
         guard free.count >= files.count else { throw RoutingError.noVoices(files.count) }
         let assigned = Array(free.prefix(files.count))
+        // Native file segment queues require one identical render sample rate
+        // and complete source coverage across all stems. Otherwise fall back
+        // to the original (timer-driven) loop, never a partial mixed loop.
+        let candidate = Self.markerLoop(in: cue)
+        let nativePlan = candidate.flatMap { plan -> NativeMarkerLoop? in
+            files.allSatisfy { _, file in
+                abs(file.processingFormat.sampleRate - sampleRate) < 0.5 &&
+                Double(file.length) / file.processingFormat.sampleRate >= plan.outSeconds
+            } && elapsed < plan.outSeconds ? plan : nil
+        }
+        if let nativePlan {
+            activeMarkerLoops[cue.id] = ActiveMarkerLoop(plan: nativePlan, token: UUID())
+        }
         // Mark all occupied before scheduling. If a step throws, stop() releases all.
         cueToVoices[cue.id] = assigned
         do {
@@ -429,7 +498,18 @@ final class RoutedAudioEngine {
                 let sampleRate = entry.1.processingFormat.sampleRate
                 let offsetFrames = AVAudioFramePosition(max(0, elapsed) * sampleRate)
                 let remaining = max(0, entry.1.length - offsetFrames)
-                if remaining > 0 {
+                if let plan = nativePlan, let state = activeMarkerLoops[cue.id] {
+                    let stopFrame = AVAudioFramePosition((plan.outSeconds * sampleRate).rounded())
+                    if stopFrame > offsetFrames {
+                        voices[index].node.scheduleSegment(entry.1, startingFrame: offsetFrames,
+                            frameCount: AVAudioFrameCount(stopFrame - offsetFrames), at: nil, completionHandler: nil)
+                    }
+                    // Prefill four future cycles before audio begins. Replenish
+                    // each from playback callbacks without stopping the player.
+                    for _ in 0..<4 {
+                        appendLoopSegment(cueID: cue.id, voice: index, token: state.token)
+                    }
+                } else if remaining > 0 {
                     voices[index].node.scheduleSegment(entry.1, startingFrame: offsetFrames,
                         frameCount: AVAudioFrameCount(min(Int64(UInt32.max), remaining)), at: nil, completionHandler: nil)
                 }
@@ -456,6 +536,56 @@ final class RoutedAudioEngine {
             stop(cue.id)
             throw error
         }
+    }
+
+    /// Seek while keeping file handles, player nodes and physical routing.
+    /// Still uses a shared future deadline for inter-stem synchronization.
+    func jump(_ cue: Cue, from elapsed: Double, fade: Float, hostLead: Double) throws -> Double {
+        guard isReady, let assigned = cueToVoices[cue.id],
+              assigned.count == cue.alignedAudioElements.count else {
+            return try start(cue, from: elapsed, fade: fade, hostLead: hostLead)
+        }
+        let stems = cue.alignedAudioElements
+        for (order, index) in assigned.enumerated() {
+            guard voices.indices.contains(index), voices[index].elementID == stems[order].id,
+                  voices[index].file != nil,
+                  voices[index].firstOutput == stems[order].outputStartChannel else {
+                return try start(cue, from: elapsed, fade: fade, hostLead: hostLead)
+            }
+        }
+        // Rebuild loop queues only when the cue actually seeks into its region.
+        if activeMarkerLoops[cue.id] != nil {
+            return try start(cue, from: elapsed, fade: fade, hostLead: hostLead)
+        }
+        let lead = max(0.10, hostLead)
+        for index in assigned { voices[index].node.stop() }
+        for (order, index) in assigned.enumerated() {
+            guard let file = voices[index].file else { throw RoutingError.engineNotReady }
+            let frame = AVAudioFramePosition(max(0, elapsed) * file.processingFormat.sampleRate)
+            let remaining = max(0, file.length - frame)
+            if remaining > 0 {
+                voices[index].node.scheduleSegment(file, startingFrame: frame,
+                    frameCount: AVAudioFrameCount(min(Int64(UInt32.max), remaining)),
+                    at: nil, completionHandler: nil)
+            }
+            voices[index].gainNode.outputVolume = fade * Float(cue.gain * stems[order].gain)
+                * (stems[order].muted ? 0 : 1)
+        }
+        let deadline = AudioGetCurrentHostTime() + AVAudioTime.hostTime(forSeconds: lead)
+        if let timecode = cue.elements.first(where: { $0.kind == .timecode && !$0.muted }) {
+            try startLTC(timecode, owner: cue.id, hostDeadline: deadline,
+                from: elapsed, duration: cue.timelineLength(audioEnds: assigned.compactMap {
+                    guard let f = voices[$0].file else { return nil }
+                    return Double(f.length) / f.processingFormat.sampleRate
+                }))
+        }
+        for index in assigned {
+            guard let file = voices[index].file else { continue }
+            if AVAudioFramePosition(max(0, elapsed) * file.processingFormat.sampleRate) < file.length {
+                voices[index].node.play(at: AVAudioTime(hostTime: deadline))
+            }
+        }
+        return lead
     }
 
     private func startLTC(_ element: CueElement, owner: UUID, hostDeadline: UInt64,
@@ -573,6 +703,7 @@ final class RoutedAudioEngine {
     }
 
     func stop(_ cueID: UUID) {
+        activeMarkerLoops.removeValue(forKey: cueID)
         if ltcOwner == cueID { stopLTC() }
         guard let assigned = cueToVoices.removeValue(forKey: cueID) else { return }
         for index in assigned {
