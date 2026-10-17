@@ -7,7 +7,7 @@ import SculptLTCCore
 
 /// Optional multi-output engine. The proven AVAudioPlayer backend remains the
 /// default until the user explicitly enables routing from the panel.
-/// 16 stereo input buses -> a physical output device with up to 64 channels.
+/// Up to 64 stereo input buses -> a physical output device with up to 64 channels.
 /// A single host timestamp starts all AVAudioPlayerNodes for a multitrack cue.
 @MainActor
 final class RoutedAudioEngine {
@@ -34,7 +34,7 @@ final class RoutedAudioEngine {
             case .noDeviceOutput: return "The output device has no usable audio channels."
             case .cannotConfigure(let operation, let code): return "Core Audio routing failed (\(operation), OSStatus \(code))."
             case .unsupportedSource(let name, let count): return "\(name) has \(count) channels. Routed playback currently accepts mono/stereo WAV/AIFF stems only."
-            case .noVoices(let count): return "This show requires \(count) voices. The current routed engine supports 16 simultaneous mono/stereo files."
+            case .noVoices(let count): return "This show requires \(count) voices. The routed engine supports up to 64 simultaneous mono/stereo files, subject to hardware."
             case .invalidChannel(let name, let index): return "Invalid output \(index) for ‘\(name)’ on the selected device."
             case .engineNotReady: return "Routing engine not initialized. Open Audio/MIDI Setup and select the output."
             case .ltcConflict(let text): return text
@@ -52,7 +52,8 @@ final class RoutedAudioEngine {
         var firstOutput = 1
     }
 
-    static let maximumVoices = 16
+    static let maximumVoices = 64
+    private var activeVoiceLimit = 64
     private var engine: AVAudioEngine?
     private var matrix: AVAudioUnit?
     private var voices: [Voice] = []
@@ -65,7 +66,7 @@ final class RoutedAudioEngine {
     private(set) var ltcElement: CueElement?
     private var ltcOutput: Int?
     private var sampleRate: Double = 48000
-    private static let ltcInputIndex = maximumVoices
+    private var ltcInputIndex: Int { activeVoiceLimit }
 
     // Test tone reuses one FREE voice only when the transport is idle.
     // No extra mixer bus, AVAudioEngine node or graph rebuild is needed.
@@ -149,10 +150,19 @@ final class RoutedAudioEngine {
             kAudioUnitScope_Global, 0, &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size))
         guard status == noErr else { throw RoutingError.cannotConfigure("select device", status) }
 
-        var inputCount = UInt32(Self.maximumVoices + 1)
+        // Some host AU implementations reject very wide MatrixMixer input
+        // configurations. Negotiate capacity without breaking working setups.
+        var inputCount: UInt32 = 0
         var outputBusCount: UInt32 = 1
-        status = AudioUnitSetProperty(mixerUnit.audioUnit, kAudioUnitProperty_ElementCount,
-            kAudioUnitScope_Input, 0, &inputCount, UInt32(MemoryLayout<UInt32>.size))
+        for voices in [64, 32, 16] {
+            inputCount = UInt32(voices + 1) // reserve a bus for LTC
+            status = AudioUnitSetProperty(mixerUnit.audioUnit, kAudioUnitProperty_ElementCount,
+                kAudioUnitScope_Input, 0, &inputCount, UInt32(MemoryLayout<UInt32>.size))
+            if status == noErr {
+                activeVoiceLimit = voices
+                break
+            }
+        }
         guard status == noErr else { throw RoutingError.cannotConfigure("matrix inputs", status) }
         status = AudioUnitSetProperty(mixerUnit.audioUnit, kAudioUnitProperty_ElementCount,
             kAudioUnitScope_Output, 0, &outputBusCount, UInt32(MemoryLayout<UInt32>.size))
@@ -172,7 +182,7 @@ final class RoutedAudioEngine {
                                          channelLayout: layout)
         graph.connect(mixerUnit, to: graph.outputNode, format: multichannel)
         var newVoices: [Voice] = []
-        for index in 0..<Self.maximumVoices {
+        for index in 0..<activeVoiceLimit {
             let player = AVAudioPlayerNode()
             let gain = AVAudioMixerNode()
             graph.attach(player)
@@ -191,7 +201,7 @@ final class RoutedAudioEngine {
         }
         graph.attach(ltcNode)
         graph.connect(ltcNode, to: mixerUnit, fromBus: 0,
-                      toBus: Self.ltcInputIndex, format: stereo)
+                      toBus: ltcInputIndex, format: stereo)
         sampleRate = rate
         ltcSource = ltcNode
         ltcRealtime = realtime
@@ -212,7 +222,7 @@ final class RoutedAudioEngine {
         // *crosspoints stay zero* until a cue is assigned to the appropriate bus.
         try require(AudioUnitSetParameter(au, kMatrixMixerParam_Volume,
                 kAudioUnitScope_Global, 0xFFFFFFFF, 1, 0), "master")
-        for index in 0..<(Self.maximumVoices + 1) * 2 {
+        for index in 0..<(activeVoiceLimit + 1) * 2 {
             try require(AudioUnitSetParameter(au, kMatrixMixerParam_Volume,
                 kAudioUnitScope_Input, UInt32(index), 1, 0), "input channel")
         }
@@ -221,7 +231,7 @@ final class RoutedAudioEngine {
                 kAudioUnitScope_Output, UInt32(channel), 1, 0), "output channel")
         }
         // Explicit all-zero crosspoints ensures disconnected tracks cannot leak.
-        for input in 0..<((Self.maximumVoices + 1) * 2) {
+        for input in 0..<((activeVoiceLimit + 1) * 2) {
             for output in 0..<device.channels {
                 try require(AudioUnitSetParameter(au, kMatrixMixerParam_Volume,
                    kAudioUnitScope_Global, (UInt32(input) << 16) | UInt32(output), 0, 0), "clear matrix")
@@ -447,7 +457,7 @@ final class RoutedAudioEngine {
             throw RoutingError.ltcConflict("Missing or invalid LTC configuration.")
         }
         stopLTC()
-        let input = UInt32(Self.ltcInputIndex * 2)
+        let input = UInt32(ltcInputIndex * 2)
         let crosspoint = (input << 16) | UInt32(channel - 1)
         // Keep the physical crosspoint at unity: positive LTC gain is handled
         // inside the dedicated DSP renderer, never by an out-of-range AU value.
@@ -474,7 +484,7 @@ final class RoutedAudioEngine {
     private func stopLTC() {
         ltcRealtime.map { sculpt_ltc_stop($0.pointer) }
         if let matrix, let output = ltcOutput {
-            let crosspoint = (UInt32(Self.ltcInputIndex * 2) << 16) | UInt32(output - 1)
+            let crosspoint = (UInt32(ltcInputIndex * 2) << 16) | UInt32(output - 1)
             _ = AudioUnitSetParameter(matrix.audioUnit,
                 kMatrixMixerParam_Volume, kAudioUnitScope_Global, crosspoint, 0, 0)
         }

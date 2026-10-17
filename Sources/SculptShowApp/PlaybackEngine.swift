@@ -738,7 +738,10 @@ final class PlaybackEngine: ObservableObject {
         lastMarkerPosition[id] = position
         snapshots[id]?.elapsed = position
         if state.phase == .playing {
-            armAudio(for: id, from: position)
+            // A marker jump is an immediate transport move, not a new GO.
+            // Avoid the 220ms host scheduling pre-roll used for fresh cues.
+            armAudio(for: id, from: position,
+                     leadOverride: routedCues.contains(id) ? 0 : nil)
         } else {
             if routedCues.contains(id) { routedAudio.stop(id) }
             for track in tracks[id] ?? [] { track.player.stop() }
@@ -797,12 +800,17 @@ final class PlaybackEngine: ObservableObject {
             emitCrossedMarkers(id, at: elapsed, duration: snapshot.duration)
             if elapsed >= snapshot.duration {
                 if activeCues[id]?.loop == true && snapshot.phase == .playing {
-                    snapshot.elapsed = 0
+                    // Preserve overshoot so the loop does not drift by
+                    // a full refresh-timer interval on every repetition.
+                    let offset = min(max(0, elapsed - snapshot.duration),
+                                     max(0, snapshot.duration - 0.001))
+                    snapshot.elapsed = offset
                     snapshots[id] = snapshot
                     lastMarkerPosition[id] = -0.0001
-                    // Loop re-arms together on the device clock. This is not
-                    // yet a gapless loop: that requires the next engine stage.
-                    armAudio(for: id, from: 0, leadOverride: 0.08)
+                    // No fixed 80ms silence is inserted before the next cycle.
+                    // Truly sample-continuous loops still require pre-scheduled
+                    // transitions in the render engine.
+                    armAudio(for: id, from: offset, leadOverride: 0)
                 } else if snapshot.phase == .playing {
                     finishNaturally(id)
                 }

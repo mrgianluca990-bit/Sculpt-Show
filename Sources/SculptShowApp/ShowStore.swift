@@ -1035,6 +1035,27 @@ final class ShowStore: ObservableObject {
         else { saveAs() } // Convert legacy, stand-alone .scshow to a self-contained project.
     }
 
+    /// Save a dated document snapshot; the working show and its main file
+    /// stay active. No duplicate Audio Files folder is created.
+    func saveVersion() {
+        guard !isLoadingProject, pendingAudioImports == 0,
+              normalizingCueID == nil, normalizingListID == nil else {
+            errorMessage = "Finish loading/importing/normalizing before Save Version."
+            return
+        }
+        guard let current = documentURL, ShowProjectPackage.isPackaged(current) else {
+            errorMessage = "Save the Show as a portable project first, then use Save Version."
+            return
+        }
+        do {
+            let saved = try ShowProjectPackage.saveVersion(show, documentURL: current)
+            // Keep this Show's active document and Undo/Redo history unchanged.
+            dawBridgeMessage = "Version saved: " + saved.documentURL.lastPathComponent
+        } catch {
+            errorMessage = "Save Version failed: " + error.localizedDescription
+        }
+    }
+
     func saveAs() {
         let panel = NSSavePanel()
         panel.title = "Save Sculpt Show"

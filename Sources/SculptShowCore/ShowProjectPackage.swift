@@ -32,9 +32,18 @@ public enum ShowProjectPackage {
 
     public static func isPackaged(_ documentURL: URL) -> Bool {
         let folder = documentURL.deletingLastPathComponent()
-        return documentURL.pathExtension.lowercased() == "scshow"
-            && folder.lastPathComponent == documentURL.deletingPathExtension().lastPathComponent
-            && FileManager.default.fileExists(atPath: folder.appendingPathComponent("Audio Files", isDirectory: true).path)
+        guard documentURL.pathExtension.lowercased() == "scshow",
+              FileManager.default.fileExists(atPath: folder.appendingPathComponent("Audio Files", isDirectory: true).path) else { return false }
+        let basename = documentURL.deletingPathExtension().lastPathComponent
+        let project = folder.lastPathComponent
+        if basename == project { return true }
+        let prefix = project + "_"
+        guard basename.hasPrefix(prefix) else { return false }
+        let components = String(basename.dropFirst(prefix.count)).split(separator: "_", omittingEmptySubsequences: false)
+        return components.count == 4 &&
+            [4, 2, 2, 3].enumerated().allSatisfy { index, length in
+                components[index].count == length && components[index].allSatisfy { $0.isNumber }
+            }
     }
 
     /// Media directories use the readable Cue List name without numbering or IDs.
@@ -105,6 +114,34 @@ public enum ShowProjectPackage {
         let stored = try prepare(show, copyInto: root, existingProjectRoot: root)
         try ShowCodec.encode(stored).write(to: documentURL, options: .atomic)
         return Saved(documentURL: documentURL, runtimeShow: try resolve(stored, documentURL: documentURL))
+    }
+
+    /// A version is a standalone .scshow DOCUMENT inside the same portable
+    /// project folder, not another project or an audio copy. The main .scshow
+    /// remains untouched, and only new external media needs to be packaged.
+    public static func saveVersion(_ show: Show, documentURL: URL,
+                                   on date: Date = Date()) throws -> Saved {
+        guard isPackaged(documentURL) else { throw Failure.notPackaged }
+        let root = documentURL.deletingLastPathComponent()
+        let name = root.lastPathComponent
+        let calendar = Calendar.current
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        guard let year = parts.year, let month = parts.month, let day = parts.day else {
+            throw Failure.invalidDestination
+        }
+        let prefix = String(format: "%@_%04d_%02d_%02d_", name, year, month, day)
+        var sequence = 1
+        var versionURL: URL
+        repeat {
+            let filename = prefix + String(format: "%03d", sequence) + ".scshow"
+            versionURL = root.appendingPathComponent(filename)
+            sequence += 1
+        } while FileManager.default.fileExists(atPath: versionURL.path)
+
+        let stored = try prepare(show, copyInto: root, existingProjectRoot: root)
+        try ShowCodec.encode(stored).write(to: versionURL, options: .atomic)
+        return Saved(documentURL: versionURL,
+                     runtimeShow: try resolve(stored, documentURL: versionURL))
     }
 
     /// Make project-relative paths absolute before giving a show to the audio

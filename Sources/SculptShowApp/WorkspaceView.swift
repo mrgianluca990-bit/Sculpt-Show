@@ -479,19 +479,12 @@ struct WorkspaceView: View {
             transportAction("NEXT LIST", "rectangle.stack", compact: true) { store.selectNextList() }
             transportSeparator
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(store.show.cueLists.first(where: { $0.id == store.selectedListID })?.name ?? "No list")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundColor(Skin.soft)
-                    .lineLimit(1)
-                Text(store.selectedCue?.name ?? "No cue selected")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .foregroundColor(Skin.gold)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                    .truncationMode(.middle)
-                    .help(store.selectedCue?.name ?? "No cue selected")
-            }
+            Text(store.selectedCue?.name ?? "No cue selected")
+                .font(.system(size: 23, weight: .bold, design: .rounded))
+                .foregroundColor(Skin.gold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.60)
+                .help(store.selectedCue?.name ?? "No cue selected")
             .frame(minWidth: 125, maxWidth: .infinity, alignment: .leading)
 
             Toggle("AUTO", isOn: $store.advanceAfterGO)

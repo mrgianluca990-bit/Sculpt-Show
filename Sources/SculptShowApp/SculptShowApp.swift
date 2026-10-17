@@ -69,6 +69,8 @@ struct SculptShowApp: App {
                     .keyboardShortcut("s", modifiers: .command)
                 Button("Save Show As…") { showStore.saveAs() }
                     .keyboardShortcut("s", modifiers: [.command, .shift])
+                Button("Save Version") { showStore.saveVersion() }
+                    .keyboardShortcut("s", modifiers: [.command, .option])
             }
             CommandMenu("Cues") {
                 Button("Duplicate Selected Cue") {
