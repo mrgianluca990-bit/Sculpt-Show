@@ -1577,8 +1577,11 @@ final class ShowStore: ObservableObject {
     }
 
     func ignoreParentRules(for scope: RuleScope) -> Bool {
-        guard case .cue(let id, _) = scope else { return false }
-        return show.cue(id)?.ignoreParentRules ?? false
+        switch scope {
+        case .cue(let id, _): return show.cue(id)?.ignoreParentRules ?? false
+        case .cueList(let id): return show.cueLists.first(where: { $0.id == id })?.ignoreParentRules ?? false
+        default: return false
+        }
     }
 
     func updateRules(_ rules: [InteractionRule], for scope: RuleScope, ignoreParent: Bool = false) {
@@ -1589,6 +1592,7 @@ final class ShowStore: ObservableObject {
         case .cueList(let id):
             guard let index = updated.cueLists.firstIndex(where: { $0.id == id }) else { return }
             updated.cueLists[index].rules = rules
+            updated.cueLists[index].ignoreParentRules = ignoreParent
         case .cue(let cueID, let listID):
             guard updated.cue(cueID) != nil else { return }
             updated.updateCue(cueID, in: listID) {

@@ -106,7 +106,11 @@ public enum RulePlanner {
         guard let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == sourceID }) }),
               let cue = list.cues.first(where: { $0.id == sourceID }) else { return [] }
         if cue.ignoreParentRules { return cue.rules }
-        return show.rules + list.rules + cue.rules
+        // Pick one rule set before filtering by event or condition. A false
+        // condition on a higher-priority rule must not activate a lower one.
+        if !list.ignoreParentRules, show.rules.contains(where: \.enabled) { return show.rules }
+        if list.rules.contains(where: \.enabled) { return list.rules }
+        return cue.rules
     }
 
     public static func commands(for event: RuleEvent, source sourceID: UUID,
