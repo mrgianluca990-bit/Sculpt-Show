@@ -81,38 +81,11 @@ final class RoutedAudioEngine {
     private(set) var selectedDevice: OutputDevice?
     private var cueToVoices: [UUID: [Int]] = [:]
 
-    struct NativeMarkerLoop: Equatable {
-        let triggerMarkerID: UUID?
-        let inSeconds: Double
-        let outSeconds: Double
-    }
     private struct ActiveMarkerLoop {
         let plan: NativeMarkerLoop
         let token: UUID
     }
     private var activeMarkerLoops: [UUID: ActiveMarkerLoop] = [:]
-
-    /// Only unambiguous zero-delay self-loop rules are rendered ahead of time.
-    /// Other Rules keep the existing event engine for full compatibility.
-    private static func markerLoop(in cue: Cue) -> NativeMarkerLoop? {
-        guard !cue.hasTimecode else { return nil }
-        let markers = cue.sortedMarkers
-        var matches: [NativeMarkerLoop] = []
-        for (i, marker) in markers.enumerated() where i > 0 {
-            let rules = marker.rules.filter(\.enabled)
-            guard rules.count == 1, let rule = rules.first,
-                  rule.action == .fire,
-                  (rule.target == .itself || (rule.target == .specificCue && rule.targetID == cue.id)),
-                  rule.delaySeconds == 0, rule.conditionCueID == nil,
-                  rule.fireAtMarkerID == nil else { continue }
-            let start = markers[i - 1].positionSeconds
-            let end = marker.positionSeconds
-            guard end - start >= 0.4 && end - start <= 600 else { continue }
-            matches.append(NativeMarkerLoop(triggerMarkerID: marker.id,
-                                             inSeconds: start, outSeconds: end))
-        }
-        return matches.count == 1 ? matches[0] : nil
-    }
 
     func nativeLoop(for cueID: UUID) -> NativeMarkerLoop? { activeMarkerLoops[cueID]?.plan }
 
@@ -486,7 +459,7 @@ final class RoutedAudioEngine {
         let cueLength = cue.timelineLength(audioEnds: files.map {
             Double($0.1.length) / $0.1.processingFormat.sampleRate
         })
-        let candidate = Self.markerLoop(in: cue) ??
+        let candidate = NativeMarkerLoopPlanner.plan(for: cue) ??
             (cue.loop && !cue.hasTimecode && cueLength >= 0.4 && cueLength <= 600
                 ? NativeMarkerLoop(triggerMarkerID: nil, inSeconds: 0, outSeconds: cueLength) : nil)
         let nativePlan = candidate.flatMap { plan -> NativeMarkerLoop? in
