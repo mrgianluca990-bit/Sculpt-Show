@@ -106,10 +106,10 @@ final class PlaybackEngine: ObservableObject {
     private var activeCues: [UUID: Cue] = [:]
     /// Last observed timeline position per cue. Reset on seek, restart and new GO.
     private var lastMarkerPosition: [UUID: Double] = [:]
-    private var startedAt: [UUID: Date] = [:]
+    private var startedAt: [UUID: TimeInterval] = [:]
     private var elapsedAtStart: [UUID: Double] = [:]
     private var pendingTokens: [UUID: UUID] = [:]
-    private var pendingDeadlines: [UUID: Date] = [:]
+    private var pendingDeadlines: [UUID: TimeInterval] = [:]
     private var fadeTokens: [UUID: UUID] = [:]
     private var dimFactors: [UUID: Float] = [:]
     /// Per-cue gain trim inherited from the parent Cue List (VCA-style).
@@ -144,7 +144,7 @@ final class PlaybackEngine: ObservableObject {
     // Optional engine: does not run unless the operator enables hardware routing.
     private let routedAudio = RoutedAudioEngine()
     private var routedCues = Set<UUID>()
-    private var routedFadeStarts: [UUID: (started: Date, seconds: Double)] = [:]
+    private var routedFadeStarts: [UUID: (started: TimeInterval, seconds: Double)] = [:]
     @Published private(set) var routingEnabled = false
     @Published private(set) var routingDevices: [RoutedAudioEngine.OutputDevice] = []
     @Published private(set) var routingDeviceID: AudioDeviceID?
@@ -265,11 +265,14 @@ final class PlaybackEngine: ObservableObject {
 
     /// Never interrupts a show. Hardware-device changes require an idle transport.
     /// Normal crosspoint/output mixer edits do NOT reconfigure the engine.
+    private var configuringRouting = false
+
     func configureRouting(deviceID: AudioDeviceID?) async {
         guard let deviceID else {
             errorMessage = "Routing is always enabled when an audio interface is available. Select a Core Audio output device."
             return
         }
+        guard !configuringRouting else { return }
         if routingEnabled, routingDeviceID == deviceID { return }
         guard snapshots.isEmpty else {
             errorMessage = "Cannot change audio interface while cues are active. The current audio keeps playing; stop the show before changing hardware."
@@ -281,6 +284,8 @@ final class PlaybackEngine: ObservableObject {
             errorMessage = "Selected output device is not connected. Current routing was not changed."
             return
         }
+        configuringRouting = true
+        defer { configuringRouting = false }
         routedAudio.teardown()
         routingEnabled = false
         routingDeviceID = nil
@@ -406,7 +411,7 @@ final class PlaybackEngine: ObservableObject {
         if cue.preWaitSeconds <= 0 { return playImmediately(cue, from: markerOffsetSeconds) }
         let token = UUID()
         pendingTokens[cue.id] = token
-        pendingDeadlines[cue.id] = Date().addingTimeInterval(cue.preWaitSeconds)
+        pendingDeadlines[cue.id] = ProcessInfo.processInfo.systemUptime + cue.preWaitSeconds
         snapshots[cue.id] = Snapshot(phase: .waiting, elapsed: 0, duration: cue.preWaitSeconds)
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(cue.preWaitSeconds * 1_000_000_000))
@@ -449,7 +454,7 @@ final class PlaybackEngine: ObservableObject {
             tracks[cue.id] = []
             elapsedAtStart[cue.id] = position
             lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
-            startedAt[cue.id] = Date().addingTimeInterval(lead)
+            startedAt[cue.id] = ProcessInfo.processInfo.systemUptime + lead
             snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length)
             updateGeneratedLTC()
             onStarted?(cue.id)
@@ -503,7 +508,7 @@ final class PlaybackEngine: ObservableObject {
 
     private func cueElapsed(_ id: UUID) -> Double {
         let base = elapsedAtStart[id] ?? 0
-        let linear = max(0, base + (startedAt[id].map { Date().timeIntervalSince($0) } ?? 0))
+        let linear = max(0, base + (startedAt[id].map { max(0, ProcessInfo.processInfo.systemUptime - $0) } ?? 0))
         if let loop = routedAudio.nativeLoop(for: id), linear >= loop.outSeconds {
             let length = loop.outSeconds - loop.inSeconds
             if length > 0 { return loop.inSeconds + (linear - loop.outSeconds).truncatingRemainder(dividingBy: length) }
@@ -545,7 +550,7 @@ final class PlaybackEngine: ObservableObject {
                     fade: cue.fadeInSeconds > 0 ? 0 : 1,
                     hostLead: leadOverride ?? 0.22)
                 elapsedAtStart[id] = elapsed
-                startedAt[id] = Date().addingTimeInterval(lead)
+                startedAt[id] = ProcessInfo.processInfo.systemUptime + lead
             } catch {
                 errorMessage = "Cannot re-arm routed cue: \(error.localizedDescription)"
                 stop(id, notifyRules: false)
@@ -556,7 +561,7 @@ final class PlaybackEngine: ObservableObject {
         // Empty containers keep their existing immediate timeline behavior.
         guard !list.isEmpty else {
             elapsedAtStart[id] = elapsed
-            startedAt[id] = Date()
+            startedAt[id] = ProcessInfo.processInfo.systemUptime
             return
         }
 
@@ -595,7 +600,7 @@ final class PlaybackEngine: ObservableObject {
         // Read device time only AFTER cancelling/repreparing all players.
         // Every schedule is measured against this one immutable timestamp.
         let anchor = (list.first?.player.deviceCurrentTime ?? 0) + lead
-        let wallClockAnchor = Date().addingTimeInterval(lead)
+        let wallClockAnchor = ProcessInfo.processInfo.systemUptime + lead
         elapsedAtStart[id] = elapsed
         startedAt[id] = wallClockAnchor
         for (index, instruction) in instructions {
@@ -622,7 +627,7 @@ final class PlaybackEngine: ObservableObject {
             let fadeInFactor = fade > 0 ? Float(min(1, max(0, elapsed / fade))) : 1
             var fadeOutFactor: Float = 1
             if let data = routedFadeStarts[id] {
-                let elapsedFade = Date().timeIntervalSince(data.started)
+                let elapsedFade = max(0, ProcessInfo.processInfo.systemUptime - data.started)
                 fadeOutFactor = Float(max(0, 1 - elapsedFade / max(0.001, data.seconds)))
             }
             routedAudio.updateMix(cue, fadeFactor: fadeInFactor * fadeOutFactor,
@@ -730,7 +735,7 @@ final class PlaybackEngine: ObservableObject {
         snapshots[cue.id]?.phase = .fading
         onStopped?(cue.id)
         if routedCues.contains(cue.id) {
-            routedFadeStarts[cue.id] = (Date(), seconds)
+            routedFadeStarts[cue.id] = (ProcessInfo.processInfo.systemUptime, seconds)
         }
         for track in tracks[cue.id] ?? [] where track.started {
             if track.player.isPlaying {
@@ -804,8 +809,7 @@ final class PlaybackEngine: ObservableObject {
         guard let cue = activeCues[id], !cue.markers.isEmpty else { return }
         let previous = lastMarkerPosition[id] ?? elapsed
         let native = routedAudio.nativeLoop(for: id)
-        let effectivePrevious: Double = native != nil && elapsed < previous
-            ? (native!.inSeconds - 0.0001) : previous
+        let effectivePrevious: Double = native.map { elapsed < previous ? $0.inSeconds - 0.0001 : previous } ?? previous
         let reached = MarkerPlanner.crossed(cue.markers, from: effectivePrevious,
                                             to: min(elapsed, duration), duration: duration)
             .filter { $0.id != native?.triggerMarkerID }
@@ -821,10 +825,22 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
-    func setLoop(_ enabled: Bool, for id: UUID) { activeCues[id]?.loop = enabled }
+    func setLoop(_ enabled: Bool, for id: UUID) {
+        guard activeCues[id]?.loop != enabled else { return }
+        let position = cueElapsed(id)
+        activeCues[id]?.loop = enabled
+        if routedCues.contains(id), snapshots[id]?.phase == .playing {
+            armAudio(for: id, from: position)
+        }
+    }
 
     func stopAll() {
-        for id in Array(snapshots.keys) { stop(id, notifyRules: false) }
+        stopTestTone()
+        for id in Array(Set(snapshots.keys).union(activeCues.keys).union(pendingTokens.keys)) {
+            stop(id, notifyRules: false)
+        }
+        cuePlayCursors.removeAll()
+        durationCache.removeAll()
     }
 
     private func finishNaturally(_ id: UUID) {
@@ -835,7 +851,7 @@ final class PlaybackEngine: ObservableObject {
     private func refresh() {
         for (id, deadline) in pendingDeadlines {
             guard var state = snapshots[id], state.phase == .waiting else { continue }
-            state.elapsed = min(max(state.duration - deadline.timeIntervalSinceNow, 0), state.duration)
+            state.elapsed = min(max(state.duration - (deadline - ProcessInfo.processInfo.systemUptime), 0), state.duration)
             snapshots[id] = state
         }
         for id in Array(activeCues.keys) {

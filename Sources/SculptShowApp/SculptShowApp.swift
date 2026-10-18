@@ -20,7 +20,7 @@ struct SculptShowApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Sculpt Show") {
+        Window("Sculpt Show", id: "sculpt-show-workspace") {
             WorkspaceView()
                 .environmentObject(showStore)
                 .environmentObject(playback)

@@ -60,19 +60,23 @@ final class RoutedAudioEngine {
     private var voices: [Voice] = []
     /// Cache open AVAudioFile descriptors by stem identity to avoid 64 file
     /// opens on every marker seek (and to preserve native resampling metadata).
-    private var fileCache: [UUID: (path: String, file: AVAudioFile)] = [:]
+    private var fileCache: [UUID: (path: String, modified: Date?, size: UInt64, file: AVAudioFile)] = [:]
 
     private func preparedFile(for stem: CueElement) throws -> AVAudioFile {
-        if let entry = fileCache[stem.id], entry.path == stem.sourcePath { return entry.file }
+        let attributes = try FileManager.default.attributesOfItem(atPath: stem.sourcePath)
+        let modified = attributes[.modificationDate] as? Date
+        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        if let entry = fileCache[stem.id], entry.path == stem.sourcePath,
+           entry.modified == modified, entry.size == size { return entry.file }
         let opened = try AVAudioFile(forReading: URL(fileURLWithPath: stem.sourcePath))
-        fileCache[stem.id] = (stem.sourcePath, opened)
+        fileCache[stem.id] = (stem.sourcePath, modified, size, opened)
         return opened
     }
     private(set) var selectedDevice: OutputDevice?
     private var cueToVoices: [UUID: [Int]] = [:]
 
     struct NativeMarkerLoop: Equatable {
-        let triggerMarkerID: UUID
+        let triggerMarkerID: UUID?
         let inSeconds: Double
         let outSeconds: Double
     }
@@ -448,8 +452,6 @@ final class RoutedAudioEngine {
                 }
             }
         }
-        // Remove and re-arm on seek/resume, keeping free-voice occupancy atomic.
-        stop(cue.id)
         var files: [(CueElement, AVAudioFile)] = []
         for stem in cue.alignedAudioElements {
             let f = try preparedFile(for: stem)
@@ -466,13 +468,21 @@ final class RoutedAudioEngine {
             }
             files.append((stem, f))
         }
+        let available = voices.filter { $0.owner == nil || $0.owner == cue.id }.count
+        guard available >= files.count else { throw RoutingError.noVoices(files.count) }
+        // All file/routing/capacity checks passed; now release the previous instance.
+        stop(cue.id)
         let free = voices.indices.filter { voices[$0].owner == nil }
-        guard free.count >= files.count else { throw RoutingError.noVoices(files.count) }
         let assigned = Array(free.prefix(files.count))
         // Native file segment queues require one identical render sample rate
         // and complete source coverage across all stems. Otherwise fall back
         // to the original (timer-driven) loop, never a partial mixed loop.
-        let candidate = Self.markerLoop(in: cue)
+        let cueLength = cue.timelineLength(audioEnds: files.map {
+            Double($0.1.length) / $0.1.processingFormat.sampleRate
+        })
+        let candidate = Self.markerLoop(in: cue) ??
+            (cue.loop && !cue.hasTimecode && cueLength >= 0.4 && cueLength <= 600
+                ? NativeMarkerLoop(triggerMarkerID: nil, inSeconds: 0, outSeconds: cueLength) : nil)
         let nativePlan = candidate.flatMap { plan -> NativeMarkerLoop? in
             files.allSatisfy { _, file in
                 abs(file.processingFormat.sampleRate - sampleRate) < 0.5 &&
@@ -496,8 +506,9 @@ final class RoutedAudioEngine {
                 try route(index: index, fileChannels: voices[index].fileChannels,
                           firstOutput: entry.0.outputStartChannel, on: matrix)
                 let sampleRate = entry.1.processingFormat.sampleRate
-                let offsetFrames = AVAudioFramePosition(max(0, elapsed) * sampleRate)
-                let remaining = max(0, entry.1.length - offsetFrames)
+                let offsetFrames = AudioFramePlan.position(seconds: elapsed, sampleRate: sampleRate, fileLength: entry.1.length)
+                let cueEndFrame = AVAudioFramePosition(min(Double(entry.1.length), (cueLength * sampleRate).rounded()))
+                let remaining = max(0, cueEndFrame - offsetFrames)
                 if let plan = nativePlan, let state = activeMarkerLoops[cue.id] {
                     let stopFrame = AVAudioFramePosition((plan.outSeconds * sampleRate).rounded())
                     if stopFrame > offsetFrames {
@@ -525,8 +536,8 @@ final class RoutedAudioEngine {
                              }))
             }
             for index in assigned {
-                let f = voices[index].file!
-                let offsetFrames = AVAudioFramePosition(max(0, elapsed) * f.processingFormat.sampleRate)
+                guard let f = voices[index].file else { continue }
+                let offsetFrames = AudioFramePlan.position(seconds: elapsed, sampleRate: f.processingFormat.sampleRate, fileLength: f.length)
                 if offsetFrames < f.length {
                     voices[index].node.play(at: AVAudioTime(hostTime: deadline))
                 }
@@ -557,12 +568,17 @@ final class RoutedAudioEngine {
         if activeMarkerLoops[cue.id] != nil {
             return try start(cue, from: elapsed, fade: fade, hostLead: hostLead)
         }
+        let cueLength = cue.timelineLength(audioEnds: assigned.compactMap {
+            guard let file = voices[$0].file else { return nil }
+            return Double(file.length) / file.processingFormat.sampleRate
+        })
         let lead = max(0.10, hostLead)
         for index in assigned { voices[index].node.stop() }
         for (order, index) in assigned.enumerated() {
             guard let file = voices[index].file else { throw RoutingError.engineNotReady }
-            let frame = AVAudioFramePosition(max(0, elapsed) * file.processingFormat.sampleRate)
-            let remaining = max(0, file.length - frame)
+            let frame = AudioFramePlan.position(seconds: elapsed, sampleRate: file.processingFormat.sampleRate, fileLength: file.length)
+            let cueEndFrame = AVAudioFramePosition(min(Double(file.length), (cueLength * file.processingFormat.sampleRate).rounded()))
+            let remaining = max(0, cueEndFrame - frame)
             if remaining > 0 {
                 voices[index].node.scheduleSegment(file, startingFrame: frame,
                     frameCount: AVAudioFrameCount(min(Int64(UInt32.max), remaining)),
@@ -581,7 +597,7 @@ final class RoutedAudioEngine {
         }
         for index in assigned {
             guard let file = voices[index].file else { continue }
-            if AVAudioFramePosition(max(0, elapsed) * file.processingFormat.sampleRate) < file.length {
+            if AudioFramePlan.position(seconds: elapsed, sampleRate: file.processingFormat.sampleRate, fileLength: file.length) < file.length {
                 voices[index].node.play(at: AVAudioTime(hostTime: deadline))
             }
         }
@@ -698,7 +714,7 @@ final class RoutedAudioEngine {
         for index in cueToVoices[cue.id] ?? [] {
             guard let elementID = voices[index].elementID,
                   let element = cue.elements.first(where: { $0.id == elementID }) else { continue }
-            voices[index].gainNode.outputVolume = max(0, min(1, fadeFactor * dimFactor * Float(cue.gain * element.gain) * (element.muted ? 0 : 1)))
+            voices[index].gainNode.outputVolume = AudioGainPlan.linear(cue: cue.gain, element: element.gain, fade: fadeFactor, trim: dimFactor, muted: element.muted)
         }
     }
 
