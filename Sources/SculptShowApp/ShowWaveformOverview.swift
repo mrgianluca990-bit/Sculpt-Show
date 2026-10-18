@@ -222,6 +222,16 @@ struct ShowWaveformOverview: View {
                 .controlSize(.small)
                 .disabled(store.isLoadingProject || store.pendingAudioImports > 0)
                 .help("Import a Sculpt DAW .scraft project as a NEW cue with aligned stems and markers")
+                Button {
+                    guard let listID = store.selectedListID, let cueID = store.selectedCueID else { return }
+                    store.editCueInDAW(cueID, in: listID)
+                } label: {
+                    Label("EDIT IN DAW", systemImage: "waveform.path.ecg.rectangle")
+                }
+                .controlSize(.small)
+                .disabled(store.selectedCue?.hasAudio != true || store.dawBridgeBusy ||
+                          store.isLoadingProject || store.pendingAudioImports > 0)
+                .help("Open the selected cue as an editable Sculpt DAW session")
                 Button("FIT") { zoom = 1 }.controlSize(.small).help("Zoom to full cue")
                 Slider(value: $zoom, in: 1...64, step: 1).frame(width: 95)
                 Text("\(Int(zoom))×").font(.system(size: 10, design: .monospaced))
