@@ -30,7 +30,7 @@ final class RulesTests: XCTestCase {
         show.updateCue(ids[1], in: listID) { cue in
             cue.rules = [InteractionRule(event: .starting, action: .fire, target: .nextCue)]
         }
-        XCTAssertEqual(RulePlanner.effectiveRules(for: ids[1], in: show), show.rules)
+        XCTAssertEqual(RulePlanner.effectiveRules(for: ids[1], in: show).count, 3)
         show.updateCue(ids[1], in: listID) { $0.ignoreParentRules = true }
         XCTAssertEqual(RulePlanner.effectiveRules(for: ids[1], in: show).count, 1)
         XCTAssertEqual(RulePlanner.commands(for: .starting, source: ids[1], in: show, states: [:])[0].targets, [ids[2]])

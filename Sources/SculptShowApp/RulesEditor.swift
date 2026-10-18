@@ -50,17 +50,17 @@ struct RulesEditor: View {
             return "Enabled Show rules apply to every cue unless its list or the cue opts out."
         case .cueList:
             if !ignoreParents && store.show.rules.contains(where: \.enabled) {
-                return "Show rules currently take priority. Check Ignore Show rules to use this list's rules."
+                return "Show rules are added to this list's and each cue's rules. Check Ignore Show rules to omit the Show additions."
             }
-            return "This list's enabled rules apply to all non-exempt cues and replace their cue rules."
+            return "This list's enabled rules are added to the rules of every non-exempt cue."
         case .cue(_, let listID):
             if ignoreParents { return "Only this cue's rules will apply, even if its parent levels have rules." }
             if let list = store.show.cueLists.first(where: { $0.id == listID }) {
                 if !list.ignoreParentRules && store.show.rules.contains(where: \.enabled) {
-                    return "Show rules currently take priority over this cue's rules."
+                    return "Show and Cue List rules are added to this cue's own rules."
                 }
                 if list.rules.contains(where: \.enabled) {
-                    return "Cue List rules currently take priority over this cue's rules."
+                    return "Cue List rules are added to this cue's own rules."
                 }
             }
             return "No parent level has enabled rules; this cue uses its own rules."
@@ -72,7 +72,7 @@ struct RulesEditor: View {
         VStack(spacing: 0) {
             topBar
             if !isMarkerRule {
-                Text("Priority: Show → Cue List → Cue. The highest level with enabled rules replaces the lower levels; rules are not added together.")
+                Text("Rules add together: Show + Cue List + Cue. Each rule keeps its own event and condition; parent rules do not cancel cue rules.")
                     .font(.caption).foregroundStyle(.secondary)
                     .padding(.horizontal, 18)
                 Text(inheritanceStatus)
@@ -209,14 +209,14 @@ struct RulesEditor: View {
             if case .cue = scope {
                 Section("INHERITANCE") {
                     Toggle("Use only this cue's rules (ignore Show and Cue List)", isOn: $ignoreParents)
-                    Text("When checked, this cue opts out of both parent levels. Otherwise Show rules take priority, followed by Cue List rules, then this cue's rules.")
+                    Text("When checked, only this cue's rules run. Otherwise inherited Show and Cue List rules run in addition to this cue's rules.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
             if case .cueList = scope {
                 Section("INHERITANCE") {
                     Toggle("Ignore Show rules for this Cue List", isOn: $ignoreParents)
-                    Text("When checked, this list uses its own enabled rules, or the cue rules if the list has none. Individual cues can opt out separately.")
+                    Text("When checked, Show rules are excluded; Cue List and cue rules still add together. Individual cues can opt out separately.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

@@ -12,20 +12,20 @@ final class RuleHierarchyTests: XCTestCase {
         show.rules = [InteractionRule(event: .starting, action: .dim, target: .itself)]
         return show
     }
-    func testShowReplacesListAndCueRulesForEveryCue() {
+    func testShowListAndCueRulesAddForEveryCue() {
         let show = fixture()
         for cue in show.cueLists[0].cues {
-            XCTAssertEqual(RulePlanner.effectiveRules(for: cue.id, in: show), show.rules)
+            XCTAssertEqual(RulePlanner.effectiveRules(for: cue.id, in: show), show.rules + show.cueLists[0].rules + cue.rules)
             let commands = RulePlanner.commands(for: .starting, source: cue.id, in: show, states: [:])
-            XCTAssertEqual(commands.map(\.rule.action), [.dim])
+            XCTAssertEqual(commands.map(\.rule.action), [.dim, .fade, .pause])
         }
     }
-    func testListReplacesCueRulesAndAppliesToEachSong() {
+    func testListAddsToCueRulesForEachSong() {
         var show = fixture(); show.rules = []
         let list = show.cueLists[0]
         for cue in list.cues {
             let commands = RulePlanner.commands(for: .starting, source: cue.id, in: show, states: [:])
-            XCTAssertEqual(commands.map(\.rule.action), [.fade])
+            XCTAssertEqual(commands.map(\.rule.action), [.fade, .pause])
             XCTAssertEqual(commands.first?.targets, list.cues.filter { $0.id != cue.id }.map(\.id))
         }
     }
@@ -34,32 +34,32 @@ final class RuleHierarchyTests: XCTestCase {
         show.cueLists[0].ignoreParentRules = true
         let first = show.cueLists[0].cues[0].id
         let second = show.cueLists[0].cues[1].id
-        XCTAssertEqual(RulePlanner.effectiveRules(for: first, in: show), show.cueLists[0].rules)
+        XCTAssertEqual(RulePlanner.effectiveRules(for: first, in: show), show.cueLists[0].rules + show.cueLists[0].cues[0].rules)
         show.cueLists[0].cues[0].ignoreParentRules = true
         XCTAssertEqual(RulePlanner.effectiveRules(for: first, in: show), show.cueLists[0].cues[0].rules)
-        XCTAssertEqual(RulePlanner.effectiveRules(for: second, in: show), show.cueLists[0].rules)
+        XCTAssertEqual(RulePlanner.effectiveRules(for: second, in: show), show.cueLists[0].rules + show.cueLists[0].cues[1].rules)
         show.cueLists[0].ignoreParentRules = false
         XCTAssertEqual(RulePlanner.effectiveRules(for: first, in: show), show.cueLists[0].cues[0].rules)
-        XCTAssertEqual(RulePlanner.effectiveRules(for: second, in: show), show.rules)
+        XCTAssertEqual(RulePlanner.effectiveRules(for: second, in: show), show.rules + show.cueLists[0].rules + show.cueLists[0].cues[1].rules)
     }
-    func testFalseParentConditionDoesNotFallBackToChildRules() {
+    func testFalseParentConditionAndDifferentEventDoNotSuppressChildRules() {
         var show = fixture()
         let source = show.cueLists[0].cues[0].id
         let other = show.cueLists[0].cues[1].id
         show.rules[0].conditionCueID = other
         show.rules[0].conditionState = .playing
-        XCTAssertTrue(RulePlanner.commands(for: .starting, source: source, in: show, states: [:]).isEmpty)
-        // A different event also does not mix in a lower-level rule set.
+        XCTAssertEqual(RulePlanner.commands(for: .starting, source: source, in: show, states: [:]).map(\.rule.action), [.fade, .pause])
+        // Events and conditions are checked independently at every level.
         show.rules[0].event = .ending
-        XCTAssertTrue(RulePlanner.commands(for: .starting, source: source, in: show, states: [other: .playing]).isEmpty)
+        XCTAssertEqual(RulePlanner.commands(for: .starting, source: source, in: show, states: [other: .playing]).map(\.rule.action), [.fade, .pause])
     }
     func testDisabledParentsAllowLowerLevelAndOptOutWithEmptyRulesDoesNothing() {
         var show = fixture()
         let id = show.cueLists[0].cues[0].id
         show.rules[0].enabled = false
-        XCTAssertEqual(RulePlanner.effectiveRules(for: id, in: show), show.cueLists[0].rules)
+        XCTAssertEqual(RulePlanner.commands(for: .starting, source: id, in: show, states: [:]).map(\.rule.action), [.fade, .pause])
         show.cueLists[0].rules[0].enabled = false
-        XCTAssertEqual(RulePlanner.effectiveRules(for: id, in: show), show.cueLists[0].cues[0].rules)
+        XCTAssertEqual(RulePlanner.commands(for: .starting, source: id, in: show, states: [:]).map(\.rule.action), [.pause])
         show.cueLists[0].cues[0].ignoreParentRules = true
         show.cueLists[0].cues[0].rules = []
         XCTAssertTrue(RulePlanner.effectiveRules(for: id, in: show).isEmpty)
