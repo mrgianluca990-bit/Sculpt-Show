@@ -1105,12 +1105,6 @@ private struct CueListPanel: View {
                     }
                     .help("Play cues sequentially from the current selection")
                     .disabled(store.playingLists[list.id] != nil)
-                    Button {
-                        store.fireSelected(in: list.id, using: playback)
-                    } label: {
-                        Label("FIRE", systemImage: "play.fill")
-                    }
-                    .help("Fire only the selected cue")
                     Spacer(minLength: 2)
                     Button {
                         store.fadeList(list.id, using: playback)
