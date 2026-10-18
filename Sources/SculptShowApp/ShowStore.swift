@@ -423,7 +423,8 @@ final class ShowStore: ObservableObject {
                    record["publicationID"] as? String == packet.publicationID.uuidString,
                    let rawCue = record["originCue"],
                    let appliedCue = try? JSONDecoder().decode(Cue.self, from: JSONSerialization.data(withJSONObject: rawCue)),
-                   show.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == m.cueID }) == appliedCue {
+                   let currentCue = show.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == m.cueID }),
+                   SculptBridgeReturn.matchesSnapshot(currentCue, appliedCue) {
                     pendingDAWPublications.removeAll { $0 == url }
                     dawBridgeMessage = "This DAW publication has already been applied."
                     return

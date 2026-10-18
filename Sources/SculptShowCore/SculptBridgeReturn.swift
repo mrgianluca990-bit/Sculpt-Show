@@ -72,7 +72,7 @@ public enum SculptBridgeReturn {
         if p.publishMode == "updateCue" {
             guard let current = existing, let origin = m.originCue, origin.id == current.id else { throw Failure.destination }
             // Show-only controls remain editable during DAW work. Media/timeline edits conflict.
-            guard current.elements == origin.elements, current.markers == origin.markers,
+            guard elementsMatch(current.elements, origin.elements), current.markers == origin.markers,
                   current.name == origin.name, current.durationSeconds == origin.durationSeconds,
                   current.durationMode == origin.durationMode else { throw Failure.conflict }
             cue = current
@@ -102,5 +102,27 @@ public enum SculptBridgeReturn {
             next.cueLists[list].cues[i] = cue
         } else { next.cueLists[list].cues.append(cue) }
         return next
+    }
+
+    /// Saving a portable Show copies audio into the project. A byte-identical copy
+    /// is the same revision; a replacement file or any other element edit is not.
+    private static func elementsMatch(_ current: [CueElement], _ origin: [CueElement]) -> Bool {
+        guard current.count == origin.count else { return false }
+        return zip(current, origin).allSatisfy { element, snapshot in
+            if element == snapshot { return true }
+            guard element.kind == .audio, snapshot.kind == .audio,
+                  element.sourcePath != snapshot.sourcePath else { return false }
+            var normalized = element
+            normalized.sourcePath = snapshot.sourcePath
+            guard normalized == snapshot else { return false }
+            return FileManager.default.contentsEqual(atPath: element.sourcePath, andPath: snapshot.sourcePath)
+        }
+    }
+
+    public static func matchesSnapshot(_ cue: Cue, _ snapshot: Cue) -> Bool {
+        guard elementsMatch(cue.elements, snapshot.elements) else { return false }
+        var normalized = cue
+        normalized.elements = snapshot.elements
+        return normalized == snapshot
     }
 }

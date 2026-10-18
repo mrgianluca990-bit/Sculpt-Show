@@ -75,6 +75,32 @@ final class SculptBridgeReturnTests: XCTestCase {
         XCTAssertEqual(next.cueLists[0].cues.count, 2)
     }
 
+    func testSaveAndReopenAllowsAnotherUpdateButRejectsChangedAudio() throws {
+        var (show, url, data) = try fixture()
+        let audio = url.deletingLastPathComponent().appendingPathComponent("Audio/mono.wav")
+        show.cueLists[0].cues[0].elements[0].sourcePath = audio.path
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json["originCue"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(show.cueLists[0].cues[0]))
+        data = try JSONSerialization.data(withJSONObject: json)
+        let packet = try SculptBridgeReturn.decode(data, at: url)
+        let applied = try SculptBridgeReturn.applying(packet, to: show)
+        let saved = try ShowProjectPackage.create(applied, requestedDocumentURL: url.deletingLastPathComponent().appendingPathComponent("Saved.scshow"))
+        let stored = try ShowCodec.decode(Data(contentsOf: saved.documentURL))
+        let reopened = try ShowProjectPackage.resolve(stored, documentURL: saved.documentURL)
+        let snapshot = applied.cueLists[0].cues[0]
+        let packagedCue = reopened.cueLists[0].cues[0]
+        XCTAssertNotEqual(packagedCue.audioElements[0].sourcePath, snapshot.audioElements[0].sourcePath)
+        XCTAssertTrue(SculptBridgeReturn.matchesSnapshot(packagedCue, snapshot))
+        // The next DAW packet carries the acknowledged pre-save snapshot.
+        json["originCue"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))
+        json["publicationID"] = UUID().uuidString
+        let next = try SculptBridgeReturn.decode(JSONSerialization.data(withJSONObject: json), at: url)
+        XCTAssertNoThrow(try SculptBridgeReturn.applying(next, to: reopened))
+        try Data([9, 8, 7]).write(to: URL(fileURLWithPath: packagedCue.audioElements[0].sourcePath))
+        XCTAssertFalse(SculptBridgeReturn.matchesSnapshot(packagedCue, snapshot))
+        XCTAssertThrowsError(try SculptBridgeReturn.applying(next, to: reopened))
+    }
+
     func testWrongVersionUnsafePathsAndInvalidOutputsAreRejected() throws {
         let (_, url, data) = try fixture()
         let source = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
