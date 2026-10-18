@@ -48,14 +48,10 @@ enum SculptDAWLaunchBridge {
         let app = try locateApplication()
         let audioInfo = try checkAudio(manifest)
         var cli = locateCLI(near: app)
-        // DAW's standalone audio-arguments mode has no explicit alignment
-        // guarantees between consecutive imports. For multi-stem cue editing,
-        // insist on the CLI's single import command with `at = 0`.
-        if cli == nil && (manifest.stems.count > 1 || !manifest.markers.isEmpty) {
-            cli = try chooseCLI(required: true)
-        }
+        if cli == nil { cli = try chooseCLI(required: true) }
+        guard cli != nil else { throw LaunchError.cliRequired }
         let workspace = try createWorkspace(for: manifest)
-        let session = workspace.appendingPathComponent("\(SculptBridge.safeFilename(manifest.cueName)).scraft")
+        let session = workspace.appendingPathComponent("\(SculptBridge.safeFilename(manifest.cueName)).scdaw")
         let script = workspace.appendingPathComponent("import-into-sculpt-daw.txt")
         let json = workspace.appendingPathComponent("sculpt-cue-bridge.json")
         do {
@@ -91,19 +87,7 @@ enum SculptDAWLaunchBridge {
                     }
                 } catch { report(.failure(error)) }
             }
-        } else {
-            // The GUI's main.rs already recognizes audio files as launch args;
-            // each is imported to a new track at the session's initial 00:00.
-            // No CLI or DAW source patch is necessary to begin editing.
-            let paths = preparation.manifest.stems.map(\.sourcePath)
-            openDAW(preparation.dawApplication, arguments: paths) { result in
-                switch result {
-                case .success:
-                    report(.success("Sculpt DAW opened with \(paths.count) audio stem(s) at project start. Use File > Save Session As in DAW. For marker import and saving the physical I/O mapping, authorize and select soundcraft-cli (included with the DAW download). Actual direct hardware playback routing still requires an update in Sculpt DAW."))
-                case .failure(let error): report(.failure(error))
-                }
-            }
-        }
+        } else { report(.failure(LaunchError.cliRequired)) }
     }
 
     @discardableResult
@@ -213,17 +197,21 @@ enum SculptDAWLaunchBridge {
             let process = Process()
             process.executableURL = executable
             process.arguments = ["script", script]
-            let stderr = Pipe()
-            process.standardError = stderr
-            process.standardOutput = Pipe()
+            // A file cannot fill like an undrained pipe when importing many stems.
+            let logURL = expectedSession.deletingLastPathComponent().appendingPathComponent("import.log")
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            let log = try FileHandle(forWritingTo: logURL)
+            defer { try? log.close() }
+            process.standardError = log
+            process.standardOutput = log
             do { try process.run() }
             catch { throw LaunchError.importFailed(error.localizedDescription) }
             process.waitUntilExit()
             if process.terminationStatus != 0 {
-                // CLI error output is bounded, and never interpreted as a shell command.
-                let raw = stderr.fileHandleForReading.readDataToEndOfFile()
-                let message = String(decoding: raw.prefix(4000), as: UTF8.self)
-                throw LaunchError.importFailed(message.isEmpty ? "exit \(process.terminationStatus)" : message)
+                let reader = try FileHandle(forReadingFrom: logURL)
+                defer { try? reader.close() }
+                let raw = try reader.read(upToCount: 4000) ?? Data()
+                throw LaunchError.importFailed(String(decoding: raw, as: UTF8.self))
             }
             guard FileManager.default.fileExists(atPath: expectedSession.path) else {
                 throw LaunchError.missingSession

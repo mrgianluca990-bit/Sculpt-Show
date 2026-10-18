@@ -921,6 +921,56 @@ private struct CueListPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            listHeader
+
+            listToolbar
+
+            Divider().overlay(Skin.stroke)
+            cueScroll
+
+        }
+        .background(Skin.panel, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Skin.stroke, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+        .frame(width: min(900, max(355, panelWidth)))
+        .frame(maxHeight: .infinity)
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Skin.stroke.opacity(0.7))
+                .frame(width: 10)
+                .overlay {
+                    Capsule().fill(Skin.gold.opacity(0.7)).frame(width: 3, height: 36)
+                }
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        if resizeStart == nil { resizeStart = panelWidth }
+                        panelWidth = min(900, max(355, (resizeStart ?? panelWidth) + Double(value.translation.width)))
+                    }
+                    .onEnded { _ in resizeStart = nil })
+                .help("Drag horizontally to resize this Cue List")
+        }
+        .onAppear {
+            let stored = UserDefaults.standard.double(forKey: "SculptShow.CueListWidth.\(list.id.uuidString)")
+            if stored >= 355 && stored <= 900 { panelWidth = stored }
+        }
+        .onChange(of: panelWidth) { newWidth in
+            UserDefaults.standard.set(newWidth, forKey: "SculptShow.CueListWidth.\(list.id.uuidString)")
+        }
+        .sheet(isPresented: $editingRules) {
+            RulesEditor(scope: .cueList(list.id)).environmentObject(store)
+        }
+        .sheet(isPresented: $showingNormalizeList) {
+            normalizeListPanel
+        }
+        .sheet(isPresented: $showingBulkFade) {
+            bulkFadePanel
+        }
+
+    }
+
+
+    private var listHeader: some View {
             HStack(spacing: 8) {
                 Circle().fill(Skin.gold).frame(width: 7, height: 7)
                 EditableTitle(
@@ -1018,6 +1068,9 @@ private struct CueListPanel: View {
             .padding(14)
             .background(Skin.raised)
 
+    }
+
+    private var listToolbar: some View {
             VStack(spacing: 10) {
                 HStack(spacing: 10) {
                     Button {
@@ -1075,7 +1128,9 @@ private struct CueListPanel: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
 
-            Divider().overlay(Skin.stroke)
+    }
+
+    private var cueScroll: some View {
             ScrollView {
                 LazyVStack(spacing: 6) {
                     if list.cues.isEmpty {
@@ -1118,39 +1173,9 @@ private struct CueListPanel: View {
                 }
                 return !matching.isEmpty
             }
-        }
-        .background(Skin.panel, in: RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Skin.stroke, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 9))
-        .frame(width: min(900, max(355, panelWidth)))
-        .frame(maxHeight: .infinity)
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(Skin.stroke.opacity(0.7))
-                .frame(width: 10)
-                .overlay {
-                    Capsule().fill(Skin.gold.opacity(0.7)).frame(width: 3, height: 36)
-                }
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 2)
-                    .onChanged { value in
-                        if resizeStart == nil { resizeStart = panelWidth }
-                        panelWidth = min(900, max(355, (resizeStart ?? panelWidth) + Double(value.translation.width)))
-                    }
-                    .onEnded { _ in resizeStart = nil })
-                .help("Drag horizontally to resize this Cue List")
-        }
-        .onAppear {
-            let stored = UserDefaults.standard.double(forKey: "SculptShow.CueListWidth.\(list.id.uuidString)")
-            if stored >= 355 && stored <= 900 { panelWidth = stored }
-        }
-        .onChange(of: panelWidth) { newWidth in
-            UserDefaults.standard.set(newWidth, forKey: "SculptShow.CueListWidth.\(list.id.uuidString)")
-        }
-        .sheet(isPresented: $editingRules) {
-            RulesEditor(scope: .cueList(list.id)).environmentObject(store)
-        }
-        .sheet(isPresented: $showingNormalizeList) {
+    }
+
+    private var normalizeListPanel: some View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("NORMALIZE CUE LIST")
                     .font(.system(size: 17, weight: .bold, design: .monospaced))
@@ -1167,8 +1192,8 @@ private struct CueListPanel: View {
                 Stepper(value: $listNormalizeTarget,
                         in: listNormalizeMode == .integratedLUFS ? -36 ... -5 : -24 ... 0,
                         step: 0.5) {
-                    Text("Target: \(listNormalizeTarget, specifier: "%.1f") " +
-                         (listNormalizeMode == .integratedLUFS ? "LUFS-I" : "dBFS"))
+                    Text(String(format: "Target: %.1f %@", listNormalizeTarget,
+                                listNormalizeMode == .integratedLUFS ? "LUFS-I" : "dBFS"))
                         .monospacedDigit()
                 }
                 Toggle("Limit sample peak to −1 dBFS", isOn: $listPeakGuard)
@@ -1185,8 +1210,9 @@ private struct CueListPanel: View {
             }
             .padding(22)
             .frame(width: 490)
-        }
-        .sheet(isPresented: $showingBulkFade) {
+    }
+
+    private var bulkFadePanel: some View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("SET CUE LIST FADE OUT")
                     .font(.system(size: 15, weight: .bold, design: .monospaced))
@@ -1215,7 +1241,6 @@ private struct CueListPanel: View {
             }
             .padding(24)
             .frame(width: 430)
-        }
     }
 
     private func dropCueProviders(_ providers: [NSItemProvider], to destinationID: UUID, before targetID: UUID?) -> Bool {

@@ -63,6 +63,23 @@
 				</array>
 			</dict>
 		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.sculpt.bridge.publication</string>
+			<key>UTTypeDescription</key>
+			<string>Sculpt DAW Publication</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>sculptbridge</string>
+				</array>
+			</dict>
+		</dict>
 	</array>
 	<key>CFBundleDocumentTypes</key>
 	<array>
@@ -79,6 +96,18 @@
 			</array>
 			<key>CFBundleTypeIconFile</key>
 			<string>SculptShow.icns</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Sculpt DAW Publication</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.sculpt.bridge.publication</string>
+			</array>
 		</dict>
 	</array>
 </dict>

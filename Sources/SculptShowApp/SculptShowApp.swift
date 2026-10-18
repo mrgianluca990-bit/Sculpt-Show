@@ -31,8 +31,17 @@ struct SculptShowApp: App {
                         .environmentObject(playback)
                         .environmentObject(midi)
                 }
+                .onChange(of: Set(playback.snapshots.keys)) { _ in
+                    showStore.applyPendingDAWPublications(using: playback)
+                }
+                .onChange(of: showStore.isLoadingProject) { _ in showStore.applyPendingDAWPublications(using: playback) }
+                .onChange(of: showStore.pendingAudioImports) { _ in showStore.applyPendingDAWPublications(using: playback) }
+                .onChange(of: showStore.normalizingCueID) { _ in showStore.applyPendingDAWPublications(using: playback) }
+                .onChange(of: showStore.normalizingListID) { _ in showStore.applyPendingDAWPublications(using: playback) }
                 .onOpenURL { documentURL in
-                    if showStore.openShow(at: documentURL) {
+                    if documentURL.pathExtension.lowercased() == "sculptbridge" {
+                        showStore.receiveDAWPublication(at: documentURL, using: playback)
+                    } else if showStore.openShow(at: documentURL) {
                         showStore.stopAll(using: playback)
                     }
                 }
@@ -61,6 +70,7 @@ struct SculptShowApp: App {
                 .keyboardShortcut("o", modifiers: .command)
             }
             CommandGroup(after: .newItem) {
+                Button("Receive DAW Publication…") { showStore.chooseDAWPublication(using: playback) }
                 Button("Audio/MIDI Setup…") { showingAudioMIDISetup = true }
                     .keyboardShortcut(",", modifiers: [.command, .option])
             }
