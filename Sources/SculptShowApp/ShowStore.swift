@@ -183,6 +183,23 @@ final class ShowStore: ObservableObject {
         commit(updated)
     }
 
+    /// Reads the connected interface when an import/publication is applied.
+    var audioOutputCount: () -> Int = { 2 }
+
+    private func assignAutomaticOutputs(to show: inout Show, cueID: UUID, listID: UUID) {
+        show.updateCue(cueID, in: listID) { cue in
+            let indices = cue.elements.indices.filter { cue.elements[$0].kind == .audio }
+            let widths = indices.map { index in
+                ShowWaveformCache.shared.channels(at: cue.elements[index].sourcePath) ??
+                    (try? AVAudioFile(forReading: URL(fileURLWithPath: cue.elements[index].sourcePath)))
+                        .map { Int($0.processingFormat.channelCount) } ?? 2
+            }
+            let outputs = AudioRoutePlan.automaticOutputs(channelCounts: widths,
+                deviceChannels: max(1, audioOutputCount()))
+            for (index, output) in zip(indices, outputs) { cue.elements[index].outputStartChannel = output }
+        }
+    }
+
     func importAudio(to listID: UUID) {
         let panel = NSOpenPanel()
         panel.message = "Import audio as new cue containers"
@@ -274,6 +291,7 @@ final class ShowStore: ObservableObject {
                 cue.durationSeconds = min(86400, max(0.1, session.duration))
                 cue.markers = session.markers.map { CueMarker(name: $0.name, positionSeconds: $0.seconds) }
                 updated.cueLists[i].cues.append(cue)
+                assignAutomaticOutputs(to: &updated, cueID: cue.id, listID: listID)
                 commit(updated)
                 select(cue.id, in: listID)
                 dawBridgeMessage = "DAW session imported: \(session.stems.count) stems, \(session.markers.count) markers."
@@ -333,25 +351,8 @@ final class ShowStore: ObservableObject {
             // A newly attached stem can extend the cue, even when it already
             // contains audio. Never shorten a manually configured duration.
             let previousLength = updated.cue(cueID)?.durationSeconds ?? 0
-            let previousStemIDs = Set(updated.cue(cueID)?.audioElements.map(\.id) ?? [])
             guard updated.appendAudio(files, to: cueID) else { return }
-            // Assign newly added stems to consecutive physical outputs.
-            // Preserve existing user routes, and account for stereo width.
-            updated.updateCue(cueID, in: listID) { cue in
-                let existing = cue.audioElements.filter { previousStemIDs.contains($0.id) }
-                var output = existing.reduce(1) { maximum, stem in
-                    let channels = ShowWaveformCache.shared.channels(at: stem.sourcePath) ?? 2
-                    return max(maximum, stem.outputStartChannel + channels)
-                }
-                for i in cue.elements.indices where cue.elements[i].kind == .audio &&
-                    !previousStemIDs.contains(cue.elements[i].id) {
-                    let channels = ShowWaveformCache.shared.channels(at: cue.elements[i].sourcePath) ?? 2
-                    // Hardware routing supports OUT 1…64; wrap only after capacity.
-                    if output + channels - 1 > 64 { output = 1 }
-                    cue.elements[i].outputStartChannel = output
-                    output += channels
-                }
-            }
+            assignAutomaticOutputs(to: &updated, cueID: cueID, listID: listID)
             let longest = files.compactMap { ShowWaveformCache.shared.envelopes[$0.path]?.duration }.max()
             if let longest, longest.isFinite, longest > previousLength {
                 updated.updateCue(cueID, in: listID) {
@@ -452,7 +453,8 @@ final class ShowStore: ObservableObject {
                     dawBridgeMessage = "DAW update queued until this cue stops."
                     return
                 }
-                let updated = try SculptBridgeReturn.applying(packet, to: show, destinationListID: listID)
+                var updated = try SculptBridgeReturn.applying(packet, to: show, destinationListID: listID)
+                assignAutomaticOutputs(to: &updated, cueID: m.cueID, listID: listID)
                 commit(updated)
                 select(m.cueID, in: listID)
                 pendingDAWPublications.removeAll { $0 == url }
@@ -1272,6 +1274,7 @@ final class ShowStore: ObservableObject {
             let saved = try ShowProjectPackage.create(show, requestedDocumentURL: destination)
             ProjectDocumentIcon.apply(to: saved.documentURL)
             ShowWaveformCache.shared.adoptSavedMedia(from: show, to: saved.runtimeShow)
+            remapHistoryMedia(from: show, to: saved.runtimeShow)
             show = saved.runtimeShow
             documentURL = saved.documentURL
             dirty = false
@@ -1584,12 +1587,45 @@ final class ShowStore: ObservableObject {
             let saved = try ShowProjectPackage.save(show, documentURL: url)
             ProjectDocumentIcon.apply(to: saved.documentURL)
             ShowWaveformCache.shared.adoptSavedMedia(from: show, to: saved.runtimeShow)
+            remapHistoryMedia(from: show, to: saved.runtimeShow)
             show = saved.runtimeShow
             documentURL = saved.documentURL
             dirty = false
         } catch {
             errorMessage = "Unable to save show: \(error.localizedDescription)"
         }
+    }
+
+    private func remapHistoryMedia(from old: Show, to saved: Show) {
+        var paths: [String: String] = [:]
+        for list in old.cueLists {
+            for cue in list.cues {
+                guard let next = saved.cue(cue.id) else { continue }
+                for element in cue.audioElements {
+                    if let changed = next.audioElements.first(where: { $0.id == element.id }),
+                       changed.sourcePath != element.sourcePath {
+                        // Save As copies originals; only remap references moved away.
+                        if !FileManager.default.fileExists(atPath: element.sourcePath) {
+                            paths[element.sourcePath] = changed.sourcePath
+                        }
+                    }
+                }
+            }
+        }
+        func remap(_ item: HistoryItem) -> HistoryItem {
+            var model = item.show
+            for li in model.cueLists.indices {
+                for ci in model.cueLists[li].cues.indices {
+                    for ei in model.cueLists[li].cues[ci].elements.indices {
+                        let path = model.cueLists[li].cues[ci].elements[ei].sourcePath
+                        if let next = paths[path] { model.cueLists[li].cues[ci].elements[ei].sourcePath = next }
+                    }
+                }
+            }
+            return HistoryItem(show: model, selectedListID: item.selectedListID, selectedCueID: item.selectedCueID)
+        }
+        undoStack = undoStack.map(remap)
+        redoStack = redoStack.map(remap)
     }
 
     private func editCue(_ id: UUID, list: UUID, _ change: (inout Cue) -> Void) {

@@ -20,7 +20,7 @@ final class ShowPreflightTests: XCTestCase {
         show.updateCue(cueID, in: id) { $0.elements[0].outputStartChannel = 2 }
         let path = "/audio/stereo.wav"
         let stereo = PreflightAudioInfo(channelCount: 2, duration: 5, sampleRate: 48000)
-        XCTAssertFalse(ShowPreflight.check(show, outputChannels: 2, media: [path: stereo]).ready)
+        XCTAssertTrue(ShowPreflight.check(show, outputChannels: 2, media: [path: stereo]).ready)
         XCTAssertTrue(ShowPreflight.check(show, outputChannels: 3, media: [path: stereo]).ready)
         let mono = PreflightAudioInfo(channelCount: 1, duration: 5, sampleRate: 48000)
         XCTAssertTrue(ShowPreflight.check(show, outputChannels: 2, media: [path: mono]).ready)

@@ -109,17 +109,22 @@ public enum ShowPreflight {
                     add(.blocking, "invalid-media", cue, path,
                         "\(element.name): invalid source duration or sample rate.")
                 }
+                let routedOutput = AudioRoutePlan.wrappedOutput(element.outputStartChannel,
+                    sourceChannels: info.channelCount, deviceChannels: outputChannels)
                 for tc in ltcs {
                     if let out = tc.ltcOutputChannel,
-                       (element.outputStartChannel..<(element.outputStartChannel + info.channelCount)).contains(out) {
+                       (routedOutput..<(routedOutput + info.channelCount)).contains(out) {
                         add(.blocking, "ltc-route-collision", cue, path,
                             "LTC OUT \(out) overlaps a music stem; select a dedicated output.")
                     }
                 }
-                if outputChannels > 0 &&
-                    (element.outputStartChannel < 1 || element.outputStartChannel + info.channelCount - 1 > outputChannels) {
+                if outputChannels > 0 && AudioRoutePlan.crosspoints(firstOutput: routedOutput,
+                    sourceChannels: info.channelCount, deviceChannels: outputChannels) == nil {
                     add(.blocking, "bad-route", cue, path,
-                        "\(element.name): OUT \(element.outputStartChannel)–\(element.outputStartChannel + info.channelCount - 1) exceeds the \(outputChannels) available outputs.")
+                        "\(element.name): source does not fit the connected outputs.")
+                } else if routedOutput != element.outputStartChannel {
+                    add(.warning, "wrapped-route", cue, path,
+                        "\(element.name): output wraps to OUT \(routedOutput) on this device.")
                 }
             }
             if cue.durationMode == .fixed {

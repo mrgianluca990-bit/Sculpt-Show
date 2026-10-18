@@ -84,6 +84,7 @@ final class RoutedAudioEngine {
     private struct ActiveMarkerLoop {
         let plan: NativeMarkerLoop
         let token: UUID
+        let buffers: [AVAudioPCMBuffer]
     }
     private var activeMarkerLoops: [UUID: ActiveMarkerLoop] = [:]
 
@@ -462,14 +463,36 @@ final class RoutedAudioEngine {
         let candidate = NativeMarkerLoopPlanner.plan(for: cue) ??
             (cue.loop && !cue.hasTimecode && cueLength >= 0.4 && cueLength <= 600
                 ? NativeMarkerLoop(triggerMarkerID: nil, inSeconds: 0, outSeconds: cueLength) : nil)
+        // Short loops repeat inside the audio renderer, with no main-queue
+        // replenishment that another cue's preparation could delay.
+        var loopBuffers: [AVAudioPCMBuffer] = []
         let nativePlan = candidate.flatMap { plan -> NativeMarkerLoop? in
-            files.allSatisfy { _, file in
-                abs(file.processingFormat.sampleRate - sampleRate) < 0.5 &&
-                Double(file.length) / file.processingFormat.sampleRate >= plan.outSeconds
-            } && elapsed < plan.outSeconds ? plan : nil
+            guard files.allSatisfy({ abs($0.1.processingFormat.sampleRate - sampleRate) < 0.5 }),
+                  elapsed < plan.outSeconds else { return nil }
+            let occupied = activeMarkerLoops.values.flatMap(\.buffers).reduce(0) {
+                $0 + Int($1.frameLength) * Int($1.format.channelCount) * 4
+            }
+            let bytes = files.reduce(0.0) { total, entry in
+                total + (plan.outSeconds - plan.inSeconds) * sampleRate *
+                    Double(entry.1.processingFormat.channelCount) * 4
+            }
+            if bytes <= Double(max(0, 128 * 1024 * 1024 - occupied)),
+               files.allSatisfy({ Double($0.1.length) / $0.1.processingFormat.sampleRate >= plan.outSeconds }) {
+                do {
+                    loopBuffers = try files.map { _, file in
+                        try NativeLoopBuffer.prepare(file: file, start: plan.inSeconds, end: plan.outSeconds)
+                    }
+                    return plan
+                } catch { loopBuffers = [] }
+            }
+            // Long loops retain bounded file queues; four long cycles provide
+            // a large replenishment window without allocating minutes of PCM.
+            return files.allSatisfy {
+                Double($0.1.length) / $0.1.processingFormat.sampleRate >= plan.outSeconds
+            } ? plan : nil
         }
         if let nativePlan {
-            activeMarkerLoops[cue.id] = ActiveMarkerLoop(plan: nativePlan, token: UUID())
+            activeMarkerLoops[cue.id] = ActiveMarkerLoop(plan: nativePlan, token: UUID(), buffers: loopBuffers)
         }
         // Mark all occupied before scheduling. If a step throws, stop() releases all.
         cueToVoices[cue.id] = assigned
@@ -489,15 +512,21 @@ final class RoutedAudioEngine {
                 let cueEndFrame = AVAudioFramePosition(min(Double(entry.1.length), (cueLength * sampleRate).rounded()))
                 let remaining = max(0, cueEndFrame - offsetFrames)
                 if let plan = nativePlan, let state = activeMarkerLoops[cue.id] {
-                    let stopFrame = AVAudioFramePosition((plan.outSeconds * sampleRate).rounded())
+                    let stopFrame = min(entry.1.length,
+                        AVAudioFramePosition((plan.outSeconds * sampleRate).rounded()))
                     if stopFrame > offsetFrames {
                         voices[index].node.scheduleSegment(entry.1, startingFrame: offsetFrames,
                             frameCount: AVAudioFrameCount(stopFrame - offsetFrames), at: nil, completionHandler: nil)
                     }
                     // Prefill four future cycles before audio begins. Replenish
                     // each from playback callbacks without stopping the player.
-                    for _ in 0..<4 {
-                        appendLoopSegment(cueID: cue.id, voice: index, token: state.token)
+                    if state.buffers.indices.contains(number) {
+                        voices[index].node.scheduleBuffer(state.buffers[number], at: nil,
+                            options: .loops, completionHandler: nil)
+                    } else {
+                        for _ in 0..<4 {
+                            appendLoopSegment(cueID: cue.id, voice: index, token: state.token)
+                        }
                     }
                 } else if remaining > 0 {
                     voices[index].node.scheduleSegment(entry.1, startingFrame: offsetFrames,

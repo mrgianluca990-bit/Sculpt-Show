@@ -428,7 +428,14 @@ final class PlaybackEngine: ObservableObject {
 
     /// Hardware-mapped cue: playback occurs in one AVAudioEngine with one host clock.
     /// Failure is visible and does not fall back to stereo outputs 1/2.
-    private func playRouted(_ cue: Cue, from requestedPosition: Double = 0) -> Bool {
+    private func playRouted(_ original: Cue, from requestedPosition: Double = 0) -> Bool {
+        var cue = original
+        for index in cue.elements.indices where cue.elements[index].kind == .audio {
+            let width = ShowWaveformCache.shared.channels(at: cue.elements[index].sourcePath) ?? 2
+            cue.elements[index].outputStartChannel = AudioRoutePlan.wrappedOutput(
+                cue.elements[index].outputStartChannel, sourceChannels: width,
+                deviceChannels: routingOutputCount)
+        }
         do {
             var audioEnds: [Double] = []
             for element in cue.alignedAudioElements {

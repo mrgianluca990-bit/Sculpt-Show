@@ -62,7 +62,7 @@ public enum ShowProjectPackage {
         return folder
     }
 
-    private static func listFolderName(_ list: CueList) -> String {
+    static func listFolderName(_ list: CueList) -> String {
         safeName(list.name)
     }
 
@@ -111,9 +111,12 @@ public enum ShowProjectPackage {
         guard isPackaged(documentURL) else { throw Failure.notPackaged }
         let root = documentURL.deletingLastPathComponent()
         try validateUniqueListFolders(show)
-        let stored = try prepare(show, copyInto: root, existingProjectRoot: root)
-        try ShowCodec.encode(stored).write(to: documentURL, options: .atomic)
-        return Saved(documentURL: documentURL, runtimeShow: try resolve(stored, documentURL: documentURL))
+        return try ShowProjectFolderMigration.saving(show, documentURL: documentURL) { renamed in
+            let stored = try prepare(renamed, copyInto: root, existingProjectRoot: root)
+            let runtime = try resolve(stored, documentURL: documentURL)
+            try ShowCodec.encode(stored).write(to: documentURL, options: .atomic)
+            return Saved(documentURL: documentURL, runtimeShow: runtime)
+        }
     }
 
     /// A version is a standalone .scshow DOCUMENT inside the same portable

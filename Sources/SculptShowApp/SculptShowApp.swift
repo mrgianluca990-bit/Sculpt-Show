@@ -26,6 +26,12 @@ struct SculptShowApp: App {
                 .environmentObject(playback)
                 .environmentObject(midi)
                 .preferredColorScheme(.dark)
+                .onAppear {
+                    showStore.audioOutputCount = { [weak playback] in
+                        let count = playback?.routingOutputCount ?? 0
+                        return count > 0 ? count : 2
+                    }
+                }
                 .sheet(isPresented: $showingAudioMIDISetup) {
                     AudioMIDISetupView()
                         .environmentObject(playback)
