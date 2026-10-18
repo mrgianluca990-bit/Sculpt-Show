@@ -56,4 +56,38 @@ final class ListFolderRenameTests: XCTestCase {
         XCTAssertThrowsError(try ShowProjectPackage.save(renamed, documentURL: saved.documentURL))
         XCTAssertEqual(try Data(contentsOf: userFile), Data([9]))
     }
+    func testRenameMergesOnlyNewNormalizationMediaOwnedByTheList() throws {
+        let (dir, saved) = try project()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var edited = saved.runtimeShow
+        edited.cueLists[0].name = "New"
+        let directory = try ShowProjectPackage.audioDirectory(for: edited.cueLists[0].id,
+            in: edited, documentURL: saved.documentURL)
+        let normalized = directory.appendingPathComponent("normalized.wav")
+        try Data([5, 6]).write(to: normalized)
+        edited.cueLists[0].cues.append(Cue(name: "Normalized", mediaPath: normalized.path))
+        let result = try ShowProjectPackage.save(edited, documentURL: saved.documentURL)
+        XCTAssertTrue(result.runtimeShow.cueLists[0].cues.allSatisfy {
+            FileManager.default.fileExists(atPath: $0.mediaPath)
+        })
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted(), ["normalized.wav", "stem.wav"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.deletingLastPathComponent().appendingPathComponent("Old").path))
+    }
+
+    func testSwappedFolderNamesKeepEachListsOwnAudio() throws {
+        let (dir, saved) = try project()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let external = dir.appendingPathComponent("other.wav")
+        try Data([8, 9]).write(to: external)
+        var show = saved.runtimeShow
+        show.cueLists.append(CueList(name: "Other", cues: [Cue(name: "Other cue", mediaPath: external.path)]))
+        let baseline = try ShowProjectPackage.save(show, documentURL: saved.documentURL)
+        var swapped = baseline.runtimeShow
+        swapped.cueLists[0].name = "Other"
+        swapped.cueLists[1].name = "Old"
+        let result = try ShowProjectPackage.save(swapped, documentURL: saved.documentURL)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: result.runtimeShow.cueLists[0].cues[0].mediaPath)), Data([1, 2, 3, 4]))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: result.runtimeShow.cueLists[1].cues[0].mediaPath)), Data([8, 9]))
+    }
+
 }

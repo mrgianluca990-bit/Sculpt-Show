@@ -20,8 +20,22 @@ enum ShowProjectFolderMigration {
         }
         guard !moves.isEmpty else { return try write(show) }
         let sourcePaths = Set(moves.map { $0.old.path.lowercased() })
-        for move in moves where fm.fileExists(atPath: move.new.path) && !sourcePaths.contains(move.new.path.lowercased()) {
-            throw ShowProjectPackage.Failure.destinationExists(move.new.lastPathComponent)
+        var destinations: [(url: URL, stage: URL, moveIndex: Int, files: [URL])] = []
+        for (i, move) in moves.enumerated() where fm.fileExists(atPath: move.new.path) && !sourcePaths.contains(move.new.path.lowercased()) {
+            let files = try fm.contentsOfDirectory(at: move.new, includingPropertiesForKeys: [.isRegularFileKey])
+            let owner = show.cueLists.first { ShowProjectPackage.listFolderName($0) == move.new.lastPathComponent }
+            let owned = Set(owner?.cues.flatMap { $0.audioElements.map(\.sourcePath) } ?? [])
+            let others = Set(show.cueLists.filter { $0.id != owner?.id }.flatMap { $0.cues.flatMap { $0.audioElements.map(\.sourcePath) } })
+            // A normalization started after Rename may already have created the
+            // new folder. Merge only its uniquely owned files, never user data.
+            for file in files {
+                guard (try file.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true,
+                      owned.contains(file.path), !others.contains(file.path),
+                      !fm.fileExists(atPath: move.old.appendingPathComponent(file.lastPathComponent).path) else {
+                    throw ShowProjectPackage.Failure.destinationExists(move.new.lastPathComponent)
+                }
+            }
+            destinations.append((move.new, staging.appendingPathComponent("destination-\(i)"), i, files))
         }
         // Replace all prefixes simultaneously; sequential substitutions corrupt swaps.
         func remap(_ value: String) -> String {
@@ -88,10 +102,24 @@ enum ShowProjectFolderMigration {
         try fm.createDirectory(at: staging, withIntermediateDirectories: false)
         var staged: [Int] = []
         var installed: [Int] = []
+        var stagedDestinations: [Int] = []
+        var merged: [(source: URL, destination: URL)] = []
         do {
+            for i in destinations.indices {
+                try fm.moveItem(at: destinations[i].url, to: destinations[i].stage)
+                stagedDestinations.append(i)
+            }
             for i in moves.indices {
                 try fm.moveItem(at: moves[i].old, to: moves[i].stage)
                 staged.append(i)
+            }
+            for destination in destinations {
+                for file in destination.files {
+                    let source = destination.stage.appendingPathComponent(file.lastPathComponent)
+                    let target = moves[destination.moveIndex].stage.appendingPathComponent(file.lastPathComponent)
+                    try fm.moveItem(at: source, to: target)
+                    merged.append((source, target))
+                }
             }
             for i in moves.indices {
                 try fm.moveItem(at: moves[i].stage, to: moves[i].new)
@@ -112,9 +140,17 @@ enum ShowProjectFolderMigration {
                 do { try fm.moveItem(at: moves[i].new, to: moves[i].stage) }
                 catch { failures.append(moves[i].new.path) }
             }
+            for file in merged.reversed() {
+                do { try fm.moveItem(at: file.destination, to: file.source) }
+                catch { failures.append(file.destination.path) }
+            }
             for i in staged.reversed() where fm.fileExists(atPath: moves[i].stage.path) {
                 do { try fm.moveItem(at: moves[i].stage, to: moves[i].old) }
                 catch { failures.append(moves[i].stage.path) }
+            }
+            for i in stagedDestinations.reversed() {
+                do { try fm.moveItem(at: destinations[i].stage, to: destinations[i].url) }
+                catch { failures.append(destinations[i].stage.path) }
             }
             if failures.isEmpty { try? fm.removeItem(at: staging); throw original }
             throw ShowProjectPackage.Failure.missingSource(
