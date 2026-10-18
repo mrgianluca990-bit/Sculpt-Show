@@ -39,6 +39,7 @@ struct SculptShowApp: App {
                     AudioMIDISetupView()
                         .environmentObject(playback)
                         .environmentObject(midi)
+                        .environmentObject(showStore)
                 }
                 .onChange(of: Set(playback.snapshots.keys)) { _ in
                     showStore.applyPendingDAWPublications(using: playback)
@@ -46,11 +47,23 @@ struct SculptShowApp: App {
                 .onChange(of: showStore.isLoadingProject) { loading in
                     playback.projectTransitionInProgress = loading
                     showStore.stopAll(using: playback)
-                    if !loading { showStore.applyPendingDAWPublications(using: playback) }
+                    if !loading {
+                        showStore.requestSessionAudioPreparation(using: playback)
+                        showStore.applyPendingDAWPublications(using: playback)
+                    }
                 }
-                .onChange(of: showStore.pendingAudioImports) { _ in showStore.applyPendingDAWPublications(using: playback) }
-                .onChange(of: showStore.normalizingCueID) { _ in showStore.applyPendingDAWPublications(using: playback) }
-                .onChange(of: showStore.normalizingListID) { _ in showStore.applyPendingDAWPublications(using: playback) }
+                .onChange(of: showStore.pendingAudioImports) { _ in
+                    showStore.requestSessionAudioPreparation(using: playback)
+                    showStore.applyPendingDAWPublications(using: playback)
+                }
+                .onChange(of: showStore.normalizingCueID) { _ in
+                    showStore.requestSessionAudioPreparation(using: playback)
+                    showStore.applyPendingDAWPublications(using: playback)
+                }
+                .onChange(of: showStore.normalizingListID) { _ in
+                    showStore.requestSessionAudioPreparation(using: playback)
+                    showStore.applyPendingDAWPublications(using: playback)
+                }
                 .onOpenURL { documentURL in
                     if documentURL.pathExtension.lowercased() == "sculptbridge" {
                         showStore.receiveDAWPublication(at: documentURL, using: playback)

@@ -34,11 +34,23 @@ final class NativeMarkerLoopPlannerTests: XCTestCase {
         for rule in [
             InteractionRule(action: .fire, target: .itself, fireAtMarkerID: end.id),
             InteractionRule(action: .fire, target: .itself, fireAtMarkerID: UUID()),
-            InteractionRule(action: .fire, target: .itself, delaySeconds: 0.1, fireAtMarkerID: start.id),
-            InteractionRule(action: .fire, target: .itself, conditionCueID: UUID(), fireAtMarkerID: start.id)
+            InteractionRule(action: .fire, target: .itself, delaySeconds: 0.1, fireAtMarkerID: start.id)
         ] {
             end.rules = [rule]
             XCTAssertNil(NativeMarkerLoopPlanner.plan(for: try cue(markers: [start, end])))
         }
     }
+    func testConditionalReturnKeepsNativePlanAndConditionIdentity() throws {
+        let start = CueMarker(name: "Start", positionSeconds: 1)
+        let condition = UUID()
+        var end = CueMarker(name: "End", positionSeconds: 4)
+        end.rules = [InteractionRule(action: .fire, target: .itself, conditionCueID: condition,
+            conditionState: .stopped, fireAtMarkerID: start.id)]
+        let plan = try XCTUnwrap(NativeMarkerLoopPlanner.plan(for: cue(markers: [start, end])))
+        XCTAssertEqual(plan.conditionCueID, condition)
+        XCTAssertEqual(plan.conditionState, .stopped)
+        XCTAssertEqual(plan.inSeconds, 1)
+        XCTAssertEqual(plan.outSeconds, 4)
+    }
+
 }

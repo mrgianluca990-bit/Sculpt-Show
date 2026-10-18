@@ -71,7 +71,7 @@ final class ShowStore: ObservableObject {
     /// references. Running playback cannot be atomically rewound in this model,
     /// so document Undo is intentionally blocked during live playout.
     func undoEdit(using playback: PlaybackEngine) {
-        guard !isLoadingProject, pendingAudioImports == 0,
+        guard !isLoadingProject, !preparingSessionAudio, pendingAudioImports == 0,
               normalizingCueID == nil, normalizingListID == nil else { return }
         guard playback.snapshots.isEmpty else {
             errorMessage = "Stop playback before Undo: live audio cannot safely roll back."
@@ -86,7 +86,7 @@ final class ShowStore: ObservableObject {
     }
 
     func redoEdit(using playback: PlaybackEngine) {
-        guard !isLoadingProject, pendingAudioImports == 0,
+        guard !isLoadingProject, !preparingSessionAudio, pendingAudioImports == 0,
               normalizingCueID == nil, normalizingListID == nil else { return }
         guard playback.snapshots.isEmpty else {
             errorMessage = "Stop playback before Redo: live audio cannot safely roll back."
@@ -105,6 +105,136 @@ final class ShowStore: ObservableObject {
     /// The previous Show stays visible until every existing stem has been scanned.
     @Published private(set) var isLoadingProject = false
     private var showOpenGeneration = UUID()
+
+    @Published private(set) var preparingSessionAudio = false
+    @Published private(set) var sessionAudioStatus = ""
+    private var lastAudioPreparationKey: String?
+    private var preparationRequested = false
+    private var appliedDAWReceipts: [UUID: URL] = [:]
+
+    private func preparationKey(_ model: Show) -> String {
+        let paths = model.cueLists.flatMap { $0.cues.flatMap { $0.audioElements.map { "\($0.id):\($0.sourcePath):\($0.originalSourcePath ?? "")" } } }.sorted()
+        let loops = model.cueLists.flatMap(\.cues).filter {
+            NativeMarkerLoopPlanner.plan(for: $0)?.conditionCueID != nil
+        }.map { $0.id.uuidString }.sorted()
+        return "\(model.sampleRate)|" + paths.joined(separator: "|") + loops.joined(separator: "|")
+    }
+
+    func changeSessionSampleRate(_ rate: Int, using playback: PlaybackEngine) {
+        guard Show.supportedSampleRates.contains(rate), playback.snapshots.isEmpty,
+              !preparingSessionAudio, !isLoadingProject, pendingAudioImports == 0 else {
+            errorMessage = "Stop all cues and finish media preparation before changing sample rate."
+            return
+        }
+        guard show.sampleRate != rate else { return }
+        var updated = show
+        updated.sampleRate = rate
+        playback.projectAudioReady = false
+        commit(updated)
+        requestSessionAudioPreparation(using: playback)
+    }
+
+    func requestSessionAudioPreparation(using playback: PlaybackEngine, force: Bool = false) {
+        playback.knowProject(show)
+        let key = preparationKey(show)
+        guard force || key != lastAudioPreparationKey else { return }
+        if preparingSessionAudio { preparationRequested = true; playback.projectAudioReady = false; return }
+        guard !isLoadingProject, !preparingSessionAudio, pendingAudioImports == 0,
+              normalizingCueID == nil, normalizingListID == nil else { return }
+        lastAudioPreparationKey = key
+        preparingSessionAudio = true
+        playback.projectAudioReady = false
+        sessionAudioStatus = "Checking project sample rate…"
+        let generation = showOpenGeneration
+        Task { @MainActor in
+            defer {
+                preparingSessionAudio = false
+                if preparationRequested {
+                    preparationRequested = false
+                    requestSessionAudioPreparation(using: playback)
+                }
+            }
+            do {
+                guard await playback.configureProjectSampleRate(show.sampleRate) else {
+                    throw SessionAudioPreparation.Failure.invalid(playback.errorMessage ?? "Audio device is not ready")
+                }
+                let inspected = show
+                let needsConversion = try await Task.detached(priority: .userInitiated) {
+                    try inspected.cueLists.flatMap(\.cues).flatMap(\.audioElements).contains {
+                        let file = try AVAudioFile(forReading: URL(fileURLWithPath: $0.sourcePath))
+                        return abs(file.processingFormat.sampleRate - Double(inspected.sampleRate)) > 0.5
+                    }
+                }.value
+                if needsConversion {
+                    if documentURL == nil || documentURL.map({ !ShowProjectPackage.isPackaged($0) }) == true { saveAs() }
+                    guard let documentURL, ShowProjectPackage.isPackaged(documentURL) else {
+                        throw SessionAudioPreparation.Failure.invalid("Save a portable Show project to create converted copies. GO remains blocked.")
+                    }
+                    let before = show
+                    let root = documentURL.deletingLastPathComponent()
+                    sessionAudioStatus = "Converting copies to \(show.sampleRate) Hz…"
+                    let converted = try await Task.detached(priority: .userInitiated) {
+                        try SessionAudioPreparation.preparing(before, projectRoot: root)
+                    }.value
+                    guard generation == showOpenGeneration, preparationKey(show) == preparationKey(before) else {
+                        preparationRequested = true
+                        return
+                    }
+                    if converted != show {
+                        // Media preparation belongs to the import/rate-change
+                        // operation, not an extra user-visible Undo action.
+                        var merged = show
+                        for list in converted.cueLists {
+                            for cue in list.cues {
+                                merged.updateCue(cue.id, in: list.id) { current in
+                                    for index in current.elements.indices {
+                                        if let prepared = cue.elements.first(where: { $0.id == current.elements[index].id }) {
+                                            current.elements[index].sourcePath = prepared.sourcePath
+                                            current.elements[index].originalSourcePath = prepared.originalSourcePath
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        show = merged
+                        dirty = true
+                        refreshDAWReceipts(from: before, to: merged)
+                    }
+                    let paths = show.cueLists.flatMap(\.cues).flatMap { $0.audioElements.map(\.sourcePath) }
+                    let unreadable = await ShowWaveformCache.shared.prepare(paths: paths)
+                    guard unreadable.isEmpty else { throw SessionAudioPreparation.Failure.invalid("Converted media waveform verification failed") }
+                }
+                sessionAudioStatus = "Preparing conditional-loop audio…"
+                let preparedModel = show
+                try await playback.prepareConditionalAudio(preparedModel)
+                guard generation == showOpenGeneration, preparationKey(show) == preparationKey(preparedModel) else {
+                    preparationRequested = true
+                    return
+                }
+                lastAudioPreparationKey = preparationKey(show)
+                playback.projectAudioReady = true
+                sessionAudioStatus = "Ready · \(show.sampleRate) Hz · live SRC disabled"
+            } catch {
+                sessionAudioStatus = "Audio not ready · live SRC disabled"
+                errorMessage = "Project audio preparation: " + error.localizedDescription
+            }
+        }
+    }
+
+    private func refreshDAWReceipts(from previous: Show, to prepared: Show) {
+        for (id, url) in appliedDAWReceipts {
+            guard let old = previous.cue(id), let new = prepared.cue(id),
+                  let bytes = try? Data(contentsOf: url),
+                  var record = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+                  let snapshot = record["originCue"],
+                  let snapshotData = try? JSONSerialization.data(withJSONObject: snapshot),
+                  let cue = try? JSONDecoder().decode(Cue.self, from: snapshotData), cue == old else { continue }
+            do {
+                record["originCue"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(new))
+                try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]).write(to: url, options: .atomic)
+            } catch { errorMessage = "Prepared audio, but could not update DAW receipt: " + error.localizedDescription }
+        }
+    }
 
     init() {
         selectedListID = show.cueLists.first?.id
@@ -464,7 +594,10 @@ final class ShowStore: ObservableObject {
                 var record: [String: Any] = ["status": "applied", "publicationID": packet.publicationID.uuidString,
                     "cueID": m.cueID.uuidString, "publishMode": packet.publishMode]
                 if let cue { record["originCue"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(cue)) }
-                do { try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]).write(to: receipt, options: .atomic) }
+                do {
+                    try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]).write(to: receipt, options: .atomic)
+                    appliedDAWReceipts[m.cueID] = receipt
+                }
                 catch { errorMessage = "Cue updated, but the DAW receipt could not be saved: \(error.localizedDescription)" }
                 dawBridgeMessage = "DAW publication applied: \(m.stems.count) stems, \(m.markers.count) markers. Save Show to keep it."
             } catch {
@@ -522,7 +655,7 @@ final class ShowStore: ObservableObject {
     @Published var dawBridgeMessage: String?
 
     func editCueInDAW(_ cueID: UUID, in listID: UUID) {
-        guard !dawBridgeBusy, !isLoadingProject, pendingAudioImports == 0 else { return }
+        guard !dawBridgeBusy, !preparingSessionAudio, !isLoadingProject, pendingAudioImports == 0 else { return }
         // A saved project anchors every DAW edit inside its own bridge folder.
         if documentURL == nil { saveAs() }
         guard let projectDocument = documentURL else { return }
@@ -620,6 +753,7 @@ final class ShowStore: ObservableObject {
                     for result in results {
                         if let index = cue.elements.firstIndex(where: { $0.id == result.elementID }) {
                             cue.elements[index].sourcePath = result.normalizedPath
+                            cue.elements[index].originalSourcePath = nil
                         }
                     }
                 }
@@ -713,6 +847,7 @@ final class ShowStore: ObservableObject {
                             let id = updated.cueLists[li].cues[ci].elements[ei].id
                             if let path = newPaths[id] {
                                 updated.cueLists[li].cues[ci].elements[ei].sourcePath = path
+                                updated.cueLists[li].cues[ci].elements[ei].originalSourcePath = nil
                             }
                         }
                     }
@@ -783,6 +918,7 @@ final class ShowStore: ObservableObject {
                 $0.id == elementID && $0.kind == .audio
             }) else { return }
             cue.elements[index].sourcePath = url.path
+            cue.elements[index].originalSourcePath = nil
         }
     }
 
@@ -827,6 +963,7 @@ final class ShowStore: ObservableObject {
                           let matches = existing[URL(fileURLWithPath: item.sourcePath).lastPathComponent.lowercased()],
                           matches.count == 1 else { continue }
                     updated.cueLists[li].cues[ci].elements[ei].sourcePath = matches[0].path
+                    updated.cueLists[li].cues[ci].elements[ei].originalSourcePath = nil
                     replacements += 1
                 }
             }
@@ -1237,6 +1374,7 @@ final class ShowStore: ObservableObject {
     }
 
     func save() {
+        guard !preparingSessionAudio else { errorMessage = "Wait for audio preparation before saving."; return }
         guard let url = documentURL else { saveAs(); return }
         if ShowProjectPackage.isPackaged(url) { write(to: url) }
         else { saveAs() } // Convert legacy, stand-alone .scshow to a self-contained project.
@@ -1245,7 +1383,7 @@ final class ShowStore: ObservableObject {
     /// Save a dated document snapshot; the working show and its main file
     /// stay active. No duplicate Audio Files folder is created.
     func saveVersion() {
-        guard !isLoadingProject, pendingAudioImports == 0,
+        guard !isLoadingProject, !preparingSessionAudio, pendingAudioImports == 0,
               normalizingCueID == nil, normalizingListID == nil else {
             errorMessage = "Finish loading/importing/normalizing before Save Version."
             return

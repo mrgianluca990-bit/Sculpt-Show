@@ -157,6 +157,11 @@ public enum ShowProjectPackage {
                 for ei in updated.cueLists[li].cues[ci].elements.indices {
                     let element = updated.cueLists[li].cues[ci].elements[ei]
                     guard element.kind == .audio, !element.sourcePath.isEmpty else { continue }
+                    if let original = element.originalSourcePath, !(original as NSString).isAbsolutePath {
+                        let source = root.appendingPathComponent(original).standardizedFileURL
+                        guard source.path.hasPrefix(root.path + "/") else { throw Failure.unsafeReference(original) }
+                        updated.cueLists[li].cues[ci].elements[ei].originalSourcePath = source.path
+                    }
                     if (element.sourcePath as NSString).isAbsolutePath { continue }
                     let absolute = root.appendingPathComponent(element.sourcePath).standardizedFileURL
                     guard absolute.path.hasPrefix(root.path + "/") else {
@@ -185,6 +190,24 @@ public enum ShowProjectPackage {
                     let source = URL(fileURLWithPath: element.sourcePath).standardizedFileURL
                     guard fm.fileExists(atPath: source.path), fm.isReadableFile(atPath: source.path) else {
                         throw Failure.missingSource(source.path)
+                    }
+                    if let original = element.originalSourcePath {
+                        let origin = URL(fileURLWithPath: original).standardizedFileURL
+                        guard fm.isReadableFile(atPath: origin.path) else { throw Failure.missingSource(origin.path) }
+                        let relative: String
+                        if let extantRoot, origin.path.hasPrefix(extantRoot.path + "/") {
+                            relative = String(origin.path.dropFirst(extantRoot.path.count + 1))
+                        } else {
+                            relative = "Original Audio/\(element.id.uuidString)/" + safeFilename(origin.lastPathComponent)
+                            let destination = root.appendingPathComponent(relative)
+                            if !fm.fileExists(atPath: destination.path) {
+                                try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                                try fm.copyItem(at: origin, to: destination)
+                            } else if !fm.contentsEqual(atPath: origin.path, andPath: destination.path) {
+                                throw Failure.destinationExists(relative)
+                            }
+                        }
+                        stored.cueLists[li].cues[ci].elements[ei].originalSourcePath = relative
                     }
                     if let previous = reusedWithinList[source.path] {
                         stored.cueLists[li].cues[ci].elements[ei].sourcePath = previous

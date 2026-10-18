@@ -4,22 +4,29 @@ import Foundation
 public struct Show: Codable, Equatable, Sendable {
     public static let currentVersion = 1
 
+    public static let supportedSampleRates = [44100, 48000, 88200, 96000, 176400, 192000]
+    public var sampleRate: Int
     public var formatVersion: Int
     public var name: String
     public var cueLists: [CueList]
     public var rules: [InteractionRule]
 
     public init(name: String = "Untitled Show", cueLists: [CueList] = [CueList(name: "Cue List 1")]) {
+        self.sampleRate = 48000
         self.formatVersion = Self.currentVersion
         self.name = name
         self.cueLists = cueLists
         self.rules = []
     }
 
-    private enum CodingKeys: String, CodingKey { case formatVersion, name, cueLists, rules }
+    private enum CodingKeys: String, CodingKey { case formatVersion, sampleRate, name, cueLists, rules }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 48000
+        guard Self.supportedSampleRates.contains(sampleRate) else {
+            throw DecodingError.dataCorruptedError(forKey: .sampleRate, in: c, debugDescription: "Unsupported session sample rate")
+        }
         formatVersion = try c.decode(Int.self, forKey: .formatVersion)
         name = try c.decode(String.self, forKey: .name)
         cueLists = try c.decode([CueList].self, forKey: .cueLists)
@@ -220,6 +227,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     public var kind: CueElementKind
     public var name: String
     /// Absolute audio path; unused for timecode elements.
+    public var originalSourcePath: String?
     public var sourcePath: String
     /// Placement on the cue timeline (seconds).
     public var startSeconds: Double
@@ -254,6 +262,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
         self.id = id
         self.kind = kind
         self.name = name
+        self.originalSourcePath = nil
         self.sourcePath = sourcePath
         self.startSeconds = max(0, startSeconds)
         self.inSeconds = max(0, inSeconds)
@@ -272,7 +281,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     // Version 0.8.1 and older .scshow files lack gain/muted fields.
     // Decode these two settings with safe defaults so old projects still open.
     private enum CodingKeys: String, CodingKey {
-        case id, kind, name, sourcePath, startSeconds, inSeconds, outSeconds
+        case id, kind, name, sourcePath, originalSourcePath, startSeconds, inSeconds, outSeconds
         case timecodeStart, ltcTrim, ltcLevelTrimDB, frameRate, timecodeDropFrame, ltcOutputChannel, gain, muted, outputStartChannel
     }
 
@@ -296,6 +305,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
             muted: try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false,
             outputStartChannel: try c.decodeIfPresent(Int.self, forKey: .outputStartChannel) ?? 1
         )
+        originalSourcePath = try c.decodeIfPresent(String.self, forKey: .originalSourcePath)
     }
 
     public static func audio(_ url: URL) -> CueElement {
@@ -417,7 +427,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         set {
             if let index = elements.firstIndex(where: { $0.kind == .audio }) {
                 if newValue.isEmpty { elements.remove(at: index) }
-                else { elements[index].sourcePath = newValue }
+                else { elements[index].sourcePath = newValue; elements[index].originalSourcePath = nil }
             } else if !newValue.isEmpty {
                 elements.append(CueElement.audio(URL(fileURLWithPath: newValue)))
             }

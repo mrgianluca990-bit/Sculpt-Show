@@ -218,11 +218,24 @@ struct WorkspaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .overlay(alignment: .bottomLeading) {
+            if store.preparingSessionAudio {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(store.sessionAudioStatus).font(.system(size: 11, design: .monospaced))
+                }
+                .padding(10).background(Skin.panel, in: RoundedRectangle(cornerRadius: 8))
+                .padding(12).allowsHitTesting(false)
+            }
+        }
         .onDeleteCommand(perform: deleteSelectedCue)
         .onAppear {
             installKeyboardShortcuts()
             playback.applyCueListTrims(store.show)
-            Task { @MainActor in await playback.startRoutingAutomatically() }
+            Task { @MainActor in
+                await playback.startRoutingAutomatically()
+                store.requestSessionAudioPreparation(using: playback)
+            }
             midi.onCommand = { [weak store, weak playback] command in
                 guard let store, let playback else { return }
                 switch command {
@@ -257,6 +270,7 @@ struct WorkspaceView: View {
         }
         .onChange(of: store.show) { next in
             playback.applyCueListTrims(next)
+            store.requestSessionAudioPreparation(using: playback)
         }
         .onDisappear {
             if let keyboardMonitor {

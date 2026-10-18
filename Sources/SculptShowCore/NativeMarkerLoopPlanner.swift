@@ -2,11 +2,16 @@ import Foundation
 
 /// A marker loop that can be scheduled ahead of the UI event timer.
 public struct NativeMarkerLoop: Equatable, Sendable {
+    public let conditionCueID: UUID?
+    public let conditionState: RuleCueState
     public let triggerMarkerID: UUID?
     public let inSeconds: Double
     public let outSeconds: Double
 
-    public init(triggerMarkerID: UUID?, inSeconds: Double, outSeconds: Double) {
+    public init(triggerMarkerID: UUID?, inSeconds: Double, outSeconds: Double,
+                conditionCueID: UUID? = nil, conditionState: RuleCueState = .playing) {
+        self.conditionCueID = conditionCueID
+        self.conditionState = conditionState
         self.triggerMarkerID = triggerMarkerID
         self.inSeconds = inSeconds
         self.outSeconds = outSeconds
@@ -25,7 +30,7 @@ public enum NativeMarkerLoopPlanner {
             guard rules.count == 1, let rule = rules.first,
                   rule.action == .fire,
                   (rule.target == .itself || (rule.target == .specificCue && rule.targetID == cue.id)),
-                  rule.delaySeconds == 0, rule.conditionCueID == nil else { continue }
+                  rule.delaySeconds == 0 else { continue }
             let start: Double
             if let destinationID = rule.fireAtMarkerID {
                 guard let destination = markers.first(where: { $0.id == destinationID }) else { continue }
@@ -36,7 +41,8 @@ public enum NativeMarkerLoopPlanner {
             let end = marker.positionSeconds
             guard end - start >= 0.4 && end - start <= 600 else { continue }
             matches.append(NativeMarkerLoop(triggerMarkerID: marker.id,
-                                             inSeconds: start, outSeconds: end))
+                                             inSeconds: start, outSeconds: end,
+                                             conditionCueID: rule.conditionCueID, conditionState: rule.conditionState))
         }
         return matches.count == 1 ? matches[0] : nil
     }

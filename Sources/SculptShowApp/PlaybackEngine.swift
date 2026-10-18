@@ -37,7 +37,46 @@ final class PlaybackEngine: ObservableObject {
 
     /// File loading replaces the workspace atomically; no transport can start in between.
     var projectTransitionInProgress = false
-    @Published private(set) var snapshots: [UUID: Snapshot] = [:]
+    @Published private(set) var snapshots: [UUID: Snapshot] = [:] {
+        didSet { syncConditionPhases() }
+    }
+    @Published private(set) var projectSampleRate = 48000
+    @Published private(set) var deviceSampleRate: Double = 0
+    var projectAudioReady = false
+
+    private func syncConditionPhases() {
+        var phases: [UUID: Int32] = [:]
+        for (id, state) in snapshots {
+            switch state.phase {
+            case .playing, .fading: phases[id] = 1
+            case .paused: phases[id] = 2
+            case .waiting: phases[id] = 3
+            }
+        }
+        routedAudio.conditionPhases(phases)
+    }
+    func knowProject(_ show: Show) {
+        routedAudio.setKnownCueIDs(Set(show.cueLists.flatMap { $0.cues.map(\.id) }))
+        syncConditionPhases()
+    }
+    func prepareConditionalAudio(_ show: Show) async throws {
+        let cache = routedAudio.preparedConditionalFiles
+        let prepared = try await Task.detached(priority: .userInitiated) {
+            try PreparedConditionalPCM.prepare(show: show, cached: cache)
+        }.value
+        routedAudio.preparedConditionalFiles = prepared
+    }
+    func configureProjectSampleRate(_ rate: Int) async -> Bool {
+        guard snapshots.isEmpty else {
+            if projectSampleRate == rate { return true }
+            errorMessage = "Stop all cues before changing the project sample rate."
+            return false
+        }
+        projectSampleRate = rate
+        if routingEnabled && abs(deviceSampleRate - Double(rate)) < 0.5 { return true }
+        await configureRouting(deviceID: routingDeviceID ?? RoutedAudioEngine.defaultOutputID())
+        return routingEnabled && abs(deviceSampleRate - Double(rate)) < 0.5
+    }
     /// Non-destructive audition cursor for each cue. GLOBAL GO ignores it.
     /// Kept only in memory: the .scshow show format and Rules are unchanged.
     @Published private(set) var cuePlayCursors: [UUID: Double] = [:]
@@ -275,7 +314,7 @@ final class PlaybackEngine: ObservableObject {
             return
         }
         guard !configuringRouting else { return }
-        if routingEnabled, routingDeviceID == deviceID { return }
+        if routingEnabled, routingDeviceID == deviceID, abs(deviceSampleRate - Double(projectSampleRate)) < 0.5 { return }
         guard snapshots.isEmpty else {
             errorMessage = "Cannot change audio interface while cues are active. The current audio keeps playing; stop the show before changing hardware."
             return
@@ -293,15 +332,24 @@ final class PlaybackEngine: ObservableObject {
         routingDeviceID = nil
         outputControls = OutputMuteSoloState(channelCount: 0)
         meterMonitor.configure(channels: 0)
+        routedAudio.onSampleRateInvalidated = { [weak self] rate in
+            guard let self else { return }
+            self.stopAll()
+            self.projectAudioReady = false
+            self.routingEnabled = false
+            self.deviceSampleRate = rate
+            self.errorMessage = "Audio device sample rate changed. Playback stopped to prevent live SRC. Prepare / Verify Audio in Audio/MIDI Setup."
+        }
         routedAudio.onMeterSample = { [weak self] peaks, rms in
             self?.updateMeterLevels(peaks: peaks, rms: rms)
         }
         do {
-            try await routedAudio.configure(device: device)
+            try await routedAudio.configure(device: device, requestedRate: projectSampleRate)
             let allAudible = OutputMuteSoloState(channelCount: device.channels)
             try routedAudio.applyOutputControls(allAudible)
             outputControls = allAudible
             meterMonitor.configure(channels: device.channels)
+            deviceSampleRate = routedAudio.actualSampleRate
             routingEnabled = true
             routingDeviceID = device.id
             if !device.uid.isEmpty {
@@ -374,6 +422,10 @@ final class PlaybackEngine: ObservableObject {
               from markerOffsetSeconds: Double = 0,
               restartPaused: Bool = false) -> Bool {
         guard !projectTransitionInProgress, requestedCue.enabled else { return false }
+        if requestedCue.hasAudio && !projectAudioReady {
+            errorMessage = "Prepare project audio before GO. Live sample-rate conversion is disabled."
+            return false
+        }
         // A forgotten diagnostic tone can never continue into a live GO.
         stopTestTone()
         // Show mode always requires an active Core Audio route for audio cues.
@@ -516,6 +568,7 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func cueElapsed(_ id: UUID) -> Double {
+        if let position = routedAudio.conditionalPosition(for: id) { return position }
         let base = elapsedAtStart[id] ?? 0
         let linear = max(0, base + (startedAt[id].map { max(0, ProcessInfo.processInfo.systemUptime - $0) } ?? 0))
         if let loop = routedAudio.nativeLoop(for: id), linear >= loop.outSeconds {
@@ -569,6 +622,7 @@ final class PlaybackEngine: ObservableObject {
         guard var list = tracks[id], let cue = activeCues[id] else { return }
         // Empty containers keep their existing immediate timeline behavior.
         guard !list.isEmpty else {
+            routedAudio.setSilentCueTimeline(id, duration: max(0, (snapshots[id]?.duration ?? 0) - elapsed), loops: cue.loop)
             elapsedAtStart[id] = elapsed
             startedAt[id] = ProcessInfo.processInfo.systemUptime
             return
@@ -740,6 +794,7 @@ final class PlaybackEngine: ObservableObject {
         let seconds = overrideSeconds.map { max(0, min($0, 600)) } ?? cue.fadeOutSeconds
         guard seconds > 0, !(tracks[cue.id] ?? []).isEmpty || routedCues.contains(cue.id) else { stop(cue.id); return }
         let token = UUID()
+        routedAudio.extendCueTimeline(cue.id, duration: seconds)
         fadeTokens[cue.id] = token
         snapshots[cue.id]?.phase = .fading
         onStopped?(cue.id)

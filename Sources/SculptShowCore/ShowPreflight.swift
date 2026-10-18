@@ -111,6 +111,10 @@ public enum ShowPreflight {
                 }
                 let routedOutput = AudioRoutePlan.wrappedOutput(element.outputStartChannel,
                     sourceChannels: info.channelCount, deviceChannels: outputChannels)
+                if abs(info.sampleRate - Double(show.sampleRate)) > 0.5 {
+                    add(.blocking, "sample-rate", cue, path,
+                        "\(element.name): prepare a \(show.sampleRate) Hz copy before GO. Live SRC is disabled.")
+                }
                 for tc in ltcs {
                     if let out = tc.ltcOutputChannel,
                        (routedOutput..<(routedOutput + info.channelCount)).contains(out) {
