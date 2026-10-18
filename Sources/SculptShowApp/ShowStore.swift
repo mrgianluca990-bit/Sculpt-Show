@@ -519,10 +519,13 @@ final class ShowStore: ObservableObject {
     @Published var dawBridgeMessage: String?
 
     func editCueInDAW(_ cueID: UUID, in listID: UUID) {
-        guard !dawBridgeBusy else { return }
+        guard !dawBridgeBusy, !isLoadingProject, pendingAudioImports == 0 else { return }
+        // A saved project anchors every DAW edit inside its own bridge folder.
+        if documentURL == nil { saveAs() }
+        guard let projectDocument = documentURL else { return }
         do {
             let manifest = try SculptBridge.manifest(show: show, listID: listID, cueID: cueID)
-            let preparation = try SculptDAWLaunchBridge.prepare(manifest)
+            let preparation = try SculptDAWLaunchBridge.prepare(manifest, projectDocument: projectDocument)
             dawBridgeBusy = true
             dawBridgeCueID = cueID
             dawBridgeMessage = "Preparing Sculpt DAW session…"
