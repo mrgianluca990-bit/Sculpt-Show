@@ -1116,6 +1116,7 @@ final class ShowStore: ObservableObject {
     }
 
     func fireSelected(in listID: UUID, using playback: PlaybackEngine) {
+        guard !isLoadingProject else { return }
         guard let list = show.cueLists.first(where: { $0.id == listID }),
               let cue = selectedCue(in: listID) ?? list.cues.first(where: { $0.enabled }),
               playback.play(cue, restartPaused: true) else { return }
@@ -1129,6 +1130,7 @@ final class ShowStore: ObservableObject {
 
     /// PLAY LIST starts from the selected cue (or first enabled cue) and continues on natural endings.
     func playList(_ listID: UUID, using playback: PlaybackEngine) {
+        guard !isLoadingProject else { return }
         guard playingLists[listID] == nil else { return }
         guard let list = show.cueLists.first(where: { $0.id == listID }),
               let cue = selectedCue(in: listID).flatMap({ $0.enabled ? $0 : nil })
@@ -1147,6 +1149,7 @@ final class ShowStore: ObservableObject {
 
     /// Called only for a naturally finished file, not Stop, Fade Out or Pause.
     func didFinishNaturally(_ cueID: UUID, using playback: PlaybackEngine) {
+        guard !isLoadingProject else { return }
         handleRuleEvent(.ending, source: cueID, using: playback)
         if let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }),
            playingLists[list.id] == cueID {
@@ -1434,6 +1437,7 @@ final class ShowStore: ObservableObject {
     }
 
     func handleRuleEvent(_ event: RuleEvent, source cueID: UUID, using playback: PlaybackEngine) {
+        guard !isLoadingProject else { return }
         guard !suppressRuleEvents else { return }
         // Anti-runaway guard: a misconfigured chain cannot spawn unlimited events.
         let now = Date()

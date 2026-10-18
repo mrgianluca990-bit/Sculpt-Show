@@ -35,6 +35,8 @@ final class PlaybackEngine: ObservableObject {
         var finished: Bool = false
     }
 
+    /// File loading replaces the workspace atomically; no transport can start in between.
+    var projectTransitionInProgress = false
     @Published private(set) var snapshots: [UUID: Snapshot] = [:]
     /// Non-destructive audition cursor for each cue. GLOBAL GO ignores it.
     /// Kept only in memory: the .scshow show format and Rules are unchanged.
@@ -371,7 +373,7 @@ final class PlaybackEngine: ObservableObject {
     func play(_ requestedCue: Cue, overrideFadeInSeconds: Double? = nil,
               from markerOffsetSeconds: Double = 0,
               restartPaused: Bool = false) -> Bool {
-        guard requestedCue.enabled else { return false }
+        guard !projectTransitionInProgress, requestedCue.enabled else { return false }
         // A forgotten diagnostic tone can never continue into a live GO.
         stopTestTone()
         // Show mode always requires an active Core Audio route for audio cues.

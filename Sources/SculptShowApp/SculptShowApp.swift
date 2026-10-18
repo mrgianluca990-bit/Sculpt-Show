@@ -34,7 +34,11 @@ struct SculptShowApp: App {
                 .onChange(of: Set(playback.snapshots.keys)) { _ in
                     showStore.applyPendingDAWPublications(using: playback)
                 }
-                .onChange(of: showStore.isLoadingProject) { _ in showStore.applyPendingDAWPublications(using: playback) }
+                .onChange(of: showStore.isLoadingProject) { loading in
+                    playback.projectTransitionInProgress = loading
+                    showStore.stopAll(using: playback)
+                    if !loading { showStore.applyPendingDAWPublications(using: playback) }
+                }
                 .onChange(of: showStore.pendingAudioImports) { _ in showStore.applyPendingDAWPublications(using: playback) }
                 .onChange(of: showStore.normalizingCueID) { _ in showStore.applyPendingDAWPublications(using: playback) }
                 .onChange(of: showStore.normalizingListID) { _ in showStore.applyPendingDAWPublications(using: playback) }

@@ -1501,7 +1501,7 @@ private struct CueRow: View {
 
     private var cueActions: some View {
         Group {
-            Button { playback.playCueLocally(cue) } label: { Image(systemName: "play.fill") }
+            Button { if !store.isLoadingProject { playback.playCueLocally(cue) } } label: { Image(systemName: "play.fill") }
                 .disabled(!cue.enabled)
                 .help("Cue PLAY: start from the blue audition cursor set on WAVEFORMS. Global GO always starts at zero.")
             Button { playback.togglePause(cue.id) } label: { Image(systemName: "pause.fill") }
