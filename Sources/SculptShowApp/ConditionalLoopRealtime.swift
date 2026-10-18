@@ -24,12 +24,10 @@ final class PreparedConditionalPCM: @unchecked Sendable {
         bytes = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
         let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
         guard file.length > 0, file.length <= Int64(UInt32.max),
-              file.processingFormat.sampleRate == Double(sampleRate),
-              let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
+              file.processingFormat.sampleRate == Double(sampleRate) else {
             throw SessionAudioPreparation.Failure.invalid("Conditional-loop media must be prepared at the project sample rate")
         }
-        try file.read(into: pcm)
-        guard Int64(pcm.frameLength) == file.length else { throw SessionAudioPreparation.Failure.invalid("Incomplete conditional-loop media") }
+        let pcm = try NativeLoopBuffer.readFrames(file: file, count: AVAudioFrameCount(file.length))
         buffer = pcm
     }
     func matches(path: String, sampleRate: Int) -> Bool {

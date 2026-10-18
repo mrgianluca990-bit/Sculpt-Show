@@ -148,6 +148,11 @@ struct RulesEditor: View {
                     ForEach(RuleTarget.allCases, id: \.self) { item in Text(item.rawValue).tag(item) }
                 }
                 targetPicker
+                Toggle("Exclude this cue", isOn: Binding(
+                    get: { draft.excludeSource ?? false },
+                    set: { draft.excludeSource = $0 }))
+                Text("For a playlist crossfade: Starting → Fade Out → Cue List, with Exclude this cue enabled.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if draft.action == .dim { dimPicker }
                 if draft.action == .fade { fadePicker }
                 if draft.action == .fire {

@@ -28,7 +28,7 @@ public enum NativeMarkerLoopPlanner {
         for (i, marker) in markers.enumerated() where i > 0 {
             let rules = marker.rules.filter(\.enabled)
             guard rules.count == 1, let rule = rules.first,
-                  rule.action == .fire,
+                  rule.action == .fire, rule.excludeSource != true,
                   (rule.target == .itself || (rule.target == .specificCue && rule.targetID == cue.id)),
                   rule.delaySeconds == 0 else { continue }
             let start: Double

@@ -187,16 +187,20 @@ public struct CueList: Identifiable, Codable, Equatable, Sendable {
     public var rules: [InteractionRule]
     /// Persistent cue-list master trim in decibels. Does not modify cue faders.
     public var trimDB: Double
+    public var randomOrder: Bool
+    public var repeatAll: Bool
 
     public init(id: UUID = UUID(), name: String, cues: [Cue] = [], trimDB: Double = 0) {
         self.id = id
         self.name = name
         self.cues = cues
         self.rules = []
+        self.randomOrder = false
+        self.repeatAll = false
         self.trimDB = max(-60, min(6, trimDB))
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, cues, rules, trimDB }
+    private enum CodingKeys: String, CodingKey { case id, name, cues, rules, trimDB, randomOrder, repeatAll }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -204,6 +208,8 @@ public struct CueList: Identifiable, Codable, Equatable, Sendable {
         name = try c.decode(String.self, forKey: .name)
         cues = try c.decode([Cue].self, forKey: .cues)
         rules = try c.decodeIfPresent([InteractionRule].self, forKey: .rules) ?? []
+        randomOrder = try c.decodeIfPresent(Bool.self, forKey: .randomOrder) ?? false
+        repeatAll = try c.decodeIfPresent(Bool.self, forKey: .repeatAll) ?? false
         trimDB = max(-60, min(6, try c.decodeIfPresent(Double.self, forKey: .trimDB) ?? 0))
     }
 }

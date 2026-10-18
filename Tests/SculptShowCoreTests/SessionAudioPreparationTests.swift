@@ -69,6 +69,21 @@ final class SessionAudioPreparationTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(stem.originalSourcePath)))
         }
     }
+    func testImportedCopyIsReusedWithoutOriginalAudioFolder() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("Audio Files/List")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = folder.appendingPathComponent("imported.wav")
+        try fixture(source, rate: 44100, channels: 1)
+        let original = try Data(contentsOf: source)
+        let show = Show(cueLists: [CueList(name: "List", cues: [Cue(name: "Song", mediaPath: source.path)])])
+        let prepared = try SessionAudioPreparation.preparing(show, projectRoot: root)
+        XCTAssertEqual(prepared.cueLists[0].cues[0].audioElements[0].originalSourcePath, source.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Original Audio").path))
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 2)
+    }
     func testFailedBatchDoesNotReplaceAnyModelReferences() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -21,13 +21,10 @@ public enum NativeLoopBuffer {
               Double(count) * Double(channels) * 4 <= 128 * 1024 * 1024 else {
             throw Failure.invalidRange
         }
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
-                frameCapacity: AVAudioFrameCount(count)) else { throw Failure.allocation }
         let previous = file.framePosition
         defer { file.framePosition = previous }
         file.framePosition = first
-        try file.read(into: buffer, frameCount: AVAudioFrameCount(count))
-        guard buffer.frameLength == AVAudioFrameCount(count) else { throw Failure.shortRead }
+        let buffer = try readFrames(file: file, count: AVAudioFrameCount(count))
         if channels == buffer.format.channelCount { return buffer }
         // Matrix voices have stereo player outputs, even for mono source files.
         // scheduleBuffer requires that exact channel count. Only input zero is
@@ -44,5 +41,25 @@ public enum NativeLoopBuffer {
         }
         return stereo
     }
+    /// AVAudioFile may return a short, nonterminal read for a valid WAV.
+    /// Accumulate offline instead of treating one read as the whole file.
+    public static func readFrames(file: AVAudioFile, count: AVAudioFrameCount) throws -> AVAudioPCMBuffer {
+        guard count > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count),
+              let chunk = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: min(count, 16384)),
+              let target = buffer.floatChannelData, let source = chunk.floatChannelData else { throw Failure.allocation }
+        var written: AVAudioFrameCount = 0
+        while written < count {
+            try file.read(into: chunk, frameCount: min(chunk.frameCapacity, count - written))
+            guard chunk.frameLength > 0 else { throw Failure.shortRead }
+            for channel in 0..<Int(file.processingFormat.channelCount) {
+                target[channel].advanced(by: Int(written)).update(from: source[channel], count: Int(chunk.frameLength))
+            }
+            written += chunk.frameLength
+        }
+        buffer.frameLength = written
+        return buffer
+    }
+
 }
 #endif

@@ -15,6 +15,7 @@ final class ShowStore: ObservableObject {
     /// A manual GO advances the selected cue to the next enabled row in that list.
     @Published var advanceAfterGO = true
     /// When PLAY LIST is active, map each list to its currently expected cue.
+    private var playlistOrders: [UUID: PlaylistOrder] = [:]
     @Published private(set) var playingLists: [UUID: UUID] = [:]
     private var pendingRuleTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingRuleTargets: [UUID: Set<UUID>] = [:]
@@ -1272,13 +1273,34 @@ final class ShowStore: ObservableObject {
     }
 
     /// PLAY LIST starts from the selected cue (or first enabled cue) and continues on natural endings.
+    func setPlaylistOptions(_ id: UUID, random: Bool? = nil, repeatAll: Bool? = nil) {
+        var updated = show
+        guard let index = updated.cueLists.firstIndex(where: { $0.id == id }) else { return }
+        if let random { updated.cueLists[index].randomOrder = random }
+        if let repeatAll { updated.cueLists[index].repeatAll = repeatAll }
+        playlistOrders.removeValue(forKey: id)
+        commit(updated)
+    }
+
+    func didStartCue(_ cueID: UUID) {
+        guard let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }),
+              playingLists[list.id] != nil else { return }
+        // A manually chosen song takes over the running playlist before other
+        // songs are faded by its Starting rules.
+        playingLists[list.id] = cueID
+        playlistOrders[list.id, default: PlaylistOrder()].record(cueID)
+    }
+
     func playList(_ listID: UUID, using playback: PlaybackEngine) {
         guard !isLoadingProject else { return }
         guard playingLists[listID] == nil else { return }
-        guard let list = show.cueLists.first(where: { $0.id == listID }),
-              let cue = selectedCue(in: listID).flatMap({ $0.enabled ? $0 : nil })
-                     ?? list.cues.first(where: { $0.enabled }) else { return }
-        guard playback.play(cue) else { return }
+        guard let list = show.cueLists.first(where: { $0.id == listID }) else { return }
+        var order = PlaylistOrder()
+        let chosen = list.randomOrder ? order.next(in: list, after: nil) :
+            (selectedCue(in: listID).flatMap { $0.enabled ? $0.id : nil } ?? list.cues.first(where: { $0.enabled })?.id)
+        guard let chosen, let cue = show.cue(chosen), playback.play(cue) else { return }
+        order.record(chosen)
+        playlistOrders[listID] = order
         playingLists[listID] = cue.id
         select(cue.id, in: listID)
     }
@@ -1296,7 +1318,10 @@ final class ShowStore: ObservableObject {
         handleRuleEvent(.ending, source: cueID, using: playback)
         if let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }),
            playingLists[list.id] == cueID {
-            if let next = show.followingCue(after: cueID), playback.play(next) {
+            var order = playlistOrders[list.id] ?? PlaylistOrder()
+            let nextID = order.next(in: list, after: cueID)
+            playlistOrders[list.id] = order
+            if let nextID, let next = show.cue(nextID), playback.play(next) {
                 playingLists[list.id] = next.id
                 select(next.id, in: list.id)
             } else {

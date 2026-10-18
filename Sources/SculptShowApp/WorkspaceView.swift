@@ -256,6 +256,7 @@ struct WorkspaceView: View {
             }
             playback.onStarted = { [weak store, weak playback] id in
                 guard let store, let playback else { return }
+                store.didStartCue(id)
                 store.handleRuleEvent(.starting, source: id, using: playback)
             }
             playback.onMarkersReached = { [weak store, weak playback] cueID, markerIDs in
@@ -1018,6 +1019,15 @@ private struct CueListPanel: View {
                 .help("Open Cue List menu")
                 .popover(isPresented: $showingListOptions, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 8) {
+                        Toggle("Random order", isOn: Binding(
+                            get: { list.randomOrder },
+                            set: { store.setPlaylistOptions(list.id, random: $0) }))
+                        Toggle("Repeat all", isOn: Binding(
+                            get: { list.repeatAll },
+                            set: { store.setPlaylistOptions(list.id, repeatAll: $0) }))
+                        Text("PLAY LIST uses these options; disabled cues are skipped.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Divider()
                         Button("Edit List Rules…") {
                             showingListOptions = false
                             editingRules = true

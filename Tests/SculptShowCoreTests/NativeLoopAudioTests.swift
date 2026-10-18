@@ -4,6 +4,27 @@ import XCTest
 @testable import SculptShowCore
 
 final class NativeLoopAudioTests: XCTestCase {
+    func testWholeWAVReadsAccumulatePartialBlocksAndKeepLastSample() throws {
+        for channels: AVAudioChannelCount in [1, 2] {
+            let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: channels))
+            let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 96000))
+            pcm.frameLength = 96000
+            let samples = try XCTUnwrap(pcm.floatChannelData)
+            for channel in 0..<Int(channels) {
+                for frame in 0..<96000 { samples[channel][frame] = Float(frame % 97) / 128 }
+            }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+            defer { try? FileManager.default.removeItem(at: url) }
+            do { let file = try AVAudioFile(forWriting: url, settings: format.settings); try file.write(from: pcm) }
+            let read = try NativeLoopBuffer.readFrames(file: AVAudioFile(forReading: url), count: 96000)
+            XCTAssertEqual(read.frameLength, 96000)
+            let result = try XCTUnwrap(read.floatChannelData)
+            for channel in 0..<Int(channels) {
+                for frame in 0..<96000 { XCTAssertEqual(result[channel][frame], samples[channel][frame]) }
+            }
+        }
+    }
+
     func testMonoLoopBufferMatchesStereoMatrixVoiceWithoutChangingLevel() throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1))
         let source = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 256))

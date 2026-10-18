@@ -198,7 +198,7 @@ public enum ShowProjectPackage {
                         if let extantRoot, origin.path.hasPrefix(extantRoot.path + "/") {
                             relative = String(origin.path.dropFirst(extantRoot.path.count + 1))
                         } else {
-                            relative = "Original Audio/\(element.id.uuidString)/" + safeFilename(origin.lastPathComponent)
+                            relative = "Audio Files/\(folder)/" + element.id.uuidString + "-source-" + safeFilename(origin.lastPathComponent)
                             let destination = root.appendingPathComponent(relative)
                             if !fm.fileExists(atPath: destination.path) {
                                 try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)

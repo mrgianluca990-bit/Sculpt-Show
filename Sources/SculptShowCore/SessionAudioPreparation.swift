@@ -88,12 +88,18 @@ public enum SessionAudioPreparation {
                         guard abs(info.processingFormat.sampleRate - Double(show.sampleRate)) > 0.5 else { continue }
                         var original = element.originalSourcePath.map { URL(fileURLWithPath: $0) }
                         if original == nil {
-                            let folder = projectRoot.appendingPathComponent("Original Audio/\(element.id.uuidString)", isDirectory: true)
-                            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-                            let copy = folder.appendingPathComponent(UUID().uuidString + "-" + current.lastPathComponent)
-                            try fm.copyItem(at: current, to: copy)
-                            created.append(copy)
-                            original = copy
+                            // The imported project copy is already the source original.
+                            // Only external media needs the normal import copy.
+                            if current.standardizedFileURL.path.hasPrefix(projectRoot.standardizedFileURL.path + "/") {
+                                original = current
+                            } else {
+                                let folder = projectRoot.appendingPathComponent("Audio Files/" + ShowProjectPackage.listFolderName(list), isDirectory: true)
+                                try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+                                let copy = folder.appendingPathComponent(UUID().uuidString + "-" + current.lastPathComponent)
+                                try fm.copyItem(at: current, to: copy)
+                                created.append(copy)
+                                original = copy
+                            }
                         }
                         guard let original else { throw Failure.invalid("Missing source original") }
                         let folder = projectRoot.appendingPathComponent("Audio Files/" + ShowProjectPackage.listFolderName(list), isDirectory: true)
