@@ -222,11 +222,12 @@ enum SculptDAWLaunchBridge {
     private static func openDAW(_ application: URL, arguments: [String],
                                 completion: @escaping @MainActor (Result<Void, Error>) -> Void) {
         let config = NSWorkspace.OpenConfiguration()
-        config.arguments = arguments
-        // Sending arguments to an existing app instance is not reliable on macOS.
-        // A new instance avoids overwriting any DAW session already being edited.
-        config.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: application, configuration: config) { _, error in
+        // Deliver an Open Documents event to the existing DAW workspace. Command-line
+        // arguments are not redelivered to a running app and must not spawn a second engine.
+        config.createsNewApplicationInstance = false
+        config.activates = true
+        let documents = arguments.map { URL(fileURLWithPath: $0) }
+        NSWorkspace.shared.open(documents, withApplicationAt: application, configuration: config) { _, error in
             Task { @MainActor in
                 if let error { completion(.failure(error)) }
                 else { completion(.success(())) }
