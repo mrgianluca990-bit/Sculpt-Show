@@ -51,7 +51,7 @@ enum SculptDAWSessionImport {
     }
 
     static func read(at url: URL) throws -> Result {
-        guard url.isFileURL, url.pathExtension.lowercased() == "scraft" else { throw ImportError.malformed }
+        guard url.isFileURL, ["scraft", "scdaw"].contains(url.pathExtension.lowercased()) else { throw ImportError.malformed }
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               integer(root["format_version"]) != nil,

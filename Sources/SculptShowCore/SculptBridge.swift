@@ -38,6 +38,8 @@ public enum SculptBridge {
         public let stems: [Stem]
         public let markers: [Marker]
         public let timecode: LTC?
+        /// Optimistic concurrency token: the cue as it was handed to DAW.
+        public var originCue: Cue? = nil
     }
     public enum BridgeError: Error, Equatable {
         case missingCue, noAudio, invalidSampleRate, missingChannelMetadata, invalidOutput, unsupportedChannelCount
@@ -55,11 +57,13 @@ public enum SculptBridge {
             LTC(start: e.timecodeStart, trim: e.ltcTrim, frameRate: e.frameRate,
                 dropFrame: e.timecodeDropFrame, outputChannel: e.ltcOutputChannel)
         }
-        return Manifest(format: format, version: version, showName: show.name,
+        var result = Manifest(format: format, version: version, showName: show.name,
                         cueListID: listID, cueID: cueID, cueName: cue.name,
                         durationSeconds: cue.durationSeconds, stems: stems,
                         markers: cue.sortedMarkers.map { Marker(id: $0.id, name: $0.name, seconds: $0.positionSeconds) },
                         timecode: tc)
+        result.originCue = cue
+        return result
     }
 
     /// File-safe display name only. Cue identity is kept separately by UUID,
@@ -149,7 +153,8 @@ public enum SculptBridge {
             guard marker.seconds.isFinite && marker.seconds >= 0 else { continue }
             lines.append(try command("markers.add", ["name": marker.name,
                                                      "at": ["seconds": marker.seconds],
-                                                     "kind": "marker", "ruler": 1]))
+                                                     "kind": "marker", "ruler": 1,
+                                                     "comments": "Sculpt Show marker UUID: \(marker.id.uuidString)"]))
         }
         if !manifest.markers.isEmpty {
             lines.append(try command("view.ruler", ["ruler": "markers", "visible": true]))

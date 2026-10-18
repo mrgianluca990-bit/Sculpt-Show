@@ -79,6 +79,7 @@ final class SculptBridgeTests: XCTestCase {
         let marks = commands.filter { $0.hasPrefix("markers.add ") }
         XCTAssertEqual(marks.count, 2)
         XCTAssertTrue(marks[0].contains("\"seconds\":2"))
+        XCTAssertTrue(marks[0].contains("Sculpt Show marker UUID:"))
         XCTAssertTrue(marks[1].contains("\"seconds\":8"))
         XCTAssertTrue(script.contains("track.rename"))
         XCTAssertTrue(script.contains("session.save"))

@@ -238,7 +238,7 @@ final class ShowStore: ObservableObject {
         let panel = NSOpenPanel()
         panel.title = "Import Sculpt DAW Session"
         panel.message = "Select an aligned, consolidated .scraft session. Split or processed regions require a bounce in Sculpt DAW."
-        panel.allowedContentTypes = [UTType(filenameExtension: "scraft") ?? .json]
+        panel.allowedContentTypes = [UTType(filenameExtension: "scdaw") ?? .json, UTType(filenameExtension: "scraft") ?? .json]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -377,6 +377,97 @@ final class ShowStore: ObservableObject {
         let targetIndex = positions[position + direction]
         editCue(cueID, list: listID) { item in
             item.elements.swapAt(sourceIndex, targetIndex)
+        }
+    }
+
+    private var pendingDAWPublications: [URL] = []
+    private var receivingDAWPublication = false
+
+    func chooseDAWPublication(using playback: PlaybackEngine) {
+        let panel = NSOpenPanel()
+        panel.title = "Receive DAW Publication"
+        panel.allowedContentTypes = [UTType(filenameExtension: "sculptbridge") ?? .json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        receiveDAWPublication(at: url, using: playback)
+    }
+
+    func receiveDAWPublication(at url: URL, using playback: PlaybackEngine) {
+        guard url.isFileURL, url.pathExtension.lowercased() == "sculptbridge" else { return }
+        if !pendingDAWPublications.contains(url) { pendingDAWPublications.append(url) }
+        applyPendingDAWPublications(using: playback)
+    }
+
+    func applyPendingDAWPublications(using playback: PlaybackEngine) {
+        guard !receivingDAWPublication, !isLoadingProject, pendingAudioImports == 0,
+              normalizingCueID == nil, normalizingListID == nil,
+              let url = pendingDAWPublications.first else { return }
+        receivingDAWPublication = true
+        Task {
+            defer {
+                receivingDAWPublication = false
+                if pendingDAWPublications.first != url { applyPendingDAWPublications(using: playback) }
+            }
+            do {
+                let packet = try await Task.detached(priority: .userInitiated) {
+                    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
+                    guard size <= 8 * 1024 * 1024 else { throw SculptBridgeReturn.Failure.invalid }
+                    return try SculptBridgeReturn.decode(Data(contentsOf: url), at: url)
+                }.value
+                let m = packet.manifest
+                let listID = packet.targetSelection ? selectedListID : m.cueListID
+                guard let listID else { throw SculptBridgeReturn.Failure.destination }
+                let receipt = url.deletingLastPathComponent().appendingPathComponent("receipt.json")
+                if let data = try? Data(contentsOf: receipt),
+                   let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   record["status"] as? String == "applied",
+                   record["publicationID"] as? String == packet.publicationID.uuidString,
+                   let rawCue = record["originCue"],
+                   let appliedCue = try? JSONDecoder().decode(Cue.self, from: JSONSerialization.data(withJSONObject: rawCue)),
+                   let currentCue = show.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == m.cueID }),
+                   SculptBridgeReturn.matchesSnapshot(currentCue, appliedCue) {
+                    pendingDAWPublications.removeAll { $0 == url }
+                    dawBridgeMessage = "This DAW publication has already been applied."
+                    return
+                }
+                // Preflight the model before expensive media work and again after suspension.
+                _ = try SculptBridgeReturn.applying(packet, to: show, destinationListID: listID)
+                if packet.publishMode == "updateCue", playback.snapshots[m.cueID] != nil {
+                    dawBridgeMessage = "DAW update queued. It will be applied when this cue stops."
+                    return
+                }
+                for stem in m.stems {
+                    let file = try AVAudioFile(forReading: URL(fileURLWithPath: stem.sourcePath))
+                    let channels = Int(file.processingFormat.channelCount)
+                    guard (1...2).contains(channels), file.length > 0,
+                          stem.outputStartChannel + channels - 1 <= 64,
+                          abs(Double(file.length) / file.processingFormat.sampleRate - m.durationSeconds) < 0.05 else {
+                        throw SculptBridgeReturn.Failure.media
+                    }
+                }
+                let generation = showOpenGeneration
+                let failed = await ShowWaveformCache.shared.prepare(paths: m.stems.map(\.sourcePath)) { _, _ in }
+                guard failed.isEmpty else { throw SculptBridgeReturn.Failure.media }
+                guard generation == showOpenGeneration else { throw SculptBridgeReturn.Failure.destination }
+                if packet.publishMode == "updateCue", playback.snapshots[m.cueID] != nil {
+                    dawBridgeMessage = "DAW update queued until this cue stops."
+                    return
+                }
+                let updated = try SculptBridgeReturn.applying(packet, to: show, destinationListID: listID)
+                commit(updated)
+                select(m.cueID, in: listID)
+                pendingDAWPublications.removeAll { $0 == url }
+                // Receipt means applied in memory; the user still saves the Show normally.
+                let cue = updated.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == m.cueID })
+                var record: [String: Any] = ["status": "applied", "publicationID": packet.publicationID.uuidString,
+                    "cueID": m.cueID.uuidString, "publishMode": packet.publishMode]
+                if let cue { record["originCue"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(cue)) }
+                do { try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]).write(to: receipt, options: .atomic) }
+                catch { errorMessage = "Cue updated, but the DAW receipt could not be saved: \(error.localizedDescription)" }
+                dawBridgeMessage = "DAW publication applied: \(m.stems.count) stems, \(m.markers.count) markers. Save Show to keep it."
+            } catch {
+                pendingDAWPublications.removeAll { $0 == url }
+                errorMessage = "DAW publication rejected: \(error.localizedDescription)"
+            }
         }
     }
 
