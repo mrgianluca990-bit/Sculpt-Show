@@ -68,6 +68,12 @@ final class RoutedAudioEngine {
         let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
         if let entry = fileCache[stem.id], entry.path == stem.sourcePath,
            entry.modified == modified, entry.size == size { return entry.file }
+        // Keep prepared descriptors bounded. Active voices retain their own files,
+        // so evicting an idle cache entry never interrupts playback or loop queues.
+        if fileCache.count >= Self.maximumVoices {
+            let activeElements = Set(voices.compactMap { $0.elementID })
+            fileCache = fileCache.filter { activeElements.contains($0.key) }
+        }
         let opened = try AVAudioFile(forReading: URL(fileURLWithPath: stem.sourcePath))
         fileCache[stem.id] = (stem.sourcePath, modified, size, opened)
         return opened
@@ -727,6 +733,7 @@ final class RoutedAudioEngine {
             voices[index].node.stop()
             voices[index].owner = nil
             voices[index].file = nil
+            if let elementID = voices[index].elementID { fileCache.removeValue(forKey: elementID) }
             voices[index].elementID = nil
         }
     }
