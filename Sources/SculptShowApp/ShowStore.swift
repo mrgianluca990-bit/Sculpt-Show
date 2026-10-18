@@ -185,6 +185,7 @@ final class ShowStore: ObservableObject {
 
     /// Reads the connected interface when an import/publication is applied.
     var audioOutputCount: () -> Int = { 2 }
+    var onSavedMediaMoved: (([String: String]) -> Void)?
 
     private func assignAutomaticOutputs(to show: inout Show, cueID: UUID, listID: UUID) {
         show.updateCue(cueID, in: listID) { cue in
@@ -1604,8 +1605,12 @@ final class ShowStore: ObservableObject {
                 for element in cue.audioElements {
                     if let changed = next.audioElements.first(where: { $0.id == element.id }),
                        changed.sourcePath != element.sourcePath {
-                        // Save As copies originals; only remap references moved away.
-                        if !FileManager.default.fileExists(atPath: element.sourcePath) {
+                        // A move within the current project includes folder swaps,
+                        // where the old pathname may now belong to another list.
+                        // Save As copies into a different root and keeps its originals.
+                        if let root = documentURL?.deletingLastPathComponent().path,
+                           element.sourcePath.hasPrefix(root + "/"),
+                           changed.sourcePath.hasPrefix(root + "/") {
                             paths[element.sourcePath] = changed.sourcePath
                         }
                     }
@@ -1626,6 +1631,7 @@ final class ShowStore: ObservableObject {
         }
         undoStack = undoStack.map(remap)
         redoStack = redoStack.map(remap)
+        if !paths.isEmpty { onSavedMediaMoved?(paths) }
     }
 
     private func editCue(_ id: UUID, list: UUID, _ change: (inout Cue) -> Void) {

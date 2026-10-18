@@ -4,6 +4,59 @@ import XCTest
 @testable import SculptShowCore
 
 final class NativeLoopAudioTests: XCTestCase {
+    func testMonoLoopBufferMatchesStereoMatrixVoiceWithoutChangingLevel() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1))
+        let source = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 256))
+        source.frameLength = 256
+        let input = try XCTUnwrap(source.floatChannelData)
+        for frame in 0..<256 { input[0][frame] = Float(frame) / 512 }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            try file.write(from: source)
+        }
+        let loop = try NativeLoopBuffer.prepare(file: AVAudioFile(forReading: url),
+            start: 32.0 / 48000, end: 128.0 / 48000, outputChannels: 2)
+        XCTAssertEqual(loop.format.channelCount, 2)
+        XCTAssertEqual(loop.frameLength, 96)
+        let samples = try XCTUnwrap(loop.floatChannelData)
+        for frame in 0..<96 {
+            XCTAssertEqual(samples[0][frame], Float(frame + 32) / 512, accuracy: 0.00001)
+            XCTAssertEqual(samples[1][frame], 0)
+        }
+    }
+
+    func testFileSegmentsStillResampleWhenPlayerClockMatchesDevice() throws {
+        let sourceFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2))
+        let source = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: 441))
+        source.frameLength = 441
+        let input = try XCTUnwrap(source.floatChannelData)
+        for channel in 0..<2 { for frame in 0..<441 { input[channel][frame] = 0.25 } }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: sourceFormat.settings)
+            try file.write(from: source)
+        }
+        let engine = AVAudioEngine()
+        let node = AVAudioPlayerNode()
+        engine.attach(node)
+        let outputFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        engine.connect(node, to: engine.mainMixerNode, format: outputFormat)
+        try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 1024)
+        node.scheduleSegment(try AVAudioFile(forReading: url), startingFrame: 0, frameCount: 441,
+            at: nil, completionHandler: nil)
+        try engine.start()
+        defer { engine.stop() }
+        node.play()
+        let rendered = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 1024))
+        XCTAssertEqual(try engine.renderOffline(1024, to: rendered), .success)
+        let output = try XCTUnwrap(rendered.floatChannelData)
+        // Ten milliseconds at 44.1 kHz must remain ten milliseconds at 48 kHz.
+        XCTAssertEqual((0..<1024).filter { output[0][$0] > 0.1 }.count, 480)
+    }
+
     func testLoopKeepsSampleOrderWhileAnotherCuePlaysWithoutUICallbacks() throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
         let source = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024))

@@ -784,6 +784,20 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
+    /// Moving a project media folder must not invalidate subsequent seek/resume.
+    /// Existing player nodes, file handles and loop queues remain untouched.
+    func remapSavedMedia(_ paths: [String: String]) {
+        for id in Array(activeCues.keys) {
+            guard var cue = activeCues[id] else { continue }
+            for index in cue.elements.indices {
+                if let next = paths[cue.elements[index].sourcePath] {
+                    cue.elements[index].sourcePath = next
+                }
+            }
+            activeCues[id] = cue
+        }
+    }
+
     func seek(_ id: UUID, to fraction: Double) {
         guard let state = snapshots[id] else { return }
         seek(id, toSeconds: min(max(fraction, 0), 0.9999) * state.duration)

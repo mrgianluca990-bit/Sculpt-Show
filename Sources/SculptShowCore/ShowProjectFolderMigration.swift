@@ -24,13 +24,16 @@ enum ShowProjectFolderMigration {
         for (i, move) in moves.enumerated() where fm.fileExists(atPath: move.new.path) && !sourcePaths.contains(move.new.path.lowercased()) {
             let files = try fm.contentsOfDirectory(at: move.new, includingPropertiesForKeys: [.isRegularFileKey])
             let owner = show.cueLists.first { ShowProjectPackage.listFolderName($0) == move.new.lastPathComponent }
-            let owned = Set(owner?.cues.flatMap { $0.audioElements.map(\.sourcePath) } ?? [])
-            let others = Set(show.cueLists.filter { $0.id != owner?.id }.flatMap { $0.cues.flatMap { $0.audioElements.map(\.sourcePath) } })
+            let owned = Set((owner?.cues.flatMap { $0.audioElements.map(\.sourcePath) } ?? [])
+                .map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path })
+            let others = Set(show.cueLists.filter { $0.id != owner?.id }
+                .flatMap { $0.cues.flatMap { $0.audioElements.map(\.sourcePath) } }
+                .map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path })
             // A normalization started after Rename may already have created the
             // new folder. Merge only its uniquely owned files, never user data.
             for file in files {
                 guard (try file.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true,
-                      owned.contains(file.path), !others.contains(file.path),
+                      owned.contains(file.resolvingSymlinksInPath().path), !others.contains(file.resolvingSymlinksInPath().path),
                       !fm.fileExists(atPath: move.old.appendingPathComponent(file.lastPathComponent).path) else {
                     throw ShowProjectPackage.Failure.destinationExists(move.new.lastPathComponent)
                 }

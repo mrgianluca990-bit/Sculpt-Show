@@ -237,7 +237,9 @@ final class RoutedAudioEngine {
             let gain = AVAudioMixerNode()
             graph.attach(player)
             graph.attach(gain)
-            graph.connect(player, to: gain, format: nil)
+            // A nil format leaves player nodes at their 44.1 kHz default even
+            // on a 48 kHz device. Pin the player clock to the matrix clock.
+            graph.connect(player, to: gain, format: stereo)
             graph.connect(gain, to: mixerUnit, fromBus: 0, toBus: index, format: stereo)
             gain.outputVolume = 0
             newVoices.append(Voice(node: player, gainNode: gain))
@@ -474,13 +476,15 @@ final class RoutedAudioEngine {
             }
             let bytes = files.reduce(0.0) { total, entry in
                 total + (plan.outSeconds - plan.inSeconds) * sampleRate *
-                    Double(entry.1.processingFormat.channelCount) * 4
+                    2 * 4
             }
             if bytes <= Double(max(0, 128 * 1024 * 1024 - occupied)),
-               files.allSatisfy({ Double($0.1.length) / $0.1.processingFormat.sampleRate >= plan.outSeconds }) {
+               files.allSatisfy({ Double($0.1.length) / $0.1.processingFormat.sampleRate >= plan.outSeconds }),
+               assigned.allSatisfy({ abs(voices[$0].node.outputFormat(forBus: 0).sampleRate - sampleRate) < 0.5 }) {
                 do {
-                    loopBuffers = try files.map { _, file in
-                        try NativeLoopBuffer.prepare(file: file, start: plan.inSeconds, end: plan.outSeconds)
+                    loopBuffers = try files.enumerated().map { number, entry in
+                        try NativeLoopBuffer.prepare(file: entry.1, start: plan.inSeconds, end: plan.outSeconds,
+                            outputChannels: voices[assigned[number]].node.outputFormat(forBus: 0).channelCount)
                     }
                     return plan
                 } catch { loopBuffers = [] }
