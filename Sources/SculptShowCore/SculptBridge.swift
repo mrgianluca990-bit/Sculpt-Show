@@ -153,7 +153,8 @@ public enum SculptBridge {
             guard marker.seconds.isFinite && marker.seconds >= 0 else { continue }
             lines.append(try command("markers.add", ["name": marker.name,
                                                      "at": ["seconds": marker.seconds],
-                                                     "kind": "marker", "ruler": 1]))
+                                                     "kind": "marker", "ruler": 1,
+                                                     "comments": "Sculpt Show marker UUID: \(marker.id.uuidString)"]))
         }
         if !manifest.markers.isEmpty {
             lines.append(try command("view.ruler", ["ruler": "markers", "visible": true]))
