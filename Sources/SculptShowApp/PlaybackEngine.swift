@@ -147,6 +147,7 @@ final class PlaybackEngine: ObservableObject {
     private var tracks: [UUID: [AudioTrack]] = [:]
     private var activeCues: [UUID: Cue] = [:]
     /// Last observed timeline position per cue. Reset on seek, restart and new GO.
+    private var nativeMarkerEvents: [UUID: NativeMarkerEventCursor] = [:]
     private var lastMarkerPosition: [UUID: Double] = [:]
     private var startedAt: [UUID: TimeInterval] = [:]
     private var elapsedAtStart: [UUID: Double] = [:]
@@ -778,6 +779,7 @@ final class PlaybackEngine: ObservableObject {
         for track in tracks[id] ?? [] { track.player.stop() }
         tracks.removeValue(forKey: id)
         activeCues.removeValue(forKey: id)
+        nativeMarkerEvents.removeValue(forKey: id)
         lastMarkerPosition.removeValue(forKey: id)
         startedAt.removeValue(forKey: id)
         elapsedAtStart.removeValue(forKey: id)
@@ -884,6 +886,11 @@ final class PlaybackEngine: ObservableObject {
         updateGeneratedLTC()
     }
 
+    func nativeLoopRuleID(for id: UUID, markerID: UUID) -> UUID? {
+        guard let loop = routedAudio.nativeLoop(for: id), loop.triggerMarkerID == markerID else { return nil }
+        return loop.ruleID
+    }
+
     private func emitCrossedMarkers(_ id: UUID, at elapsed: Double, duration: Double) {
         guard let cue = activeCues[id], !cue.markers.isEmpty else { return }
         let previous = lastMarkerPosition[id] ?? elapsed
@@ -893,7 +900,17 @@ final class PlaybackEngine: ObservableObject {
                                             to: min(elapsed, duration), duration: duration)
             .filter { $0.id != native?.triggerMarkerID }
         lastMarkerPosition[id] = min(elapsed, duration)
-        if !reached.isEmpty { onMarkersReached?(id, reached.map(\.id)) }
+        var markerIDs = reached.map(\.id)
+        let linear = max(0, (elapsedAtStart[id] ?? 0) +
+            (startedAt[id].map { max(0, ProcessInfo.processInfo.systemUptime - $0) } ?? 0))
+        if let markerID = native?.triggerMarkerID,
+           let progress = routedAudio.nativeLoopProgress(for: id, linear: linear) {
+            var cursor = nativeMarkerEvents[id] ?? NativeMarkerEventCursor()
+            let crossings = cursor.consume(token: progress.token, count: progress.count)
+            nativeMarkerEvents[id] = cursor
+            markerIDs += Array(repeating: markerID, count: crossings)
+        }
+        if !markerIDs.isEmpty { onMarkersReached?(id, markerIDs) }
     }
 
     /// Allow live editing of cue markers without rebuilding the audio graph.

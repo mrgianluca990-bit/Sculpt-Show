@@ -402,8 +402,8 @@ struct WorkspaceView: View {
                             CueListDragDrop.receive(providers) { id in store.moveList(id, before: list.id) }
                         }
                 }
-                Rectangle().fill(Skin.raised.opacity(0.35))
-                    .frame(width: 36).overlay(Image(systemName: "arrow.right.to.line").foregroundStyle(Skin.soft))
+                Color.clear
+                    .frame(width: 12)
                     .onDrop(of: [CueListDragDrop.type], isTargeted: nil) { providers in
                         CueListDragDrop.receive(providers) { id in store.moveList(id, before: nil) }
                     }

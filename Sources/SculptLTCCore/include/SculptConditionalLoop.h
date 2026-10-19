@@ -32,6 +32,8 @@ SculptConditionalLoop *sculpt_loop_create(double rate, int64_t in_frame, int64_t
 void sculpt_loop_destroy(SculptConditionalLoop *s);
 bool sculpt_loop_voice(SculptConditionalLoop *s, unsigned voice, const float *left, const float *right, int64_t frames);
 void sculpt_loop_arm(SculptConditionalLoop *s, uint64_t start_ns, int64_t from_frame);
+// Number of OUT boundaries decided, including the final exit; shared by all voices.
+uint64_t sculpt_loop_boundary_count(const SculptConditionalLoop *s);
 double sculpt_loop_position_at(const SculptConditionalLoop *s, uint64_t now_ns);
 // Frame-based entry point also used by deterministic audio regression tests.
 void sculpt_loop_render_frames(SculptConditionalLoop *s, unsigned voice, int64_t first_frame,

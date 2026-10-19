@@ -284,3 +284,7 @@ void sculpt_loop_slot_render(SculptLoopSlot *s, uint64_t now, int64_t sample_fra
     } else for (uint32_t i = 0; i < n; ++i) { left[i] = 0; right[i] = 0; }
     atomic_store(&s->rendering, false);
 }
+
+uint64_t sculpt_loop_boundary_count(const SculptConditionalLoop *s) {
+    return s ? atomic_load(&s->decision) >> 1 : 0;
+}

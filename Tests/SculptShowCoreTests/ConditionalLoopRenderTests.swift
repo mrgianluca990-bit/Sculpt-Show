@@ -17,6 +17,7 @@ final class ConditionalLoopRenderTests: XCTestCase {
         for voice in 0..<7 { XCTAssertTrue(sculpt_loop_voice(transport, UInt32(voice), sources[voice], nil, 10)) }
         sculpt_signal_set(condition, 1, 0, UInt64.max)
         sculpt_loop_arm(transport, 0, 0)
+        XCTAssertEqual(sculpt_loop_boundary_count(transport), 0)
         var left = [Float](repeating: 0, count: 10)
         var right = left
         // First voice decides to repeat. A concurrent condition change must not
@@ -25,6 +26,7 @@ final class ConditionalLoopRenderTests: XCTestCase {
             if voice == 1 { sculpt_signal_phase(condition, 0) }
             sculpt_loop_render_frames(transport, UInt32(voice), 0, 10, &left, &right)
             let expected = [0, 1, 2, 3, 4, 5, 2, 3, 4, 5].map { Float(voice * 100 + $0 + 1) }
+            XCTAssertEqual(sculpt_loop_boundary_count(transport), 1)
             XCTAssertEqual(left, expected)
             XCTAssertEqual(right, [Float](repeating: 0, count: 10))
         }
@@ -32,6 +34,7 @@ final class ConditionalLoopRenderTests: XCTestCase {
         // never a timer, seek, inserted gap, or repeated boundary sample.
         for voice in (0..<7).reversed() {
             sculpt_loop_render_frames(transport, UInt32(voice), 10, 6, &left, &right)
+            XCTAssertEqual(sculpt_loop_boundary_count(transport), 2)
             XCTAssertEqual(Array(left.prefix(6)), [6, 7, 8, 9].map { Float(voice * 100 + $0 + 1) } + [0, 0])
         }
     }

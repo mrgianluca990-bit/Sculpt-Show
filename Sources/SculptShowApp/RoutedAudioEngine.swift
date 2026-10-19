@@ -151,6 +151,16 @@ final class RoutedAudioEngine {
 
     func nativeLoop(for cueID: UUID) -> NativeMarkerLoop? { activeMarkerLoops[cueID]?.plan }
 
+    func nativeLoopProgress(for id: UUID, linear: Double) -> (token: UUID, count: UInt64)? {
+        guard let state = activeMarkerLoops[id], state.plan.triggerMarkerID != nil else { return nil }
+        if let loop = conditionalLoops[id] {
+            return (state.token, sculpt_loop_boundary_count(loop.pointer))
+        }
+        let length = state.plan.outSeconds - state.plan.inSeconds
+        let count = linear < state.plan.outSeconds ? 0 : floor((linear - state.plan.outSeconds) / length) + 1
+        return (state.token, UInt64(max(0, count)))
+    }
+
     /// The callback is fired AFTER playback of one queued segment, leaving
     /// three segments already queued. It never restarts a node or its routing.
     private func appendLoopSegment(cueID: UUID, voice: Int, token: UUID) {
