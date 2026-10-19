@@ -99,7 +99,7 @@ struct ShowPreflightPanel: View {
         }
         result = ShowPreflight.check(store.show,
                                       outputChannels: playback.routingEnabled ? playback.routingOutputCount : 0,
-                                      media: metadata)
+                                      media: metadata, deviceUID: playback.routingDeviceUID)
     }
 
     private func chooseFolder() {

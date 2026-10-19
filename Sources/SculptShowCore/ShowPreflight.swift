@@ -42,7 +42,7 @@ public enum ShowPreflight {
     /// the path does not exist or could not be decoded. Paths are exact strings.
     public static func check(_ show: Show, outputChannels: Int,
                              media: [String: PreflightAudioInfo],
-                             voiceLimit: Int = 16) -> ShowPreflightReport {
+                             voiceLimit: Int = 16, deviceUID: String = "") -> ShowPreflightReport {
         var issues: [PreflightIssue] = []
         let cues = show.cueLists.flatMap(\.cues)
         let stems = cues.flatMap(\.audioElements)
@@ -109,26 +109,29 @@ public enum ShowPreflight {
                     add(.blocking, "invalid-media", cue, path,
                         "\(element.name): invalid source duration or sample rate.")
                 }
-                let routedOutput = AudioRoutePlan.wrappedOutput(element.outputStartChannel,
-                    sourceChannels: info.channelCount, deviceChannels: outputChannels)
+                let points: [AudioRoutePlan.Crosspoint]
+                do {
+                    points = try show.outputPatch.crosspoints(firstOutput: element.outputStartChannel,
+                        sourceChannels: info.channelCount, deviceUID: deviceUID, deviceChannels: outputChannels)
+                } catch {
+                    points = []
+                    if outputChannels > 0 { add(.blocking, "bad-route", cue, path, "\(element.name): \(error.localizedDescription)") }
+                }
                 if abs(info.sampleRate - Double(show.sampleRate)) > 0.5 {
                     add(.blocking, "sample-rate", cue, path,
                         "\(element.name): prepare a \(show.sampleRate) Hz copy before GO. Live SRC is disabled.")
                 }
                 for tc in ltcs {
                     if let out = tc.ltcOutputChannel,
-                       (routedOutput..<(routedOutput + info.channelCount)).contains(out) {
+                       points.contains(where: { $0.deviceChannel + 1 == out }) {
                         add(.blocking, "ltc-route-collision", cue, path,
                             "LTC OUT \(out) overlaps a music stem; select a dedicated output.")
                     }
                 }
-                if outputChannels > 0 && AudioRoutePlan.crosspoints(firstOutput: routedOutput,
-                    sourceChannels: info.channelCount, deviceChannels: outputChannels) == nil {
-                    add(.blocking, "bad-route", cue, path,
-                        "\(element.name): source does not fit the connected outputs.")
-                } else if routedOutput != element.outputStartChannel {
+                if show.outputPatch.isAutomatic(on: deviceUID), let first = points.first?.deviceChannel,
+                   first + 1 != element.outputStartChannel {
                     add(.warning, "wrapped-route", cue, path,
-                        "\(element.name): output wraps to OUT \(routedOutput) on this device.")
+                        "\(element.name): output wraps to OUT \(first + 1) on this device.")
                 }
             }
             if cue.durationMode == .fixed {

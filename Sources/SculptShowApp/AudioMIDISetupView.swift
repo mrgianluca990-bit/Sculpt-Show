@@ -21,14 +21,17 @@ struct AudioMIDISetupView: View {
             Picker("Section", selection: $tab) {
                 Text("Core Audio").tag(0)
                 Text("MIDI Control").tag(1)
+                Text("Output Patch").tag(2)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
             .padding(.top, 12)
             if tab == 0 {
                 OutputRoutingView().environmentObject(playback)
-            } else {
+            } else if tab == 1 {
                 MIDIControlSettings().environmentObject(midi)
+            } else {
+                OutputPatchView()
             }
         }
         .frame(width: 690)

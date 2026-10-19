@@ -5,6 +5,7 @@ public struct Show: Codable, Equatable, Sendable {
     public static let currentVersion = 1
 
     public static let supportedSampleRates = [44100, 48000, 88200, 96000, 176400, 192000]
+    public var outputPatch: ShowOutputPatch
     public var sampleRate: Int
     public var formatVersion: Int
     public var name: String
@@ -12,6 +13,7 @@ public struct Show: Codable, Equatable, Sendable {
     public var rules: [InteractionRule]
 
     public init(name: String = "Untitled Show", cueLists: [CueList] = [CueList(name: "Cue List 1")]) {
+        self.outputPatch = ShowOutputPatch()
         self.sampleRate = 48000
         self.formatVersion = Self.currentVersion
         self.name = name
@@ -19,10 +21,12 @@ public struct Show: Codable, Equatable, Sendable {
         self.rules = []
     }
 
-    private enum CodingKeys: String, CodingKey { case formatVersion, sampleRate, name, cueLists, rules }
+    private enum CodingKeys: String, CodingKey { case formatVersion, sampleRate, name, cueLists, rules, outputPatch }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        outputPatch = try c.decodeIfPresent(ShowOutputPatch.self, forKey: .outputPatch) ?? ShowOutputPatch()
+        try outputPatch.validate()
         sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 48000
         guard Self.supportedSampleRates.contains(sampleRate) else {
             throw DecodingError.dataCorruptedError(forKey: .sampleRate, in: c, debugDescription: "Unsupported session sample rate")

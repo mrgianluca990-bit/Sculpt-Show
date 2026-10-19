@@ -56,6 +56,7 @@ final class PlaybackEngine: ObservableObject {
         routedAudio.conditionPhases(phases)
     }
     func knowProject(_ show: Show) {
+        setOutputPatch(show.outputPatch)
         routedAudio.setKnownCueIDs(Set(show.cueLists.flatMap { $0.cues.map(\.id) }))
         syncConditionPhases()
     }
@@ -241,6 +242,26 @@ final class PlaybackEngine: ObservableObject {
         lastMeterUIUpdate = now
         meterMonitor.observe(peaks: peaks, rms: rms)
     }
+    var routingDeviceUID: String { routedAudio.selectedDevice?.uid ?? "" }
+    @Published private(set) var outputPatch = ShowOutputPatch()
+    func setOutputPatch(_ patch: ShowOutputPatch) {
+        guard patch != outputPatch else { return }
+        guard snapshots.isEmpty else {
+            errorMessage = "Stop all cues before changing the output patch."
+            return
+        }
+        stopTestTone()
+        routedAudio.outputPatch = patch
+        outputPatch = patch
+    }
+    func outputRouteLabel(first: Int, channels: Int) -> String {
+        let names = (first..<(first + channels)).map { outputPatch.name($0) }.joined(separator: " / ")
+        do {
+            let points = try outputPatch.crosspoints(firstOutput: first, sourceChannels: channels,
+                deviceUID: routingDeviceUID, deviceChannels: routingOutputCount)
+            return names + " → " + points.map { String($0.deviceChannel + 1) }.joined(separator: "/")
+        } catch { return names + " · UNAVAILABLE" }
+    }
     var routingOutputCount: Int { routedAudio.selectedDevice?.channels ?? 0 }
 
     /// Output-level Mute/Solo goes directly to the MatrixMixer output gain.
@@ -375,11 +396,8 @@ final class PlaybackEngine: ObservableObject {
         do {
             let file = try AVAudioFile(forReading: URL(fileURLWithPath: sourcePath))
             let sourceChannels = Int(file.processingFormat.channelCount)
-            guard AudioRoutePlan.crosspoints(firstOutput: firstOutput,
-                sourceChannels: sourceChannels, deviceChannels: routingOutputCount) != nil else {
-                errorMessage = "OUT \(firstOutput) is not valid for this \(sourceChannels)-channel file on a \(routingOutputCount)-channel device."
-                return false
-            }
+            _ = try outputPatch.crosspoints(firstOutput: firstOutput, sourceChannels: sourceChannels,
+                deviceUID: routingDeviceUID, deviceChannels: routingOutputCount)
             try routedAudio.changeOutput(cueID: cueID, elementID: elementID,
                                          firstOutput: firstOutput, sourceChannels: sourceChannels)
             if var cue = activeCues[cueID],
@@ -483,13 +501,7 @@ final class PlaybackEngine: ObservableObject {
     /// Hardware-mapped cue: playback occurs in one AVAudioEngine with one host clock.
     /// Failure is visible and does not fall back to stereo outputs 1/2.
     private func playRouted(_ original: Cue, from requestedPosition: Double = 0) -> Bool {
-        var cue = original
-        for index in cue.elements.indices where cue.elements[index].kind == .audio {
-            let width = ShowWaveformCache.shared.channels(at: cue.elements[index].sourcePath) ?? 2
-            cue.elements[index].outputStartChannel = AudioRoutePlan.wrappedOutput(
-                cue.elements[index].outputStartChannel, sourceChannels: width,
-                deviceChannels: routingOutputCount)
-        }
+        let cue = original
         do {
             var audioEnds: [Double] = []
             for element in cue.alignedAudioElements {

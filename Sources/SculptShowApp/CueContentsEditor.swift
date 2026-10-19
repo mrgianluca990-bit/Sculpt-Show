@@ -90,20 +90,20 @@ struct CueContentsEditor: View {
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .help("Mute this file without affecting the other elements or stopping its transport")
                         HStack {
-                            Text("PHYSICAL OUTPUT")
+                            Text("OUTPUT PATCH")
                                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             Spacer()
                             Picker("", selection: Binding(
                                 get: { store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.outputStartChannel ?? element.outputStartChannel },
                                 set: { store.setElementOutput(element.id, in: cue.id, listID: listID, to: $0, using: playback) }
                             )) {
-                                ForEach(1...max(1, playback.routingOutputCount - (audioChannelCount(at: element.sourcePath) == 2 ? 1 : 0)), id: \.self) { channel in
-                                    Text(AudioRoutePlan.label(firstOutput: channel, sourceChannels: audioChannelCount(at: element.sourcePath) == 1 ? 1 : 2)).tag(channel)
+                                ForEach(1...max(1, (store.show.outputPatch.isAutomatic(on: playback.routingDeviceUID) ? playback.routingOutputCount : 64) - (audioChannelCount(at: element.sourcePath) == 2 ? 1 : 0)), id: \.self) { channel in
+                                    Text(playback.outputRouteLabel(first: channel, channels: audioChannelCount(at: element.sourcePath) == 1 ? 1 : 2)).tag(channel)
                                 }
                             }
                             .frame(width: 142)
                             .disabled(!playback.routingEnabled)
-                            .help("Current destination: \(AudioRoutePlan.label(firstOutput: store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.outputStartChannel ?? element.outputStartChannel, sourceChannels: audioChannelCount(at: element.sourcePath) == 1 ? 1 : 2)). Changing routing never restarts playback.")
+                            .help("Current destination: \(playback.outputRouteLabel(first: store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.outputStartChannel ?? element.outputStartChannel, channels: audioChannelCount(at: element.sourcePath) == 1 ? 1 : 2)). Changing routing never restarts playback.")
                         }
                         if !playback.routingEnabled {
                             Text("Audio routing is initializing. Select a device in File → Audio/MIDI Setup if required.")

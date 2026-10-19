@@ -466,8 +466,7 @@ private struct WaveformStemLane: View {
                 Text(element.name).font(.system(size: 10, weight: .bold))
                     .lineLimit(1)
                 HStack(spacing: 3) {
-                    Text("OUT \(element.outputStartChannel)" +
-                         ((envelope?.peaks.count ?? 1) > 1 ? "/\(element.outputStartChannel + 1)" : ""))
+                    Text(playback.outputRouteLabel(first: element.outputStartChannel, channels: (envelope?.peaks.count ?? 1) > 1 ? 2 : 1))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 2)

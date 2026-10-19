@@ -106,6 +106,7 @@ final class ShowStore: ObservableObject {
     /// The previous Show stays visible until every existing stem has been scanned.
     @Published private(set) var isLoadingProject = false
     private var showOpenGeneration = UUID()
+    var projectIdentity: UUID { showOpenGeneration }
 
     @Published private(set) var preparingSessionAudio = false
     @Published private(set) var sessionAudioStatus = ""
@@ -119,6 +120,26 @@ final class ShowStore: ObservableObject {
             NativeMarkerLoopPlanner.plan(for: $0)?.conditionCueID != nil
         }.map { $0.id.uuidString }.sorted()
         return "\(model.sampleRate)|" + paths.joined(separator: "|") + loops.joined(separator: "|")
+    }
+
+    @discardableResult
+    func applyOutputPatch(_ patch: ShowOutputPatch, expected: ShowOutputPatch,
+                          deviceUID: String, projectIdentity: UUID, using playback: PlaybackEngine) -> Bool {
+        guard playback.snapshots.isEmpty, !isLoadingProject, !preparingSessionAudio,
+              pendingAudioImports == 0, deviceUID == playback.routingDeviceUID, !deviceUID.isEmpty else {
+            errorMessage = "Stop all cues, finish media preparation and select a connected interface before applying the patch."
+            return false
+        }
+        guard show.outputPatch == expected, showOpenGeneration == projectIdentity else {
+            errorMessage = "The project patch changed while this draft was open. Reload the patch before applying."
+            return false
+        }
+        do { try patch.validate() } catch { errorMessage = error.localizedDescription; return false }
+        var updated = show
+        updated.outputPatch = patch
+        playback.setOutputPatch(patch)
+        commit(updated)
+        return true
     }
 
     func changeSessionSampleRate(_ rate: Int, using playback: PlaybackEngine) {
