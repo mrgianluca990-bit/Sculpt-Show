@@ -6,7 +6,7 @@ var products: [Product] = [
 ]
 
 var targets: [Target] = [
-    .target(name: "SculptShowCore"),
+    .target(name: "SculptShowCore", dependencies: ["SculptLTCCore"]),
     .target(name: "SculptLTCCore", publicHeadersPath: "include", linkerSettings: [.linkedLibrary("m")]),
     .testTarget(name: "SculptShowCoreTests", dependencies: ["SculptShowCore", "SculptLTCCore"])
 ]

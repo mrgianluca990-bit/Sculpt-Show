@@ -139,6 +139,10 @@ final class RoutedAudioEngine {
         sculpt_signal_end(signal.pointer,
             AudioConvertHostTimeToNanos(AudioGetCurrentHostTime()) + UInt64(max(0, duration) * 1e9))
     }
+    func failedConditionalCue() -> UUID? {
+        conditionalLoops.first(where: { sculpt_loop_failure($0.value.pointer) != 0 })?.key
+    }
+
     func conditionalPosition(for id: UUID) -> Double? {
         guard let loop = conditionalLoops[id] else { return nil }
         return sculpt_loop_position_at(loop.pointer, AudioConvertHostTimeToNanos(AudioGetCurrentHostTime()))
@@ -574,7 +578,7 @@ final class RoutedAudioEngine {
                 return prepared
             }
             let loop = try ConditionalLoopRealtime(plan: plan, sampleRate: sampleRate, end: cueLength,
-                files: pcm, indices: assigned, slots: assigned.map { voices[$0].loopSlot },
+                files: pcm, from: elapsed, indices: assigned, slots: assigned.map { voices[$0].loopSlot },
                 condition: signal(for: conditionID), own: signal(for: cue.id))
             conditional = loop
             conditionalLoops[cue.id] = loop

@@ -3,7 +3,83 @@
 #include <stdlib.h>
 #include <math.h>
 #include <limits.h>
+#include <string.h>
 #define VOICES 64
+#define PAGE_FRAMES 8192
+#define PAGE_COUNT 64
+#define WRITING UINT_MAX
+struct StreamPage { atomic_uint readers; atomic_int_fast64_t first; float *pcm; };
+struct SculptPCMStream {
+    int channels;
+    int64_t frames;
+    atomic_int_fast64_t position;
+    atomic_bool failed;
+    struct StreamPage pages[PAGE_COUNT];
+};
+SculptPCMStream *sculpt_stream_create(int channels, int64_t frames, int64_t from) {
+    if ((channels != 1 && channels != 2) || frames <= 0 || from < 0) return NULL;
+    SculptPCMStream *s = calloc(1, sizeof(*s));
+    if (!s) return NULL;
+    s->channels = channels; s->frames = frames;
+    atomic_init(&s->position, from); atomic_init(&s->failed, false);
+    for (int i = 0; i < PAGE_COUNT; ++i) {
+        atomic_init(&s->pages[i].readers, 0); atomic_init(&s->pages[i].first, -1);
+        s->pages[i].pcm = calloc(PAGE_FRAMES * channels, sizeof(float));
+        if (!s->pages[i].pcm) { sculpt_stream_destroy(s); return NULL; }
+    }
+    return s;
+}
+void sculpt_stream_destroy(SculptPCMStream *s) {
+    if (!s) return;
+    for (int i = 0; i < PAGE_COUNT; ++i) free(s->pages[i].pcm);
+    free(s);
+}
+uint64_t sculpt_stream_bytes(const SculptPCMStream *s) { return s ? PAGE_COUNT * PAGE_FRAMES * s->channels * sizeof(float) : 0; }
+int64_t sculpt_stream_position(const SculptPCMStream *s) { return s ? atomic_load(&s->position) : 0; }
+void sculpt_stream_fail(SculptPCMStream *s) { if (s) atomic_store(&s->failed, true); }
+bool sculpt_stream_contains(const SculptPCMStream *s, int64_t first) {
+    if (!s) return false;
+    for (int i = 0; i < PAGE_COUNT; ++i)
+        if (atomic_load(&s->pages[i].first) == first && atomic_load(&s->pages[i].readers) != WRITING) return true;
+    return false;
+}
+bool sculpt_stream_publish(SculptPCMStream *s, int64_t first, const float *left, const float *right,
+        uint32_t frames, const int64_t *keep, uint32_t count) {
+    if (!s || (count && !keep) || first < 0 || first % PAGE_FRAMES || !left || frames > PAGE_FRAMES || frames == 0 ||
+        first >= s->frames || frames > s->frames - first || (s->channels == 2 && !right)) return false;
+    if (sculpt_stream_contains(s, first)) return true;
+    for (int i = 0; i < PAGE_COUNT; ++i) {
+        int64_t old = atomic_load(&s->pages[i].first);
+        bool retained = false;
+        for (uint32_t k = 0; k < count; ++k) if (keep[k] == old) { retained = true; break; }
+        if (retained) continue;
+        unsigned expected = 0;
+        if (!atomic_compare_exchange_strong(&s->pages[i].readers, &expected, WRITING)) continue;
+        atomic_store(&s->pages[i].first, -1);
+        memcpy(s->pages[i].pcm, left, frames * sizeof(float));
+        memset(s->pages[i].pcm + frames, 0, (PAGE_FRAMES - frames) * sizeof(float));
+        if (s->channels == 2) {
+            memcpy(s->pages[i].pcm + PAGE_FRAMES, right, frames * sizeof(float));
+            memset(s->pages[i].pcm + PAGE_FRAMES + frames, 0, (PAGE_FRAMES - frames) * sizeof(float));
+        }
+        atomic_store(&s->pages[i].first, first);
+        atomic_store(&s->pages[i].readers, 0);
+        return true;
+    }
+    return false;
+}
+static int stream_pin(SculptPCMStream *s, int64_t first) {
+    for (int i = 0; i < PAGE_COUNT; ++i) {
+        if (atomic_load(&s->pages[i].first) != first) continue;
+        unsigned n = atomic_load(&s->pages[i].readers);
+        if (n == WRITING || n == WRITING - 1) continue;
+        // A single bounded attempt: the render thread never waits for a writer.
+        if (!atomic_compare_exchange_strong(&s->pages[i].readers, &n, n + 1)) continue;
+        if (atomic_load(&s->pages[i].first) == first) return i;
+        atomic_fetch_sub(&s->pages[i].readers, 1);
+    }
+    return -1;
+}
 struct SculptCueSignal {
     atomic_int phase;
     atomic_bool exists;
@@ -23,6 +99,8 @@ struct SculptConditionalLoop {
     atomic_uint_fast64_t last_host;
     const float *left[VOICES], *right[VOICES];
     int64_t lengths[VOICES];
+    SculptPCMStream *streams[VOICES];
+    atomic_int failure;
 };
 struct SculptLoopSlot {
     unsigned voice;
@@ -60,6 +138,7 @@ SculptConditionalLoop *sculpt_loop_create(double rate, int64_t in, int64_t out,
     if (!s) return NULL;
     s->rate = rate; s->in_frame = in; s->out_frame = out; s->end_frame = end;
     s->condition = condition; s->required_phase = wanted; s->own = own;
+    atomic_init(&s->failure, 0);
     atomic_init(&s->decision, 0);
     atomic_init(&s->start_sample, INT64_MIN);
     atomic_init(&s->last_sample, 0);
@@ -72,9 +151,16 @@ bool sculpt_loop_voice(SculptConditionalLoop *s, unsigned i, const float *left, 
     s->left[i] = left; s->right[i] = right; s->lengths[i] = n;
     return true;
 }
+bool sculpt_loop_stream_voice(SculptConditionalLoop *s, unsigned voice, SculptPCMStream *stream) {
+    if (!s || voice >= VOICES || !stream) return false;
+    s->streams[voice] = stream; s->lengths[voice] = stream->frames;
+    return true;
+}
+int sculpt_loop_failure(const SculptConditionalLoop *s) { return s ? atomic_load(&s->failure) : 0; }
 void sculpt_loop_arm(SculptConditionalLoop *s, uint64_t start, int64_t from) {
     if (!s) return;
     s->start_ns = start; s->from_frame = from; atomic_store(&s->decision, 0);
+    atomic_store(&s->failure, 0);
     atomic_store(&s->start_sample, INT64_MIN);
     atomic_store(&s->last_host, 0);
     // A possible loop has no predetermined end. The render boundary that exits
@@ -99,9 +185,13 @@ static uint64_t boundary_time(const SculptConditionalLoop *s, uint64_t cycle) {
 void sculpt_loop_render_frames(SculptConditionalLoop *s, unsigned voice, int64_t first,
         uint32_t n, float *left, float *right) {
     if (!left || !right) return;
+    SculptPCMStream *stream = s && voice < VOICES ? s->streams[voice] : NULL;
+    int pinned = -1;
+    int64_t pinned_first = -1;
     for (uint32_t i = 0; i < n; ++i) {
         float l = 0, r = 0;
-        if (s && voice < VOICES && s->left[voice] && first <= INT64_MAX - (int64_t)i) {
+        if (stream && atomic_load(&stream->failed)) atomic_store(&s->failure, 2);
+        if (s && !atomic_load(&s->failure) && voice < VOICES && (s->left[voice] || stream) && first <= INT64_MAX - (int64_t)i) {
             int64_t frame = first + (int64_t)i;
             uint64_t decision = atomic_load(&s->decision);
             if (frame >= s->out_frame) {
@@ -124,10 +214,28 @@ void sculpt_loop_render_frames(SculptConditionalLoop *s, unsigned voice, int64_t
             }
             int64_t position = source_position(s, frame, decision);
             if (position >= 0 && position < s->end_frame && position < s->lengths[voice]) {
-                l = s->left[voice][position]; r = s->right[voice] ? s->right[voice][position] : 0;
+                if (stream) {
+                    int64_t page = position / PAGE_FRAMES * PAGE_FRAMES;
+                    if (page != pinned_first) {
+                        if (pinned >= 0) atomic_fetch_sub(&stream->pages[pinned].readers, 1);
+                        pinned = stream_pin(stream, page); pinned_first = page;
+                    }
+                    if (pinned < 0) atomic_store(&s->failure, 1);
+                    else {
+                        l = stream->pages[pinned].pcm[position - page];
+                        r = stream->channels == 2 ? stream->pages[pinned].pcm[PAGE_FRAMES + position - page] : 0;
+                    }
+                } else {
+                    l = s->left[voice][position]; r = s->right[voice] ? s->right[voice][position] : 0;
+                }
             }
         }
         left[i] = l; right[i] = r;
+    }
+    if (pinned >= 0) atomic_fetch_sub(&stream->pages[pinned].readers, 1);
+    if (stream && n > 0 && s && first >= 0 && first < INT64_MAX - n) {
+        int64_t next = source_position(s, first + n, atomic_load(&s->decision));
+        atomic_store(&stream->position, next);
     }
 }
 double sculpt_loop_position_at(const SculptConditionalLoop *s, uint64_t now) {

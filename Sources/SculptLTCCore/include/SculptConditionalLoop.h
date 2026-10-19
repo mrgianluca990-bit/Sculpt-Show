@@ -6,8 +6,20 @@
 extern "C" {
 #endif
 // Phase: stopped=0, playing=1, paused=2, waiting=3. All changes are lock-free.
-typedef struct SculptCueSignal SculptCueSignal;
 typedef struct SculptConditionalLoop SculptConditionalLoop;
+typedef struct SculptPCMStream SculptPCMStream;
+// Bounded immutable pages: one producer, lock-free readers. No I/O in render.
+SculptPCMStream *sculpt_stream_create(int channels, int64_t frames, int64_t from);
+void sculpt_stream_destroy(SculptPCMStream *s);
+uint64_t sculpt_stream_bytes(const SculptPCMStream *s);
+int64_t sculpt_stream_position(const SculptPCMStream *s);
+bool sculpt_stream_contains(const SculptPCMStream *s, int64_t first);
+bool sculpt_stream_publish(SculptPCMStream *s, int64_t first, const float *left, const float *right,
+    uint32_t frames, const int64_t *keep, uint32_t keep_count);
+void sculpt_stream_fail(SculptPCMStream *s);
+bool sculpt_loop_stream_voice(SculptConditionalLoop *s, unsigned voice, SculptPCMStream *stream);
+int sculpt_loop_failure(const SculptConditionalLoop *s);
+typedef struct SculptCueSignal SculptCueSignal;
 typedef struct SculptLoopSlot SculptLoopSlot;
 SculptCueSignal *sculpt_signal_create(void);
 void sculpt_signal_destroy(SculptCueSignal *s);

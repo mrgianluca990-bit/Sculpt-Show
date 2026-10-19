@@ -13,25 +13,28 @@ final class CueRealtimeSignal {
     deinit { sculpt_signal_destroy(pointer) }
 }
 
-/// PCM is immutable after preparation and retained for the lifetime of C pointers.
+/// Prepared metadata is lightweight; bounded PCM caches belong to active voices.
 final class PreparedConditionalPCM: @unchecked Sendable {
-    let buffer: AVAudioPCMBuffer
+    let sampleRate: Int
+    let frames: Int64
+    let path: String
     let modified: Date?
     let bytes: UInt64
     init(path: String, sampleRate: Int) throws {
+        self.path = path
+        self.sampleRate = sampleRate
         let attributes = try FileManager.default.attributesOfItem(atPath: path)
         modified = attributes[.modificationDate] as? Date
         bytes = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
         let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
-        guard file.length > 0, file.length <= Int64(UInt32.max),
+        guard file.length > 0,
               file.processingFormat.sampleRate == Double(sampleRate) else {
             throw SessionAudioPreparation.Failure.invalid("Conditional-loop media must be prepared at the project sample rate")
         }
-        let pcm = try NativeLoopBuffer.readFrames(file: file, count: AVAudioFrameCount(file.length))
-        buffer = pcm
+        frames = file.length
     }
     func matches(path: String, sampleRate: Int) -> Bool {
-        guard buffer.format.sampleRate == Double(sampleRate),
+        guard self.sampleRate == sampleRate,
               let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return false }
         return modified == attributes[.modificationDate] as? Date &&
             bytes == (attributes[.size] as? NSNumber)?.uint64Value ?? 0
@@ -41,16 +44,6 @@ final class PreparedConditionalPCM: @unchecked Sendable {
             NativeMarkerLoopPlanner.plan(for: $0)?.conditionCueID != nil
         }.flatMap { $0.audioElements.map(\.sourcePath) })
         var result: [String: PreparedConditionalPCM] = [:]
-        var total = 0.0
-        // Inspect all sizes before allocating. Refuse, never silently return to
-        // timer-driven seeking, if a show exceeds the prepared PCM budget.
-        for path in paths {
-            let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
-            total += Double(file.length) * Double(file.processingFormat.channelCount) * 4
-        }
-        guard total <= 512 * 1024 * 1024 else {
-            throw SessionAudioPreparation.Failure.invalid("Conditional-loop media exceeds the 512 MiB prepared-audio budget. Consolidate shorter cue media before playback.")
-        }
         for path in paths {
             if let previous = cached[path], previous.matches(path: path, sampleRate: show.sampleRate) { result[path] = previous }
             else { result[path] = try PreparedConditionalPCM(path: path, sampleRate: show.sampleRate) }
@@ -63,10 +56,10 @@ final class ConditionalLoopRealtime {
     let pointer: OpaquePointer
     let condition: CueRealtimeSignal
     let own: CueRealtimeSignal
-    let pcm: [PreparedConditionalPCM]
+    let streams: [ConditionalPCMStream]
     let slots: [LoopVoiceSlot]
     init(plan: NativeMarkerLoop, sampleRate: Double, end: Double,
-         files: [PreparedConditionalPCM], indices: [Int], slots: [LoopVoiceSlot],
+         files: [PreparedConditionalPCM], from: Double, indices: [Int], slots: [LoopVoiceSlot],
          condition: CueRealtimeSignal, own: CueRealtimeSignal) throws {
         let phase: Int32
         switch plan.conditionState { case .stopped: phase = 0; case .playing: phase = 1; case .paused: phase = 2; case .waiting: phase = 3 }
@@ -76,16 +69,22 @@ final class ConditionalLoopRealtime {
         pointer = instance
         self.condition = condition
         self.own = own
-        self.pcm = files
+        var preparedStreams: [ConditionalPCMStream] = []
+        do {
+            for prepared in files {
+                preparedStreams.append(try ConditionalPCMStream(path: prepared.path, sampleRate: Int(sampleRate),
+                    loopIn: Int64((plan.inSeconds * sampleRate).rounded()),
+                    loopOut: Int64((plan.outSeconds * sampleRate).rounded()), from: Int64((from * sampleRate).rounded())))
+            }
+        } catch { sculpt_loop_destroy(instance); throw error }
+        self.streams = preparedStreams
         self.slots = slots
-        for (index, prepared) in zip(indices, files) {
-            guard let data = prepared.buffer.floatChannelData,
-                  sculpt_loop_voice(instance, UInt32(index), data[0],
-                    prepared.buffer.format.channelCount == 2 ? data[1] : nil, Int64(prepared.buffer.frameLength)) else {
-                sculpt_loop_destroy(instance)
-                throw SessionAudioPreparation.Failure.invalid("Cannot prepare conditional-loop voice")
+        for (index, stream) in zip(indices, preparedStreams) {
+            guard sculpt_loop_stream_voice(instance, UInt32(index), stream.pointer) else {
+                throw SessionAudioPreparation.Failure.invalid("Cannot bind conditional-loop stream")
             }
         }
+        for stream in preparedStreams { stream.start() }
     }
     deinit { sculpt_loop_destroy(pointer) }
     var quiescent: Bool { slots.allSatisfy { !sculpt_loop_slot_busy($0.pointer) } }

@@ -252,6 +252,7 @@ struct WorkspaceView: View {
                 case .nextList: store.selectNextList()
                 }
             }
+            playback.onPlaybackFailed = { [weak store] id in store?.didStopCue(id) }
             playback.onNaturalFinish = { [weak store, weak playback] id in
                 guard let store, let playback else { return }
                 store.didFinishNaturally(id, using: playback)

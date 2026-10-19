@@ -2,9 +2,16 @@
 import AVFAudio
 import XCTest
 import SculptLTCCore
+import SculptShowCore
 
 final class ConditionalLoopEngineTests: XCTestCase {
     func testSevenSourceNodesAndSecondCueExitWithoutGapOrCrossStemDrift() throws {
+        try renderSevenSources(streaming: false)
+    }
+    func testSevenStreamingSourcesAndSecondCueExitWithoutGapOrCrossStemDrift() throws {
+        try renderSevenSources(streaming: true)
+    }
+    private func renderSevenSources(streaming: Bool) throws {
         let condition = try XCTUnwrap(sculpt_signal_create())
         defer { sculpt_signal_destroy(condition) }
         let transport = try XCTUnwrap(sculpt_loop_create(48000, 32, 96, 192, condition, 1, nil))
@@ -19,10 +26,26 @@ final class ConditionalLoopEngineTests: XCTestCase {
         defer { for samples in sources { samples.deallocate() } }
         let slots = try (0..<7).map { try XCTUnwrap(sculpt_loop_slot_create(UInt32($0))) }
         defer { for slot in slots { sculpt_loop_slot_destroy(slot) } }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var streams: [ConditionalPCMStream] = []
         let engine = AVAudioEngine()
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
         for voice in 0..<7 {
-            XCTAssertTrue(sculpt_loop_voice(transport, UInt32(voice), sources[voice], nil, 192))
+            if streaming {
+                let mono = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1))
+                let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: 192))
+                pcm.frameLength = 192
+                pcm.floatChannelData![0].update(from: sources[voice], count: 192)
+                let url = directory.appendingPathComponent("stem-\(voice).wav")
+                do { let file = try AVAudioFile(forWriting: url, settings: mono.settings); try file.write(from: pcm) }
+                let stream = try ConditionalPCMStream(path: url.path, sampleRate: 48000, loopIn: 32, loopOut: 96, from: 0)
+                streams.append(stream)
+                XCTAssertTrue(sculpt_loop_stream_voice(transport, UInt32(voice), stream.pointer))
+            } else {
+                XCTAssertTrue(sculpt_loop_voice(transport, UInt32(voice), sources[voice], nil, 192))
+            }
             sculpt_loop_slot_bind(slots[voice], transport)
             let slot = slots[voice]
             let node = AVAudioSourceNode(format: format) { _, timestamp, count, data in
@@ -50,6 +73,7 @@ final class ConditionalLoopEngineTests: XCTestCase {
         defer {
             engine.stop()
             for slot in slots { sculpt_loop_slot_bind(slot, nil) }
+            withExtendedLifetime(streams) {}
         }
         other.play()
         let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64))

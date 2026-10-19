@@ -140,6 +140,7 @@ final class PlaybackEngine: ObservableObject {
     var onNaturalFinish: ((UUID) -> Void)?
     var onStarted: ((UUID) -> Void)?
     var onStopped: ((UUID) -> Void)?
+    var onPlaybackFailed: ((UUID) -> Void)?
     /// Emits markers when the running playhead crosses them, in chronological order.
     var onMarkersReached: ((UUID, [UUID]) -> Void)?
 
@@ -927,6 +928,11 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func refresh() {
+        if let id = routedAudio.failedConditionalCue() {
+            stop(id, notifyRules: false)
+            onPlaybackFailed?(id)
+            errorMessage = "Conditional-loop audio stopped: the disk could not supply prepared PCM in time. Other cues are unchanged. Verify the drive and prepare audio again."
+        }
         for (id, deadline) in pendingDeadlines {
             guard var state = snapshots[id], state.phase == .waiting else { continue }
             state.elapsed = min(max(state.duration - (deadline - ProcessInfo.processInfo.systemUptime), 0), state.duration)
