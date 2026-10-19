@@ -163,12 +163,14 @@ struct WorkspaceView: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(Skin.stroke)
-            transport
+            transport.zIndex(2)
             Divider().overlay(Skin.stroke)
             // Side dock is OUTSIDE the vertical mixer split: mixer and waveform may
             // resize only the cue-list workspace and can never cover the right rail.
             mainEditor
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minHeight: 0, maxHeight: .infinity)
+                .clipped()
+                .zIndex(0)
             statusBar
         }
         .background(Skin.base)
@@ -418,9 +420,16 @@ struct WorkspaceView: View {
     private var cueListAndMixer: some View {
         Group {
             if showingOutputMixer || showingWaveforms {
-                VSplitView {
-                    cueListWorkspace.frame(minHeight: 235)
-                    waveformAndMixer.frame(minHeight: 240, idealHeight: 340)
+                GeometryReader { available in
+                    // Fixed split minima could exceed the window and draw over
+                    // the transport. Scale both minima to the actual editor area.
+                    VSplitView {
+                        cueListWorkspace.frame(minHeight: min(235, available.size.height * 0.35))
+                        waveformAndMixer.frame(minHeight: min(240, available.size.height * 0.35),
+                            idealHeight: min(340, available.size.height * 0.5))
+                    }
+                    .frame(width: available.size.width, height: available.size.height)
+                    .clipped()
                 }
             } else {
                 cueListWorkspace
@@ -546,6 +555,25 @@ struct WorkspaceView: View {
     }
 
     private var transport: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                transportPrimary
+                transportTitle
+                transportUtilities
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack { transportPrimary; Spacer(minLength: 0) }
+                HStack(spacing: 8) { transportTitle; transportUtilities }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .layoutPriority(2)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Skin.panel)
+    }
+
+    private var transportPrimary: some View {
         HStack(spacing: 6) {
             Button { store.fireSelected(using: playback) } label: {
                 Label("GO", systemImage: "play.fill")
@@ -571,14 +599,23 @@ struct WorkspaceView: View {
             transportAction("NEXT LIST", "rectangle.stack", compact: true) { store.selectNextList() }
             transportSeparator
 
+        }.fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var transportTitle: some View {
             Text(store.selectedCue?.name ?? "No cue selected")
                 .font(.system(size: 23, weight: .bold, design: .rounded))
                 .foregroundColor(Skin.gold)
                 .lineLimit(1)
                 .minimumScaleFactor(0.60)
                 .help(store.selectedCue?.name ?? "No cue selected")
-            .frame(minWidth: 125, maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 80, maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(-1)
 
+    }
+
+    private var transportUtilities: some View {
+        HStack(spacing: 6) {
             Toggle("AUTO", isOn: $store.advanceAfterGO)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
@@ -591,10 +628,11 @@ struct WorkspaceView: View {
                 showingOutputMixer = open
                 if open { showingWaveforms = false }
             } label: {
-                Image(systemName: "slider.vertical.3")
-                    .frame(width: 24, height: 29)
+                Label("MIXER", systemImage: "slider.vertical.3")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .frame(minHeight: 29)
             }
-            .tint(showingOutputMixer ? Skin.gold : Skin.raised)
+            .buttonStyle(TransportControlStyle(selected: showingOutputMixer))
             .help(showingOutputMixer ? "Hide output mixer" : "Show output mixer")
             .accessibilityLabel("Mixer")
 
@@ -603,20 +641,22 @@ struct WorkspaceView: View {
                 showingWaveforms = open
                 if open { showingOutputMixer = false }
             } label: {
-                Image(systemName: "waveform")
-                    .frame(width: 24, height: 29)
+                Label("WAVEFORM", systemImage: "waveform")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .frame(minHeight: 29)
             }
-            .tint(showingWaveforms ? Skin.gold : Skin.raised)
+            .buttonStyle(TransportControlStyle(selected: showingWaveforms))
             .help("Waveform editor and markers")
             .accessibilityLabel("Waveforms")
 
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { showingTimecodeReader.toggle() }
             } label: {
-                Image(systemName: "clock")
-                    .frame(width: 24, height: 29)
+                Label("TIMECODE", systemImage: "clock")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .frame(minHeight: 29)
             }
-            .tint(showingTimecodeReader ? Skin.gold : Skin.raised)
+            .buttonStyle(TransportControlStyle(selected: showingTimecodeReader))
             .help("Timecode reader / LTC monitor")
             .accessibilityLabel("Timecode")
             
@@ -632,13 +672,7 @@ struct WorkspaceView: View {
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundColor(Skin.gold)
                 .fixedSize()
-                .help("\(playback.snapshots.count) active cues")
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Skin.panel)
+                .help("\(playback.snapshots.count) active cues")        }.fixedSize(horizontal: true, vertical: false)
     }
 
     private var transportSeparator: some View {
@@ -656,7 +690,7 @@ struct WorkspaceView: View {
             .frame(minHeight: 29)
             .fixedSize(horizontal: true, vertical: false)
         }
-        .tint(destructive ? .red : Skin.raised)
+        .buttonStyle(TransportControlStyle(destructive: destructive))
         .help(name)
         .accessibilityLabel(name)
     }
@@ -1630,5 +1664,20 @@ private struct CueRow: View {
     private func clock(_ seconds: TimeInterval) -> String {
         let total = Int(max(seconds, 0))
         return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+}
+
+/// Explicit label colors remain readable independently of macOS tinted-button styling.
+private struct TransportControlStyle: ButtonStyle {
+    var selected = false
+    var destructive = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundColor(selected ? .black : (destructive ? .red : .white))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(selected ? Skin.gold : Skin.raised, in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Skin.soft.opacity(0.4)))
+            .opacity(configuration.isPressed ? 0.7 : 1)
     }
 }
