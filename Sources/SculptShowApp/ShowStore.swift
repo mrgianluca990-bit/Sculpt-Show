@@ -248,7 +248,777 @@ final class ShowStore: ObservableObject {
 
     func selectedCue(in listID: UUID) -> Cue? {
         guard selectedListID == listID, let cueID = selectedCueID else { return nil }
-        return show.cueLists.first(where: { $0.id == listID })?.cues.first(w…10478 tokens truncated…Keeps the audio timeline, cue start and output routing untouched.
+        return show.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == cueID })
+    }
+
+    func select(_ cueID: UUID, in listID: UUID) {
+        guard show.cueLists.first(where: { $0.id == listID })?.cues.contains(where: { $0.id == cueID }) == true else { return }
+        selectedListID = listID
+        selectedCueID = cueID
+    }
+
+    @discardableResult
+    func newShow() -> Bool {
+        guard !isLoadingProject, confirmDiscard() else { return false }
+        showOpenGeneration = UUID()
+        cancelPendingRules()
+        playingLists.removeAll()
+        show = Show()
+        clearHistory()
+        documentURL = nil
+        dirty = false
+        selectedCueID = nil
+        selectedListID = show.cueLists.first?.id
+        return true
+    }
+
+    func renameShow(_ text: String) {
+        guard text != show.name else { return }
+        var updated = show
+        updated.name = text
+        commit(updated)
+    }
+
+    func addList() {
+        var updated = show
+        let newID = updated.addList()
+        commit(updated)
+        selectedListID = newID
+        selectedCueID = nil
+    }
+
+    func removeList(_ id: UUID) {
+        guard show.cueLists.count > 1 else { return }
+        var updated = show
+        updated.removeList(id)
+        commit(updated)
+        if selectedListID == id {
+            selectedListID = updated.cueLists.first?.id
+            selectedCueID = updated.cueLists.first?.cues.first(where: { $0.enabled })?.id
+        }
+        playingLists.removeValue(forKey: id)
+    }
+
+    func renameList(_ id: UUID, to text: String) {
+        var updated = show
+        updated.renameList(id, to: text)
+        commit(updated)
+    }
+
+    /// Save one Undo step for a whole list's VCA-style trim, not every cue gain.
+    func setCueListTrim(_ id: UUID, decibels: Double) {
+        guard decibels.isFinite,
+              let index = show.cueLists.firstIndex(where: { $0.id == id }) else { return }
+        var updated = show
+        updated.cueLists[index].trimDB = max(-60, min(6, decibels))
+        commit(updated)
+    }
+
+    /// Reads the connected interface when an import/publication is applied.
+    var audioOutputCount: () -> Int = { 2 }
+    var onSavedMediaMoved: (([String: String]) -> Void)?
+
+    private func assignAutomaticOutputs(to show: inout Show, cueID: UUID, listID: UUID) {
+        show.updateCue(cueID, in: listID) { cue in
+            let indices = cue.elements.indices.filter { cue.elements[$0].kind == .audio }
+            let widths = indices.map { index in
+                ShowWaveformCache.shared.channels(at: cue.elements[index].sourcePath) ??
+                    (try? AVAudioFile(forReading: URL(fileURLWithPath: cue.elements[index].sourcePath)))
+                        .map { Int($0.processingFormat.channelCount) } ?? 2
+            }
+            let outputs = AudioRoutePlan.automaticOutputs(channelCounts: widths,
+                deviceChannels: max(1, audioOutputCount()))
+            for (index, output) in zip(indices, outputs) { cue.elements[index].outputStartChannel = output }
+        }
+    }
+
+    func importAudio(to listID: UUID) {
+        let panel = NSOpenPanel()
+        panel.message = "Import audio as new cue containers"
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK else { return }
+        addAudio(panel.urls, to: listID)
+    }
+
+    func addAudio(_ urls: [URL], to listID: UUID) {
+        let files = urls.filter(\.isFileURL)
+        guard !files.isEmpty else { return }
+        guard pendingAudioImports == 0 else {
+            errorMessage = "Complete the previous audio import first."
+            return
+        }
+        pendingAudioImports += 1
+        audioImportProgress = "0/\(files.count)"
+        Task {
+            defer { pendingAudioImports -= 1; audioImportProgress = "" }
+            let failed = await ShowWaveformCache.shared.prepare(paths: files.map(\.path)) { completed, total in
+                self.audioImportProgress = "\(completed)/\(total)"
+            }
+            guard failed.isEmpty else {
+                errorMessage = "Audio import cancelled: waveform/PCM analysis failed for " +
+                    failed.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", ")
+                return
+            }
+            // Do not display or select new cues until metadata and waveforms exist.
+            guard show.cueLists.contains(where: { $0.id == listID }) else { return }
+            var updated = show
+            let newIDs = updated.addAudio(files, to: listID)
+            guard !newIDs.isEmpty else { return }
+            for (id, url) in zip(newIDs, files) {
+                let length = (try? AVAudioPlayer(contentsOf: url))?.duration ??
+                    ShowWaveformCache.shared.envelopes[url.path]?.duration ?? 5
+                updated.updateCue(id, in: listID) {
+                    $0.durationSeconds = max(0.1, length)
+                    $0.durationMode = .fixed
+                }
+            }
+            commit(updated)
+            select(newIDs[0], in: listID)
+        }
+    }
+
+    /// Native Sculpt DAW (.scraft) import; creates a new cue without touching the
+    /// current audio or document. Unsupported DAW edits must be bounced first.
+    func importFromDAW(to listID: UUID) {
+        guard pendingAudioImports == 0, !isLoadingProject else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Import Sculpt DAW Session"
+        panel.message = "Select an aligned, consolidated .scraft session. Split or processed regions require a bounce in Sculpt DAW."
+        panel.allowedContentTypes = [UTType(filenameExtension: "scdaw") ?? .json, UTType(filenameExtension: "scraft") ?? .json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        pendingAudioImports += 1
+        audioImportProgress = "READING DAW SESSION"
+        Task {
+            defer { pendingAudioImports -= 1; audioImportProgress = "" }
+            do {
+                let session = try await Task.detached(priority: .userInitiated) {
+                    try SculptDAWSessionImport.read(at: url)
+                }.value
+                audioImportProgress = "ANALYZING \(session.stems.count) STEMS"
+                let failed = await ShowWaveformCache.shared.prepare(paths: session.audioPaths) { completed, total in
+                    self.audioImportProgress = "\(completed)/\(total)"
+                }
+                guard failed.isEmpty else {
+                    errorMessage = "DAW import cancelled: unreadable media " + failed.joined(separator: ", ")
+                    return
+                }
+                guard let i = show.cueLists.firstIndex(where: { $0.id == listID }) else { return }
+                var updated = show
+                var cue = Cue(name: session.name)
+                cue.elements = session.stems.map { stem in
+                    var element = CueElement.audio(URL(fileURLWithPath: stem.path))
+                    element.name = stem.name
+                    element.outputStartChannel = stem.output
+                    element.gain = stem.gain
+                    element.muted = stem.muted
+                    return element
+                }
+                cue.durationMode = .fixed
+                cue.durationSeconds = min(86400, max(0.1, session.duration))
+                cue.markers = session.markers.map { CueMarker(name: $0.name, positionSeconds: $0.seconds) }
+                updated.cueLists[i].cues.append(cue)
+                assignAutomaticOutputs(to: &updated, cueID: cue.id, listID: listID)
+                commit(updated)
+                select(cue.id, in: listID)
+                dawBridgeMessage = "DAW session imported: \(session.stems.count) stems, \(session.markers.count) markers."
+            } catch {
+                errorMessage = "Import from DAW failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func addEmptyCue(to listID: UUID) {
+        var updated = show
+        let after = selectedListID == listID ? selectedCueID : nil
+        guard let newID = updated.addEmptyCue(to: listID, after: after) else { return }
+        commit(updated)
+        select(newID, in: listID)
+    }
+
+    func chooseMedia(for cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        attachAudio(to: cueID, in: listID, using: playback)
+    }
+
+    /// Audio is an element added to the cue container, not a cue type.
+    func attachAudio(to cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        let panel = NSOpenPanel()
+        panel.title = "Add Audio to Cue Container"
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        attachAudioURLs(panel.urls, to: cueID, in: listID, using: playback)
+    }
+
+    func attachAudioURLs(_ urls: [URL], to cueID: UUID, in listID: UUID,
+                         using playback: PlaybackEngine) {
+        let files = urls.filter(\.isFileURL)
+        guard !files.isEmpty else { return }
+        guard pendingAudioImports == 0 else {
+            errorMessage = "Complete the previous audio import first."
+            return
+        }
+        pendingAudioImports += 1
+        audioImportProgress = "0/\(files.count)"
+        Task {
+            defer { pendingAudioImports -= 1; audioImportProgress = "" }
+            let failed = await ShowWaveformCache.shared.prepare(paths: files.map(\.path)) { completed, total in
+                self.audioImportProgress = "\(completed)/\(total)"
+            }
+            guard failed.isEmpty else {
+                errorMessage = "Audio attachment cancelled: cannot analyze " +
+                    failed.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", ")
+                return
+            }
+            guard show.cueLists.contains(where: { $0.id == listID &&
+                $0.cues.contains(where: { $0.id == cueID }) }) else { return }
+            var updated = show
+            // A newly attached stem can extend the cue, even when it already
+            // contains audio. Never shorten a manually configured duration.
+            let previousLength = updated.cue(cueID)?.durationSeconds ?? 0
+            guard updated.appendAudio(files, to: cueID) else { return }
+            assignAutomaticOutputs(to: &updated, cueID: cueID, listID: listID)
+            let longest = files.compactMap { ShowWaveformCache.shared.envelopes[$0.path]?.duration }.max()
+            if let longest, longest.isFinite, longest > previousLength {
+                updated.updateCue(cueID, in: listID) {
+                    $0.durationSeconds = max(0.1, longest)
+                    $0.durationMode = .fixed
+                }
+            }
+            playback.stop(cueID, notifyRules: false)
+            commit(updated)
+            select(cueID, in: listID)
+        }
+    }
+
+    /// Rearrange audio stems only. LTC and other non-audio elements retain
+    /// their positions, and cue/element identities and routing stay unchanged.
+    func moveAudioStem(_ elementID: UUID, in cueID: UUID, listID: UUID, by direction: Int) {
+        guard direction == -1 || direction == 1,
+              let cue = show.cue(cueID) else { return }
+        let positions = cue.elements.indices.filter { cue.elements[$0].kind == .audio }
+        guard let position = positions.firstIndex(where: { cue.elements[$0].id == elementID }),
+              positions.indices.contains(position + direction) else { return }
+        let sourceIndex = positions[position]
+        let targetIndex = positions[position + direction]
+        editCue(cueID, list: listID) { item in
+            item.elements.swapAt(sourceIndex, targetIndex)
+        }
+    }
+
+    private var pendingDAWPublications: [URL] = []
+    private var receivingDAWPublication = false
+
+    func chooseDAWPublication(using playback: PlaybackEngine) {
+        let panel = NSOpenPanel()
+        panel.title = "Receive DAW Publication"
+        panel.allowedContentTypes = [UTType(filenameExtension: "sculptbridge") ?? .json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        receiveDAWPublication(at: url, using: playback)
+    }
+
+    func receiveDAWPublication(at url: URL, using playback: PlaybackEngine) {
+        guard url.isFileURL, url.pathExtension.lowercased() == "sculptbridge" else { return }
+        if !pendingDAWPublications.contains(url) { pendingDAWPublications.append(url) }
+        applyPendingDAWPublications(using: playback)
+    }
+
+    func applyPendingDAWPublications(using playback: PlaybackEngine) {
+        guard !receivingDAWPublication, !isLoadingProject, pendingAudioImports == 0,
+              normalizingCueID == nil, normalizingListID == nil,
+              let url = pendingDAWPublications.first else { return }
+        receivingDAWPublication = true
+        Task {
+            defer {
+                receivingDAWPublication = false
+                if pendingDAWPublications.first != url { applyPendingDAWPublications(using: playback) }
+            }
+            do {
+                let packet = try await Task.detached(priority: .userInitiated) {
+                    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
+                    guard size <= 8 * 1024 * 1024 else { throw SculptBridgeReturn.Failure.invalid }
+                    return try SculptBridgeReturn.decode(Data(contentsOf: url), at: url)
+                }.value
+                let m = packet.manifest
+                let listID = packet.targetSelection ? selectedListID : m.cueListID
+                guard let listID else { throw SculptBridgeReturn.Failure.destination }
+                let receipt = url.deletingLastPathComponent().appendingPathComponent("receipt.json")
+                if let data = try? Data(contentsOf: receipt),
+                   let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   record["status"] as? String == "applied",
+                   record["publicationID"] as? String == packet.publicationID.uuidString,
+                   let rawCue = record["originCue"],
+                   let appliedCue = try? JSONDecoder().decode(Cue.self, from: JSONSerialization.data(withJSONObject: rawCue)),
+                   let currentCue = show.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == m.cueID }),
+                   SculptBridgeReturn.matchesSnapshot(currentCue, appliedCue) {
+                    pendingDAWPublications.removeAll { $0 == url }
+                    dawBridgeMessage = "This DAW publication has already been applied."
+                    return
+                }
+                // Preflight the model before expensive media work and again after suspension.
+                _ = try SculptBridgeReturn.applying(packet, to: show, destinationListID: listID)
+                if packet.publishMode == "updateCue", playback.snapshots[m.cueID] != nil {
+                    dawBridgeMessage = "DAW update queued. It will be applied when this cue stops."
+                    return
+                }
+                for stem in m.stems {
+                    let file = try AVAudioFile(forReading: URL(fileURLWithPath: stem.sourcePath))
+                    let channels = Int(file.processingFormat.channelCount)
+                    guard (1...2).contains(channels), file.length > 0,
+                          stem.outputStartChannel + channels - 1 <= 64,
+                          abs(Double(file.length) / file.processingFormat.sampleRate - m.durationSeconds) < 0.05 else {
+                        throw SculptBridgeReturn.Failure.media
+                    }
+                }
+                let generation = showOpenGeneration
+                let failed = await ShowWaveformCache.shared.prepare(paths: m.stems.map(\.sourcePath)) { _, _ in }
+                guard failed.isEmpty else { throw SculptBridgeReturn.Failure.media }
+                guard generation == showOpenGeneration else { throw SculptBridgeReturn.Failure.destination }
+                if packet.publishMode == "updateCue", playback.snapshots[m.cueID] != nil {
+                    dawBridgeMessage = "DAW update queued until this cue stops."
+                    return
+                }
+                var updated = try SculptBridgeReturn.applying(packet, to: show, destinationListID: listID)
+                assignAutomaticOutputs(to: &updated, cueID: m.cueID, listID: listID)
+                commit(updated)
+                select(m.cueID, in: listID)
+                pendingDAWPublications.removeAll { $0 == url }
+                // Receipt means applied in memory; the user still saves the Show normally.
+                let cue = updated.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == m.cueID })
+                var record: [String: Any] = ["status": "applied", "publicationID": packet.publicationID.uuidString,
+                    "cueID": m.cueID.uuidString, "publishMode": packet.publishMode]
+                if let cue { record["originCue"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(cue)) }
+                do {
+                    try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]).write(to: receipt, options: .atomic)
+                    appliedDAWReceipts[m.cueID] = receipt
+                }
+                catch { errorMessage = "Cue updated, but the DAW receipt could not be saved: \(error.localizedDescription)" }
+                dawBridgeMessage = "DAW publication applied: \(m.stems.count) stems, \(m.markers.count) markers. Save Show to keep it."
+            } catch {
+                pendingDAWPublications.removeAll { $0 == url }
+                errorMessage = "DAW publication rejected: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    // MARK: - Sculpt Show ⇄ Sculpt DAW bridge v1
+    /// Prepare editable DAW material without changing the loaded show or audio graph.
+    /// The script is consumed by `soundcraft-cli script FILE` in Sculpt DAW.
+    func exportCueToDAW(_ cueID: UUID, in listID: UUID) {
+        do {
+            let manifest = try SculptBridge.manifest(show: show, listID: listID, cueID: cueID)
+            let supported: Set<String> = ["wav", "wave", "aif", "aiff", "flac"]
+            var rate: Int?
+            var channels: [UUID: Int] = [:]
+            for stem in manifest.stems {
+                let url = URL(fileURLWithPath: stem.sourcePath)
+                guard url.isFileURL, supported.contains(url.pathExtension.lowercased()),
+                      let audio = try? AVAudioFile(forReading: url),
+                      (1...2).contains(Int(audio.processingFormat.channelCount)) else {
+                    errorMessage = "Cannot send to DAW: unavailable or unsupported mono/stereo WAV, AIFF or FLAC file: \(stem.name)."
+                    return
+                }
+                if rate == nil { rate = Int(audio.processingFormat.sampleRate.rounded()) }
+                channels[stem.elementID] = Int(audio.processingFormat.channelCount)
+            }
+            let savePanel = NSSavePanel()
+            savePanel.title = "Send Cue to Sculpt DAW"
+            savePanel.allowedContentTypes = [.json]
+            let safe = manifest.cueName.replacingOccurrences(of: "/", with: "-")
+            savePanel.nameFieldStringValue = "\(safe)-bridge.json"
+            savePanel.message = "Creates JSON metadata plus a Sculpt DAW CLI import script. Does not change Show or original media."
+            guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
+            let base = url.deletingPathExtension()
+            let destination = base.appendingPathExtension("scraft")
+            let commandsURL = URL(fileURLWithPath: base.path + "-DAW.txt")
+            let commands = try SculptBridge.dawImportScript(manifest, sampleRate: rate ?? 48000,
+                                                              destination: destination.path,
+                                                              channelCounts: channels)
+            try SculptBridge.encode(manifest).write(to: url, options: .atomic)
+            try Data(commands.utf8).write(to: commandsURL, options: .atomic)
+            // No automatic process launch: DAW CLI availability/build differs by installation.
+        } catch {
+            errorMessage = "Sculpt Bridge export failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Show -> DAW Phase 2: direct, non-destructive, editable session handoff.
+    /// Does not stop any cue or mutate Show's audio graph / saved document.
+    @Published private(set) var dawBridgeBusy = false
+    @Published private(set) var dawBridgeCueID: UUID?
+    @Published var dawBridgeMessage: String?
+
+    func editCueInDAW(_ cueID: UUID, in listID: UUID) {
+        guard !dawBridgeBusy, !preparingSessionAudio, !isLoadingProject, pendingAudioImports == 0 else { return }
+        // A saved project anchors every DAW edit inside its own bridge folder.
+        if documentURL == nil { saveAs() }
+        guard let projectDocument = documentURL else { return }
+        do {
+            let manifest = try SculptBridge.manifest(show: show, listID: listID, cueID: cueID)
+            let preparation = try SculptDAWLaunchBridge.prepare(manifest, projectDocument: projectDocument)
+            dawBridgeBusy = true
+            dawBridgeCueID = cueID
+            dawBridgeMessage = "Preparing Sculpt DAW session…"
+            SculptDAWLaunchBridge.run(preparation) { [weak self] result in
+                guard let self else { return }
+                self.dawBridgeBusy = false
+                self.dawBridgeCueID = nil
+                switch result {
+                case .success(let message): self.dawBridgeMessage = message
+                case .failure(let error):
+                    self.dawBridgeMessage = nil
+                    self.errorMessage = "Sculpt Bridge: \(error.localizedDescription)"
+                }
+            }
+        } catch {
+            errorMessage = "Sculpt Bridge: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Offline loudness normalization (REAPER-style workflow)
+    @Published private(set) var normalizingCueID: UUID?
+    @Published private(set) var normalizingListID: UUID?
+    @Published var listNormalizationSummary: String?
+    @Published private(set) var normalizationReportCueID: UUID?
+    @Published private(set) var normalizationReport: String?
+
+    func normalizeCue(_ cueID: UUID, in listID: UUID,
+                      mode: NormalizationTarget, target: Double,
+                      peakLimit: Bool, using playback: PlaybackEngine) {
+        guard normalizingCueID == nil, normalizingListID == nil else { return }
+        guard playback.snapshots.isEmpty else {
+            errorMessage = "Stop all cue playback before normalizing. Offline file processing could affect disk performance during a live show."
+            return
+        }
+        guard let list = show.cueLists.first(where: { $0.id == listID }),
+              let cue = list.cues.first(where: { $0.id == cueID }), cue.hasAudio else { return }
+        // Normalized audio must be part of a portable Show project from the
+        // start. No hidden external Application Support copies or broken refs.
+        guard let showID = documentURL, ShowProjectPackage.isPackaged(showID) else {
+            errorMessage = "Save the Show as a portable project before normalizing audio (File > Save As)."
+            return
+        }
+        let outputDirectory: URL
+        do {
+            outputDirectory = try ShowProjectPackage.audioDirectory(
+                for: listID, in: show, documentURL: showID)
+        } catch {
+            errorMessage = "Normalize Audio: cannot access the project media folder: \(error.localizedDescription)"
+            return
+        }
+        let requested = cue.audioElements.map {
+            CueOfflineNormalizer.Request(elementID: $0.id, name: $0.name, originalPath: $0.sourcePath)
+        }
+        normalizingCueID = cueID
+        normalizationReportCueID = cueID
+        normalizationReport = "Analyzing and rendering \(requested.count) stem(s)…"
+        // Heavy PCM analysis and writing never run on the SwiftUI or audio thread.
+        Task {
+            do {
+                let results = try await Task.detached(priority: .userInitiated) {
+                    try CueOfflineNormalizer.normalize(requested,
+                       outputDirectory: outputDirectory,
+                       mode: mode, target: target, peakLimit: peakLimit)
+                }.value
+                // A normalized cue must display a ready waveform on relink.
+                let unreadable = await ShowWaveformCache.shared.prepare(
+                    paths: results.map(\.normalizedPath))
+                guard unreadable.isEmpty else {
+                    for result in results { try? FileManager.default.removeItem(atPath: result.normalizedPath) }
+                    self.errorMessage = "The new normalized WAV cannot be decoded for its waveform. Cue unchanged."
+                    self.normalizingCueID = nil
+                    return
+                }
+                // Do not link a file into a different show or into a changed cue.
+                guard self.documentURL == showID,
+                      let current = self.show.cueLists.first(where: { $0.id == listID })?.cues.first(where: { $0.id == cueID }),
+                      playback.snapshots.isEmpty,
+                      results.allSatisfy({ item in
+                          current.audioElements.contains(where: {
+                              $0.id == item.elementID && $0.sourcePath == item.originalPath
+                          })
+                      }) else {
+                    for result in results { try? FileManager.default.removeItem(atPath: result.normalizedPath) }
+                    self.errorMessage = "The cue changed or playback began during normalization. No files were relinked."
+                    self.normalizingCueID = nil
+                    return
+                }
+                self.editCue(cueID, list: listID) { cue in
+                    for result in results {
+                        if let index = cue.elements.firstIndex(where: { $0.id == result.elementID }) {
+                            cue.elements[index].sourcePath = result.normalizedPath
+                            cue.elements[index].originalSourcePath = nil
+                        }
+                    }
+                }
+                func value(_ x: Double?) -> String {
+                    x.map { String(format: "%.1f", $0) } ?? "—"
+                }
+                self.normalizationReport = results.map {
+                    "\($0.name):  \(value($0.beforeLUFS)) LUFS  |  \(value($0.beforePeak)) dBFS peak  |  \(String(format: "%+.1f", $0.gainDB)) dB  →  \(value($0.estimatedAfterLUFS)) LUFS / \(value($0.estimatedAfterPeak)) dBFS"
+                }.joined(separator: "\n") + "\n\nNormalized WAV copies written to the project's Audio Files / Cue List folder. Original media are unchanged. Save the Show to persist the new cue references."
+                self.normalizingCueID = nil
+            } catch {
+                self.normalizingCueID = nil
+                self.normalizationReport = nil
+                self.errorMessage = "Normalize Audio: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// One-click, non-destructive -18 LUFS-I normalization for an entire cue
+    /// list. Empty/timecode-only cues are skipped. Every mono/stereo stem is
+    /// normalized independently, with the existing -1 dBFS sample-peak guard.
+    /// A failure rolls back the entire batch; no partial cue-list relinking.
+    func normalizeCueList(_ listID: UUID, mode: NormalizationTarget = .integratedLUFS,
+                          target: Double = -18, peakLimit: Bool = true,
+                          using playback: PlaybackEngine) {
+        guard target.isFinite else { return }
+        guard normalizingCueID == nil, normalizingListID == nil,
+              !isLoadingProject, pendingAudioImports == 0 else { return }
+        guard playback.snapshots.isEmpty else {
+            errorMessage = "Stop playback before normalizing the cue list."
+            return
+        }
+        guard let list = show.cueLists.first(where: { $0.id == listID }) else { return }
+        let requests = list.cues.flatMap { cue in
+            cue.audioElements.map { element in
+                CueOfflineNormalizer.Request(elementID: element.id,
+                    name: "\(cue.name) / \(element.name)", originalPath: element.sourcePath)
+            }
+        }
+        guard !requests.isEmpty else {
+            errorMessage = "This cue list has no audio to normalize."
+            return
+        }
+        guard let showID = documentURL, ShowProjectPackage.isPackaged(showID) else {
+            errorMessage = "Save the Show as a portable project before normalizing (File > Save As)."
+            return
+        }
+        let folder: URL
+        do {
+            folder = try ShowProjectPackage.audioDirectory(for: listID, in: show,
+                                                            documentURL: showID)
+        } catch {
+            errorMessage = "Cannot access cue-list media folder: \(error.localizedDescription)"
+            return
+        }
+        normalizingListID = listID
+        listNormalizationSummary = nil
+        Task {
+            do {
+                let results = try await Task.detached(priority: .userInitiated) {
+                    try CueOfflineNormalizer.normalize(requests, outputDirectory: folder,
+                        mode: mode, target: target, peakLimit: peakLimit)
+                }.value
+                // Preload waveforms before publishing any changed source paths.
+                let failed = await ShowWaveformCache.shared.prepare(
+                    paths: results.map(\.normalizedPath))
+                let current = self.show.cueLists.first(where: { $0.id == listID })
+                let currentAudio = current?.cues.flatMap { $0.audioElements } ?? []
+                let unchanged = currentAudio.count == requests.count &&
+                    currentAudio.allSatisfy { element in
+                        requests.contains { $0.elementID == element.id &&
+                                            $0.originalPath == element.sourcePath }
+                    }
+                guard failed.isEmpty, self.documentURL == showID,
+                      playback.snapshots.isEmpty, unchanged else {
+                    for result in results {
+                        try? FileManager.default.removeItem(atPath: result.normalizedPath)
+                    }
+                    self.normalizingListID = nil
+                    self.errorMessage = failed.isEmpty
+                        ? "The Show changed during normalization. No cue-list files were relinked."
+                        : "A normalized waveform could not be verified. Cue list unchanged."
+                    return
+                }
+                let newPaths = Dictionary(uniqueKeysWithValues:
+                    results.map { ($0.elementID, $0.normalizedPath) })
+                var updated = self.show
+                if let li = updated.cueLists.firstIndex(where: { $0.id == listID }) {
+                    for ci in updated.cueLists[li].cues.indices {
+                        for ei in updated.cueLists[li].cues[ci].elements.indices {
+                            let id = updated.cueLists[li].cues[ci].elements[ei].id
+                            if let path = newPaths[id] {
+                                updated.cueLists[li].cues[ci].elements[ei].sourcePath = path
+                                updated.cueLists[li].cues[ci].elements[ei].originalSourcePath = nil
+                            }
+                        }
+                    }
+                }
+                self.commit(updated)
+                self.normalizingListID = nil
+                let songCount = list.cues.filter { $0.hasAudio }.count
+                self.listNormalizationSummary = "Normalized \(results.count) audio stems across \(songCount) cues in '\(list.name)' toward -18 LUFS-I. Original audio was preserved; normalized files are in Audio Files. Peak protection at -1 dBFS may prevent some files from reaching exactly -18 LUFS. Save the Show to keep the new references."
+            } catch {
+                self.normalizingListID = nil
+                self.errorMessage = "Cue List normalization failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func chooseDAWCLI() {
+        do {
+            try SculptDAWLaunchBridge.chooseCLI()
+            dawBridgeMessage = "Sculpt DAW CLI configured. Next EDIT IN DAW will create a native, editable session."
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    /// User explicitly picks a bounced mono/stereo stem to replace one source.
+    /// Changes take effect on the NEXT playback, while cue/marker/routing IDs persist.
+    func receiveDAWBounce(for elementID: UUID, in cueID: UUID, listID: UUID) {
+        guard let element = show.cue(cueID)?.audioElements.first(where: { $0.id == elementID }) else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Receive DAW Bounce — \(element.name)"
+        panel.message = "Replace only this audio reference. Markers, routing and LTC remain unchanged."
+        panel.allowedContentTypes = [.audio]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let replacement = try? AVAudioFile(forReading: url),
+              (1...2).contains(Int(replacement.processingFormat.channelCount)) else {
+            errorMessage = "The DAW bounce must be a readable mono or stereo audio file."
+            return
+        }
+        // A stereo replacement cannot overflow the last available physical channel.
+        guard element.outputStartChannel + Int(replacement.processingFormat.channelCount) - 1 <= 64 else {
+            errorMessage = "The returned stem exceeds the 64-channel output routing limit."
+            return
+        }
+        relinkElement(elementID, in: cueID, listID: listID, to: url)
+    }
+
+    func addTimecode(to cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        // Attaching LTC is non-destructive; a running cue adopts it on next GO.
+        editCue(cueID, list: listID) { cue in
+            if cue.elements.contains(where: { $0.kind == .timecode }) { return }
+            cue.elements.append(.timecode())
+        }
+    }
+
+    func removeElement(_ elementID: UUID, from cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        playback.stop(cueID, notifyRules: false)
+        editCue(cueID, list: listID) { $0.elements.removeAll { $0.id == elementID } }
+    }
+
+    /// Replace a reference while preserving element UUID, routing, gain and Rules.
+    /// Does not stop a currently playing cue: the new path takes effect on next GO.
+    func relinkElement(_ elementID: UUID, in cueID: UUID, listID: UUID, to url: URL) {
+        guard url.isFileURL,
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: {
+                $0.id == elementID && $0.kind == .audio
+            }) else { return }
+            cue.elements[index].sourcePath = url.path
+            cue.elements[index].originalSourcePath = nil
+        }
+    }
+
+    func chooseRelink(for elementID: UUID, cueID: UUID, listID: UUID) {
+        guard let element = show.cue(cueID)?.audioElements.first(where: { $0.id == elementID }) else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Relink Audio — \(element.name)"
+        panel.message = "Choose the replacement audio file. The active cue will not be interrupted."
+        panel.allowedContentTypes = [.audio]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: element.sourcePath).deletingLastPathComponent()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        relinkElement(elementID, in: cueID, listID: listID, to: url)
+    }
+
+    /// Only exact-filename, unambiguous matches are relinked; never guesses
+    /// based on partial names. Skips packages and hidden folders, max 10k files.
+    /// Can be run while playing: existing audio file handles stay untouched.
+    @discardableResult
+    func relinkMissingMedia(in folder: URL) -> Int {
+        guard folder.isFileURL else { return 0 }
+        var existing: [String: [URL]] = [:]
+        if let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
+            var inspected = 0
+            for case let url as URL in enumerator {
+                inspected += 1
+                if inspected > 10_000 { break }
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                existing[url.lastPathComponent.lowercased(), default: []].append(url)
+            }
+        }
+        var updated = show
+        var replacements = 0
+        for li in updated.cueLists.indices {
+            for ci in updated.cueLists[li].cues.indices {
+                for ei in updated.cueLists[li].cues[ci].elements.indices {
+                    let item = updated.cueLists[li].cues[ci].elements[ei]
+                    guard item.kind == .audio,
+                          !FileManager.default.fileExists(atPath: item.sourcePath),
+                          let matches = existing[URL(fileURLWithPath: item.sourcePath).lastPathComponent.lowercased()],
+                          matches.count == 1 else { continue }
+                    updated.cueLists[li].cues[ci].elements[ei].sourcePath = matches[0].path
+                    updated.cueLists[li].cues[ci].elements[ei].originalSourcePath = nil
+                    replacements += 1
+                }
+            }
+        }
+        if replacements > 0 { commit(updated) }
+        return replacements
+    }
+
+    func setElementStart(_ elementID: UUID, in cueID: UUID, listID: UUID, to seconds: Double) {
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[index].startSeconds = max(0, seconds)
+        }
+    }
+
+    func setElementTrim(_ elementID: UUID, in cueID: UUID, listID: UUID,
+                        start: Double? = nil, end: Double? = nil, resetEnd: Bool = false) {
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            if let start { cue.elements[index].inSeconds = max(0, start) }
+            if let end { cue.elements[index].outSeconds = max(0, end) }
+            if resetEnd { cue.elements[index].outSeconds = nil }
+        }
+    }
+
+    func setTimecode(_ elementID: UUID, in cueID: UUID, listID: UUID, to value: String) {
+        let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID })
+        let frameRate = element?.frameRate ?? 25
+        guard CueElement.isValidTimecode(value, frameRate: frameRate,
+                                         dropFrame: element?.timecodeDropFrame ?? false) else {
+            errorMessage = "Use timecode HH:MM:SS:FF with frames below the selected FPS."
+            return
+        }
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[index].timecodeStart = value
+        }
+    }
+
+    func setTimecodeTrim(_ elementID: UUID, in cueID: UUID, listID: UUID, to value: String) {
+        guard let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID }) else { return }
+        let rate = LTCFrameRate(fps: element.frameRate, drop: element.timecodeDropFrame)
+        guard let trim = LTCFrameTrim(text: value, rate: rate) else {
+            errorMessage = "LTC trim must be ±HH:MM:SS:FF at the selected frame rate."
+            return
+        }
+        editCue(cueID, list: listID) { cue in
+            guard let i = cue.elements.firstIndex(where: { $0.id == elementID }) else { return }
+            cue.elements[i].ltcTrim = trim.text
+        }
+    }
+
+    /// Single-frame SMPTE trim adjustment for a cue-local LTC element.
+    /// Keeps the audio timeline, cue start and output routing untouched.
     func nudgeTimecodeTrim(_ elementID: UUID, in cueID: UUID, listID: UUID,
                            by frames: Int64) {
         guard let element = show.cue(cueID)?.elements.first(where: { $0.id == elementID }) else { return }
