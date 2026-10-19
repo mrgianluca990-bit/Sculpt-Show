@@ -151,7 +151,9 @@ struct WorkspaceView: View {
     @State private var showingPreflight = false
     @State private var normalizeSelection: NormalizationCueSelection?
     @State private var selectedMarkerID: UUID?
-    @AppStorage("SculptShow.InspectorWidth.v1") private var inspectorWidth: Double = 346
+    @AppStorage("SculptShow.InspectorWidth.v1") private var savedInspectorWidth: Double = 346
+    @State private var inspectorWidth: Double = 346
+    @AppStorage("SculptShow.RightPanel.v1") private var rightPanel = "Inspector"
     @State private var inspectorResizeStart: Double?
     @State private var expandedInspectorSections: Set<String> = []
     @State private var inspectorTab = "GENERAL"
@@ -395,7 +397,16 @@ struct WorkspaceView: View {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(store.show.cueLists) { list in
                     CueListPanel(list: list)
+                        .onDrop(of: [CueListDragDrop.type], isTargeted: nil) { providers in
+                            CueListDragDrop.receive(providers) { id in store.moveList(id, before: list.id) }
+                        }
                 }
+                Rectangle().fill(Skin.raised.opacity(0.35))
+                    .frame(width: 36).overlay(Image(systemName: "arrow.right.to.line").foregroundStyle(Skin.soft))
+                    .onDrop(of: [CueListDragDrop.type], isTargeted: nil) { providers in
+                        CueListDragDrop.receive(providers) { id in store.moveList(id, before: nil) }
+                    }
+                    .help("Drop a Cue List here to move it to the end")
             }
             .padding(16)
         }
@@ -430,21 +441,32 @@ struct WorkspaceView: View {
                         .frame(width: 3, height: 48)
                 }
                 .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 2)
+                .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .global)
                     .onChanged { value in
                         if inspectorResizeStart == nil { inspectorResizeStart = inspectorWidth }
                         let initial = inspectorResizeStart ?? inspectorWidth
                         inspectorWidth = min(650, max(280, initial - Double(value.translation.width)))
                     }
-                    .onEnded { _ in inspectorResizeStart = nil })
+                    .onEnded { _ in
+                        savedInspectorWidth = inspectorWidth
+                        inspectorResizeStart = nil
+                    })
                 .help("Drag to resize Cue Lists and Inspector")
 
             GeometryReader { geometry in
                 VStack(spacing: 0) {
                     // The Inspector occupies the top portion of the right rail.
-                    inspector
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .layoutPriority(0)
+                    Picker("Right panel", selection: $rightPanel) {
+                        Text("Inspector").tag("Inspector")
+                        Text("Active Cues").tag("Active Cues")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().padding(10)
+                    if rightPanel == "Active Cues" {
+                        activeCues
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        inspector.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
 
                     if showingTimecodeReader {
                         Divider().overlay(Skin.stroke)
@@ -462,6 +484,7 @@ struct WorkspaceView: View {
                 .background(Skin.panel)
             }
             .frame(width: min(650, max(280, inspectorWidth)))
+            .onAppear { inspectorWidth = min(650, max(280, savedInspectorWidth)) }
             .zIndex(2) // Keep the right rail above the mixer during split resizing.
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -635,6 +658,51 @@ struct WorkspaceView: View {
         .tint(destructive ? .red : Skin.raised)
         .help(name)
         .accessibilityLabel(name)
+    }
+
+    private var activeCues: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                if playback.snapshots.isEmpty {
+                    Text("NO ACTIVE CUES").foregroundStyle(Skin.soft).padding()
+                }
+                ForEach(store.show.cueLists) { list in
+                    ForEach(list.cues) { cue in
+                        if let state = playback.snapshots[cue.id] {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Button { store.select(cue.id, in: list.id) } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(cue.name).font(.headline).lineLimit(2)
+                                        Text(list.name).font(.caption).foregroundStyle(Skin.soft)
+                                    }.frame(maxWidth: .infinity, alignment: .leading)
+                                }.buttonStyle(.plain).help("Select this cue in its list")
+                                HStack {
+                                    Text(state.phase.rawValue).foregroundStyle(state.phase == .paused ? Skin.gold : Skin.green)
+                                    Spacer()
+                                    Text("\(clock(state.elapsed)) / \(clock(state.duration))").monospacedDigit()
+                                }.font(.caption)
+                                ProgressView(value: min(max(state.elapsed, 0), max(state.duration, 0.001)), total: max(state.duration, 0.001))
+                                HStack {
+                                    Button {
+                                        if state.phase == .paused { _ = playback.play(cue) }
+                                        else { playback.pause(cue.id) }
+                                    } label: {
+                                        Image(systemName: state.phase == .paused ? "play.fill" : "pause.fill")
+                                    }
+                                    .disabled(state.phase == .waiting)
+                                    .help(state.phase == .paused ? "Resume cue" : "Pause cue")
+                                    Button("FADE") { playback.fadeOut(cue) }
+                                    Spacer()
+                                    Button("STOP") { playback.stop(cue.id) }.tint(.red)
+                                }.buttonStyle(.bordered)
+                            }
+                            .padding(12)
+                            .background(Skin.raised, in: RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                }
+            }.padding(10)
+        }.background(Skin.panel)
     }
 
     private var inspector: some View {
@@ -957,20 +1025,20 @@ private struct CueListPanel: View {
                     Capsule().fill(Skin.gold.opacity(0.7)).frame(width: 3, height: 36)
                 }
                 .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 2)
+                .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .global)
                     .onChanged { value in
                         if resizeStart == nil { resizeStart = panelWidth }
                         panelWidth = min(900, max(355, (resizeStart ?? panelWidth) + Double(value.translation.width)))
                     }
-                    .onEnded { _ in resizeStart = nil })
+                    .onEnded { _ in
+                        UserDefaults.standard.set(panelWidth, forKey: "SculptShow.CueListWidth.\(list.id.uuidString)")
+                        resizeStart = nil
+                    })
                 .help("Drag horizontally to resize this Cue List")
         }
         .onAppear {
             let stored = UserDefaults.standard.double(forKey: "SculptShow.CueListWidth.\(list.id.uuidString)")
             if stored >= 355 && stored <= 900 { panelWidth = stored }
-        }
-        .onChange(of: panelWidth) { newWidth in
-            UserDefaults.standard.set(newWidth, forKey: "SculptShow.CueListWidth.\(list.id.uuidString)")
         }
         .sheet(isPresented: $editingRules) {
             RulesEditor(scope: .cueList(list.id)).environmentObject(store)
@@ -987,7 +1055,13 @@ private struct CueListPanel: View {
 
     private var listHeader: some View {
             HStack(spacing: 8) {
-                Circle().fill(Skin.gold).frame(width: 7, height: 7)
+                Image(systemName: "line.3.horizontal")
+                    .foregroundStyle(Skin.gold)
+                    .frame(width: 24, height: 32)
+                    .background(Color.white.opacity(0.001))
+                    .contentShape(Rectangle())
+                    .onDrag { CueListDragDrop.provider(list.id) }
+                    .help("Drag to reorder Cue Lists; drop on another list or at the right end")
                 EditableTitle(
                     title: list.name,
                     context: "Cue List",

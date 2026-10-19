@@ -1229,6 +1229,13 @@ final class ShowStore: ObservableObject {
         for cue in list.cues { playback.fadeOut(cue) }
     }
 
+    func moveList(_ id: UUID, before destination: UUID?) {
+        guard !isLoadingProject else { return }
+        var updated = show
+        guard updated.moveList(id, before: destination) else { return }
+        commit(updated)
+    }
+
     func moveCue(_ cueID: UUID, in list: UUID, by offset: Int) {
         var updated = show
         updated.moveCue(cueID, in: list, by: offset)

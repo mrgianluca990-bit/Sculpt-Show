@@ -45,6 +45,18 @@ public struct Show: Codable, Equatable, Sendable {
         cueLists[index].name = name
     }
 
+    /// Reordering preserves list/cue identity and every routing/rule reference.
+    @discardableResult
+    public mutating func moveList(_ id: UUID, before destination: UUID?) -> Bool {
+        guard id != destination, let index = cueLists.firstIndex(where: { $0.id == id }),
+              destination == nil || cueLists.contains(where: { $0.id == destination }) else { return false }
+        let original = cueLists.map(\.id)
+        let list = cueLists.remove(at: index)
+        let target = destination.flatMap { target in cueLists.firstIndex(where: { $0.id == target }) } ?? cueLists.count
+        cueLists.insert(list, at: target)
+        return original != cueLists.map(\.id)
+    }
+
     public mutating func removeList(_ id: UUID) {
         guard cueLists.count > 1 else { return }
         cueLists.removeAll { $0.id == id }
