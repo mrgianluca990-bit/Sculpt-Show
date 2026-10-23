@@ -31,7 +31,7 @@ struct SculptShowApp: App {
                         playback?.remapSavedMedia(paths)
                     }
                     showStore.audioOutputCount = { [weak playback] in
-                        let count = playback?.routingOutputCount ?? 0
+                        let count = playback?.programOutputCount ?? 0
                         return count > 0 ? count : 2
                     }
                 }

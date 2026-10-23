@@ -42,11 +42,13 @@ final class ShowOutputPatchTests: XCTestCase {
         XCTAssertThrowsError(try destinations(p, first: 3))
         XCTAssertThrowsError(try destinations(p, first: 64, channels: 2))
     }
-    func testStereoRequiresOrderedAdjacentDistinctPhysicalPair() throws {
+    func testStereoAllowsIndependentDistinctPhysicalOutputs() throws {
         XCTAssertEqual(try destinations(patch([3, 4]), channels: 2), [3, 4])
-        for pair: [Int?] in [[2, 1], [3, 3], [1, 4]] {
+        for pair: [Int?] in [[3, 3]] {
             XCTAssertThrowsError(try destinations(patch(pair), channels: 2))
         }
+        XCTAssertEqual(try destinations(patch([1, 4]), channels: 2), [1, 4])
+        XCTAssertEqual(try destinations(patch([2, 1]), channels: 2), [2, 1])
         // Multiple logical mono paths may deliberately sum to one output.
         XCTAssertEqual(try destinations(patch([3, 3]), first: 2), [3])
     }

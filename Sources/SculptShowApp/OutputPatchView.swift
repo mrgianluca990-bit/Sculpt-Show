@@ -37,7 +37,7 @@ struct OutputPatchView: View {
                 Text("Default routing is preserved: ordered stems reuse the connected outputs; stereo uses adjacent pairs. Names do not change the assignments.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("Unpatched or missing outputs block the affected cue before GO. Stereo must map to two adjacent physical outputs in L/R order. Shared physical outputs sum their audio.")
+                Text("Unpatched or missing outputs block the affected cue before GO. Stereo uses two different physical outputs in L/R order. Shared physical outputs sum their audio.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
@@ -55,7 +55,7 @@ struct OutputPatchView: View {
                                 set: { draft.names[String(channel)] = $0 }))
                                 .textFieldStyle(.roundedBorder)
                             if automatic {
-                                Text("OUT \(AudioRoutePlan.wrappedOutput(channel, sourceChannels: 1, deviceChannels: playback.routingOutputCount)) · auto")
+                                Text(playback.outputRouteLabel(first: channel, channels: 1))
                                     .font(.caption).frame(width: 215, alignment: .leading)
                             } else {
                                 Picker("Physical output for logical \(channel)", selection: Binding(
@@ -76,12 +76,16 @@ struct OutputPatchView: View {
                 let channels = ShowWaveformCache.shared.channels(at: element.sourcePath) ?? 2
                 do {
                     _ = try preview.crosspoints(firstOutput: element.outputStartChannel, sourceChannels: channels,
-                        deviceUID: uid, deviceChannels: playback.routingOutputCount)
+                        deviceUID: uid, deviceChannels: playback.routingOutputCount, excluding: playback.monitorOutputs)
                     return nil
                 } catch { return error.localizedDescription }
             }
             Text(issues.first ?? "Used routes are mapped. Run Preflight to verify files and LTC conflicts.")
                 .font(.caption).foregroundStyle(issues.isEmpty ? Color.secondary : .orange)
+            if store.show.monitor.enabled {
+                Text("Monitor OUT \(store.show.monitor.leftOutput)/\(store.show.monitor.rightOutput) · reserved · configure in Mixer")
+                    .font(.caption).foregroundStyle(.cyan)
+            }
             if stale { Text("Project or device changed. Reload this draft before Apply.").font(.caption).foregroundStyle(.orange) }
             if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.secondary) }
             HStack {

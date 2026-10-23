@@ -60,7 +60,11 @@ public enum ShowPreflight {
             add(.blocking, "device-channels", nil, nil,
                 "The current audio routing engine supports up to 64 device outputs.")
         }
+        let monitorOutputs = show.monitor.reservedOutputs(deviceUID: deviceUID, channels: outputChannels)
         for cue in cues {
+            if cue.hasAudio && show.monitor.enabled && !show.monitor.isAvailable(deviceUID: deviceUID, channels: outputChannels) {
+                add(.blocking, "monitor-unavailable", cue, nil, ShowMonitorSettings.Failure.unavailable.localizedDescription)
+            }
             if cue.audioElements.count > voiceLimit {
                 add(.blocking, "voices", cue, nil,
                     "\(cue.audioElements.count) simultaneous stems in this cue exceed the \(voiceLimit)-voice limit.")
@@ -71,6 +75,9 @@ public enum ShowPreflight {
                     "Only one LTC generator can run in one cue.")
             }
             for tc in ltcs {
+                if let output = tc.ltcOutputChannel, monitorOutputs.contains(output) {
+                    add(.blocking, "ltc-monitor-collision", cue, nil, "LTC output is reserved for Monitor.")
+                }
                 if tc.ltcOutputChannel == nil || tc.ltcOutputChannel! > outputChannels {
                     add(.blocking, "ltc-output", cue, nil,
                         "LTC requires an explicitly assigned, connected physical output.")
@@ -112,7 +119,7 @@ public enum ShowPreflight {
                 let points: [AudioRoutePlan.Crosspoint]
                 do {
                     points = try show.outputPatch.crosspoints(firstOutput: element.outputStartChannel,
-                        sourceChannels: info.channelCount, deviceUID: deviceUID, deviceChannels: outputChannels)
+                        sourceChannels: info.channelCount, deviceUID: deviceUID, deviceChannels: outputChannels, excluding: monitorOutputs)
                 } catch {
                     points = []
                     if outputChannels > 0 { add(.blocking, "bad-route", cue, path, "\(element.name): \(error.localizedDescription)") }

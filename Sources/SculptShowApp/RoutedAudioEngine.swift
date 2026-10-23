@@ -52,6 +52,8 @@ final class RoutedAudioEngine {
         var elementID: UUID?
         var file: AVAudioFile?
         var fileChannels = 2
+        var mix: CueElement?
+        var matrixGains: [MonitorMixPlan.Gain] = []
         var firstOutput = 1
     }
 
@@ -96,6 +98,8 @@ final class RoutedAudioEngine {
         return opened
     }
     var outputPatch = ShowOutputPatch()
+    var monitor = ShowMonitorSettings()
+    var soloedInputs: Set<UUID> = []
     private(set) var selectedDevice: OutputDevice?
     private var cueToVoices: [UUID: [Int]] = [:]
 
@@ -514,6 +518,9 @@ final class RoutedAudioEngine {
     func start(_ cue: Cue, from elapsed: Double, fade: Float, hostLead: Double = 0.22) throws -> Double {
         stopTestTone()
         guard isReady, let matrix, let device = selectedDevice else { throw RoutingError.engineNotReady }
+        if cue.hasAudio && monitor.enabled && !monitor.isAvailable(deviceUID: device.uid, channels: device.channels) {
+            throw ShowMonitorSettings.Failure.unavailable
+        }
         // Validate LTC BEFORE changing any running cue, to prevent live
         // output collisions and accidental SMPTE audio on an audio stem.
         let timecodes = cue.elements.filter { $0.kind == .timecode && !$0.muted }
@@ -525,6 +532,9 @@ final class RoutedAudioEngine {
             guard let channel = timecode.ltcOutputChannel,
                   (1...device.channels).contains(channel) else {
                 throw RoutingError.ltcConflict("Configure a dedicated LTC OUT on ‘\(cue.name)’ before GO.")
+            }
+            guard !monitor.reservedOutputs(deviceUID: device.uid, channels: device.channels).contains(channel) else {
+                throw RoutingError.ltcConflict("OUT \(channel) is reserved for Monitor.")
             }
             let rate = LTCFrameRate(fps: timecode.frameRate, drop: timecode.timecodeDropFrame)
             guard LTCTimecode(text: timecode.timecodeStart, rate: rate) != nil,
@@ -665,7 +675,9 @@ final class RoutedAudioEngine {
                     voices[index].node.scheduleSegment(entry.1, startingFrame: offsetFrames,
                         frameCount: AVAudioFrameCount(min(Int64(UInt32.max), remaining)), at: nil, completionHandler: nil)
                 }
-                voices[index].gainNode.outputVolume = fade * Float(cue.gain * entry.0.gain) * (entry.0.muted ? 0 : 1)
+                try applyVoiceRouting(index: index, element: entry.0)
+                voices[index].gainNode.outputVolume = fade * Float(cue.gain * entry.0.gain) *
+                    ((entry.0.muted || (!soloedInputs.isEmpty && !soloedInputs.contains(entry.0.id))) ? 0 : 1)
             }
             let synchronizedLead = hostLead <= 0.01 ? hostLead :
                 max(hostLead, files.count >= 48 ? 0.45 : (files.count >= 24 ? 0.32 : hostLead))
@@ -736,7 +748,7 @@ final class RoutedAudioEngine {
                     at: nil, completionHandler: nil)
             }
             voices[index].gainNode.outputVolume = fade * Float(cue.gain * stems[order].gain)
-                * (stems[order].muted ? 0 : 1)
+                * ((stems[order].muted || (!soloedInputs.isEmpty && !soloedInputs.contains(stems[order].id))) ? 0 : 1)
         }
         let deadline = AudioGetCurrentHostTime() + AVAudioTime.hostTime(forSeconds: lead)
         if let timecode = cue.elements.first(where: { $0.kind == .timecode && !$0.muted }) {
@@ -805,7 +817,8 @@ final class RoutedAudioEngine {
     private func mappedOutputs(first: Int, channels: Int) throws -> [AudioRoutePlan.Crosspoint] {
         guard let device = selectedDevice else { throw RoutingError.engineNotReady }
         return try outputPatch.crosspoints(firstOutput: first, sourceChannels: channels,
-            deviceUID: device.uid, deviceChannels: device.channels)
+            deviceUID: device.uid, deviceChannels: device.channels,
+            excluding: monitor.reservedOutputs(deviceUID: device.uid, channels: device.channels))
     }
 
     private func route(index: Int, fileChannels: Int, firstOutput: Int, on matrix: AVAudioUnit, physical: Bool = false) throws {
@@ -825,6 +838,7 @@ final class RoutedAudioEngine {
                 sourceChannels: fileChannels, deviceChannels: outputs) else { throw RoutingError.invalidChannel("Audio", firstOutput) }
             mappings = points
         } else { mappings = try mappedOutputs(first: firstOutput, channels: fileChannels) }
+        voices[index].matrixGains = mappings.map { .init(source: $0.sourceChannel, output: $0.deviceChannel, value: 1) }
         for map in mappings {
             let input = inputStart + map.sourceChannel
             try require(AudioUnitSetParameter(au, kMatrixMixerParam_Volume,
@@ -836,7 +850,7 @@ final class RoutedAudioEngine {
     /// A paused cue has no allocated voices, but will honor the stored route on resume.
     func changeOutput(cueID: UUID, elementID: UUID, firstOutput: Int,
                       sourceChannels: Int) throws {
-        guard selectedDevice != nil, let matrix else { throw RoutingError.engineNotReady }
+        guard selectedDevice != nil, matrix != nil else { throw RoutingError.engineNotReady }
         let next = try mappedOutputs(first: firstOutput, channels: sourceChannels)
         if let output = ltcOutput, next.contains(where: { $0.deviceChannel + 1 == output }) {
             throw RoutingError.ltcConflict("OUT \(output) is reserved for active LTC.")
@@ -844,28 +858,42 @@ final class RoutedAudioEngine {
         guard let index = (cueToVoices[cueID] ?? []).first(where: { voices[$0].elementID == elementID }) else {
             return // Paused/stopped cue: next GO uses the stored route.
         }
-        let previous = try mappedOutputs(first: voices[index].firstOutput, channels: voices[index].fileChannels)
-        // Only modify changed crosspoints; do not clear unrelated channels or
-        // stop the player. This is a live patch, not an engine reconfigure.
-        let start = index * 2
-        for old in previous where !next.contains(old) {
-            let key = (UInt32(start + old.sourceChannel) << 16) | UInt32(old.deviceChannel)
-            try require(AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
-                kAudioUnitScope_Global, key, 0, 0), "live route disconnect")
-        }
-        for newPoint in next where !previous.contains(newPoint) {
-            let key = (UInt32(start + newPoint.sourceChannel) << 16) | UInt32(newPoint.deviceChannel)
-            try require(AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
-                kAudioUnitScope_Global, key, 1, 0), "live route connect")
-        }
+        // Include monitor weights in the next diff, never accidentally erase its send.
+        let previous = voices[index].firstOutput
         voices[index].firstOutput = firstOutput
+        do {
+            if var mix = voices[index].mix { mix.outputStartChannel = firstOutput; try applyVoiceRouting(index: index, element: mix) }
+        } catch { voices[index].firstOutput = previous; throw error }
     }
 
-    func updateMix(_ cue: Cue, fadeFactor: Float, dimFactor: Float) {
+    private func applyVoiceRouting(index: Int, element: CueElement) throws {
+        guard let matrix else { throw RoutingError.engineNotReady }
+        let program = try mappedOutputs(first: voices[index].firstOutput, channels: voices[index].fileChannels)
+        let next = MonitorMixPlan.gains(channels: voices[index].fileChannels, program: program,
+            pan: element.pan, send: element.sendToMonitor, monitor: monitor)
+        let old = voices[index].matrixGains
+        voices[index].mix = element
+        guard next != old else { return }
+        for prior in old where !next.contains(where: { $0.source == prior.source && $0.output == prior.output }) {
+            let key = (UInt32(index * 2 + prior.source) << 16) | UInt32(prior.output)
+            try require(AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
+                kAudioUnitScope_Global, key, 0, 0), "disconnect mix route")
+        }
+        for point in next where !old.contains(point) {
+            let key = (UInt32(index * 2 + point.source) << 16) | UInt32(point.output)
+            try require(AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
+                kAudioUnitScope_Global, key, point.value, 0), "apply program/Monitor mix")
+        }
+        voices[index].matrixGains = next
+    }
+
+    func updateMix(_ cue: Cue, fadeFactor: Float, dimFactor: Float) throws {
         for index in cueToVoices[cue.id] ?? [] {
             guard let elementID = voices[index].elementID,
                   let element = cue.elements.first(where: { $0.id == elementID }) else { continue }
-            voices[index].gainNode.outputVolume = AudioGainPlan.linear(cue: cue.gain, element: element.gain, fade: fadeFactor, trim: dimFactor, muted: element.muted)
+            try applyVoiceRouting(index: index, element: element)
+            voices[index].gainNode.outputVolume = AudioGainPlan.linear(cue: cue.gain, element: element.gain,
+                fade: fadeFactor, trim: dimFactor, muted: element.muted || (!soloedInputs.isEmpty && !soloedInputs.contains(elementID)))
         }
     }
 

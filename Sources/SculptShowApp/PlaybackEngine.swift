@@ -57,6 +57,10 @@ final class PlaybackEngine: ObservableObject {
     }
     func knowProject(_ show: Show) {
         setOutputPatch(show.outputPatch)
+        setMonitor(show.monitor)
+        let ids = Set(show.cueLists.flatMap(\.cues).flatMap(\.audioElements).map(\.id))
+        let solos = inputSoloIDs.intersection(ids)
+        if solos != inputSoloIDs { inputSoloIDs = solos; routedAudio.soloedInputs = solos; refreshInputMixes() }
         routedAudio.setKnownCueIDs(Set(show.cueLists.flatMap { $0.cues.map(\.id) }))
         syncConditionPhases()
     }
@@ -242,6 +246,41 @@ final class PlaybackEngine: ObservableObject {
         lastMeterUIUpdate = now
         meterMonitor.observe(peaks: peaks, rms: rms)
     }
+    @Published private(set) var monitor = ShowMonitorSettings()
+    @Published private(set) var inputSoloIDs: Set<UUID> = []
+    var activeInputCueIDs: Set<UUID> { Set(activeCues.keys) }
+    var monitorOutputs: Set<Int> { monitor.reservedOutputs(deviceUID: routingDeviceUID, channels: routingOutputCount) }
+    var programOutputCount: Int { max(0, routingOutputCount - monitorOutputs.count) }
+    func setMonitor(_ settings: ShowMonitorSettings) {
+        guard settings != monitor else { return }
+        let routingChanged = settings.enabled != monitor.enabled || settings.deviceUID != monitor.deviceUID ||
+            settings.leftOutput != monitor.leftOutput || settings.rightOutput != monitor.rightOutput
+        guard !routingChanged || snapshots.isEmpty else { errorMessage = "Stop all cues before configuring Monitor outputs."; return }
+        if routingChanged { stopTestTone() }
+        monitor = settings; routedAudio.monitor = settings
+        updateMonitorOutputControls()
+        refreshInputMixes()
+    }
+    private func updateMonitorOutputControls() {
+        guard routingEnabled else { return }
+        var next = outputControls
+        next.setSoloExempt(monitorOutputs)
+        next.setAllMuted(next.allMuted, excluding: monitor.excludeFromMuteAll ? monitorOutputs : [])
+        applyOutputControls(next)
+    }
+    func toggleMuteAllOutputs() {
+        var next = outputControls
+        next.setAllMuted(!next.allMuted, excluding: monitor.excludeFromMuteAll ? monitorOutputs : [])
+        applyOutputControls(next)
+    }
+    func toggleInputSolo(_ id: UUID) {
+        if !inputSoloIDs.insert(id).inserted { inputSoloIDs.remove(id) }
+        routedAudio.soloedInputs = inputSoloIDs; refreshInputMixes()
+    }
+    func clearInputSolos() { inputSoloIDs.removeAll(); routedAudio.soloedInputs = []; refreshInputMixes() }
+    private func refreshInputMixes() {
+        for id in Array(activeCues.keys) { refreshAudio(for: id, elapsed: cueElapsed(id)) }
+    }
     var routingDeviceUID: String { routedAudio.selectedDevice?.uid ?? "" }
     @Published private(set) var outputPatch = ShowOutputPatch()
     func setOutputPatch(_ patch: ShowOutputPatch) {
@@ -258,7 +297,8 @@ final class PlaybackEngine: ObservableObject {
         let names = (first..<(first + channels)).map { outputPatch.name($0) }.joined(separator: " / ")
         do {
             let points = try outputPatch.crosspoints(firstOutput: first, sourceChannels: channels,
-                deviceUID: routingDeviceUID, deviceChannels: routingOutputCount)
+                deviceUID: routingDeviceUID, deviceChannels: routingOutputCount, excluding: monitorOutputs)
+            if points.isEmpty { return names + " · Monitor only" }
             return names + " → " + points.map { String($0.deviceChannel + 1) }.joined(separator: "/")
         } catch { return names + " · UNAVAILABLE" }
     }
@@ -375,6 +415,7 @@ final class PlaybackEngine: ObservableObject {
             deviceSampleRate = routedAudio.actualSampleRate
             routingEnabled = true
             routingDeviceID = device.id
+            updateMonitorOutputControls()
             if !device.uid.isEmpty {
                 UserDefaults.standard.set(device.uid, forKey: preferredOutputUIDKey)
             }
@@ -397,7 +438,7 @@ final class PlaybackEngine: ObservableObject {
             let file = try AVAudioFile(forReading: URL(fileURLWithPath: sourcePath))
             let sourceChannels = Int(file.processingFormat.channelCount)
             _ = try outputPatch.crosspoints(firstOutput: firstOutput, sourceChannels: sourceChannels,
-                deviceUID: routingDeviceUID, deviceChannels: routingOutputCount)
+                deviceUID: routingDeviceUID, deviceChannels: routingOutputCount, excluding: monitorOutputs)
             try routedAudio.changeOutput(cueID: cueID, elementID: elementID,
                                          firstOutput: firstOutput, sourceChannels: sourceChannels)
             if var cue = activeCues[cueID],
@@ -521,7 +562,7 @@ final class PlaybackEngine: ObservableObject {
             let lead = try routedAudio.start(cue, from: position,
                 fade: cue.fadeInSeconds > 0 ? 0 : 1)
             // Apply list trim before the scheduled first audible frame.
-            routedAudio.updateMix(cue,
+            try routedAudio.updateMix(cue,
                 fadeFactor: cue.fadeInSeconds > 0 ? 0 : 1,
                 dimFactor: (dimFactors[cue.id] ?? 1) * trimFactor(cue.id))
             routedCues.insert(cue.id)
@@ -535,6 +576,7 @@ final class PlaybackEngine: ObservableObject {
             onStarted?(cue.id)
             return true
         } catch {
+            routedAudio.stop(cue.id)
             errorMessage = "Routed playback failed for ‘\(cue.name)’: \(error.localizedDescription)"
             return false
         }
@@ -605,11 +647,13 @@ final class PlaybackEngine: ObservableObject {
 
     /// Change an individual element live, without stopping or re-scheduling any player.
     func setElementMix(_ elementID: UUID, for cueID: UUID,
-                       gain: Double? = nil, muted: Bool? = nil) {
+                       gain: Double? = nil, muted: Bool? = nil, pan: Double? = nil, sendToMonitor: Bool? = nil) {
         guard var cue = activeCues[cueID],
               let index = cue.elements.firstIndex(where: { $0.id == elementID && $0.kind == .audio }) else { return }
         if let gain { cue.elements[index].gain = gain.isFinite ? min(max(gain, 0), 1) : 1 }
         if let muted { cue.elements[index].muted = muted }
+        if let pan { cue.elements[index].pan = min(1, max(-1, pan)) }
+        if let sendToMonitor { cue.elements[index].sendToMonitor = sendToMonitor }
         activeCues[cueID] = cue
         if snapshots[cueID]?.phase == .playing {
             refreshAudio(for: cueID, elapsed: cueElapsed(cueID))
@@ -707,8 +751,13 @@ final class PlaybackEngine: ObservableObject {
                 let elapsedFade = max(0, ProcessInfo.processInfo.systemUptime - data.started)
                 fadeOutFactor = Float(max(0, 1 - elapsedFade / max(0.001, data.seconds)))
             }
-            routedAudio.updateMix(cue, fadeFactor: fadeInFactor * fadeOutFactor,
-                                  dimFactor: (dimFactors[id] ?? 1) * trimFactor(id))
+            do {
+                try routedAudio.updateMix(cue, fadeFactor: fadeInFactor * fadeOutFactor,
+                    dimFactor: (dimFactors[id] ?? 1) * trimFactor(id))
+            } catch {
+                stop(id, notifyRules: false); onPlaybackFailed?(id)
+                errorMessage = "Cannot update mixer: \(error.localizedDescription)"
+            }
             return
         }
         guard var list = tracks[id], let cue = activeCues[id] else { return }

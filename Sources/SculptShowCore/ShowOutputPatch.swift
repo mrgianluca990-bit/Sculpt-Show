@@ -44,7 +44,7 @@ public struct ShowOutputPatch: Codable, Equatable, Sendable {
         }
     }
     public enum Failure: LocalizedError, Equatable {
-        case invalidPatch, missingProfile, invalidRoute, unpatched(Int), unavailable(Int, Int), stereoPair(Int)
+        case invalidPatch, missingProfile, invalidRoute, unpatched(Int), unavailable(Int, Int), stereoPair(Int), reserved(Int)
         public var errorDescription: String? {
             switch self {
             case .invalidPatch: return "Invalid output patch data."
@@ -52,18 +52,21 @@ public struct ShowOutputPatch: Codable, Equatable, Sendable {
             case .invalidRoute: return "The source does not fit the logical or physical output range."
             case .unpatched(let channel): return "Logical OUT \(channel) is not patched. Open Output Patch before GO."
             case .unavailable(let channel, let physical): return "Logical OUT \(channel) needs physical OUT \(physical), which is unavailable on this interface."
-            case .stereoPair(let channel): return "Logical OUT \(channel)/\(channel + 1) must map to two adjacent physical outputs, in L/R order."
+            case .reserved(let output): return "Physical OUT \(output) is reserved for Monitor. Choose a program output."
+            case .stereoPair(let channel): return "Logical OUT \(channel)/\(channel + 1) must map to two different physical outputs."
             }
         }
     }
     public func crosspoints(firstOutput: Int, sourceChannels: Int, deviceUID: String,
-                            deviceChannels: Int) throws -> [AudioRoutePlan.Crosspoint] {
+                            deviceChannels: Int, excluding: Set<Int> = []) throws -> [AudioRoutePlan.Crosspoint] {
         guard (1...64).contains(deviceChannels), (1...2).contains(sourceChannels),
               firstOutput > 0, firstOutput <= 64 else { throw Failure.invalidRoute }
         if isAutomatic(on: deviceUID) {
-            let first = AudioRoutePlan.wrappedOutput(firstOutput, sourceChannels: sourceChannels, deviceChannels: deviceChannels)
-            guard let result = AudioRoutePlan.crosspoints(firstOutput: first, sourceChannels: sourceChannels,
-                deviceChannels: deviceChannels) else { throw Failure.invalidRoute }
+            let pool = (1...deviceChannels).filter { !excluding.contains($0) }
+            if pool.isEmpty && !excluding.isEmpty { return [] } // Monitor-only interface.
+            guard pool.count >= sourceChannels else { throw Failure.invalidRoute }
+            let first = AudioRoutePlan.wrappedOutput(firstOutput, sourceChannels: sourceChannels, deviceChannels: pool.count)
+            let result = (0..<sourceChannels).map { AudioRoutePlan.Crosspoint(sourceChannel: $0, deviceChannel: pool[first - 1 + $0] - 1) }
             return result
         }
         guard firstOutput + sourceChannels - 1 <= 64 else { throw Failure.invalidRoute }
@@ -72,10 +75,11 @@ public struct ShowOutputPatch: Codable, Equatable, Sendable {
         let channels = try (0..<sourceChannels).map { offset -> Int in
             let logical = firstOutput + offset
             guard let physical = profile.outputs[logical - 1] else { throw Failure.unpatched(logical) }
+            guard !excluding.contains(physical) else { throw Failure.reserved(physical) }
             guard (1...deviceChannels).contains(physical) else { throw Failure.unavailable(logical, physical) }
             return physical
         }
-        if sourceChannels == 2 && channels[1] != channels[0] + 1 { throw Failure.stereoPair(firstOutput) }
+        if sourceChannels == 2 && channels[1] == channels[0] { throw Failure.stereoPair(firstOutput) }
         return channels.enumerated().map { AudioRoutePlan.Crosspoint(sourceChannel: $0.offset, deviceChannel: $0.element - 1) }
     }
 }

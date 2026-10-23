@@ -97,7 +97,7 @@ struct CueContentsEditor: View {
                                 get: { store.show.cue(cue.id)?.elements.first(where: { $0.id == element.id })?.outputStartChannel ?? element.outputStartChannel },
                                 set: { store.setElementOutput(element.id, in: cue.id, listID: listID, to: $0, using: playback) }
                             )) {
-                                ForEach(1...max(1, (store.show.outputPatch.isAutomatic(on: playback.routingDeviceUID) ? playback.routingOutputCount : 64) - (audioChannelCount(at: element.sourcePath) == 2 ? 1 : 0)), id: \.self) { channel in
+                                ForEach(1...max(1, (store.show.outputPatch.isAutomatic(on: playback.routingDeviceUID) ? playback.programOutputCount : 64) - (audioChannelCount(at: element.sourcePath) == 2 ? 1 : 0)), id: \.self) { channel in
                                     Text(playback.outputRouteLabel(first: channel, channels: audioChannelCount(at: element.sourcePath) == 1 ? 1 : 2)).tag(channel)
                                 }
                             }

@@ -5,6 +5,7 @@ public struct Show: Codable, Equatable, Sendable {
     public static let currentVersion = 1
 
     public static let supportedSampleRates = [44100, 48000, 88200, 96000, 176400, 192000]
+    public var monitor: ShowMonitorSettings
     public var outputPatch: ShowOutputPatch
     public var sampleRate: Int
     public var formatVersion: Int
@@ -13,6 +14,7 @@ public struct Show: Codable, Equatable, Sendable {
     public var rules: [InteractionRule]
 
     public init(name: String = "Untitled Show", cueLists: [CueList] = [CueList(name: "Cue List 1")]) {
+        self.monitor = ShowMonitorSettings()
         self.outputPatch = ShowOutputPatch()
         self.sampleRate = 48000
         self.formatVersion = Self.currentVersion
@@ -21,10 +23,12 @@ public struct Show: Codable, Equatable, Sendable {
         self.rules = []
     }
 
-    private enum CodingKeys: String, CodingKey { case formatVersion, sampleRate, name, cueLists, rules, outputPatch }
+    private enum CodingKeys: String, CodingKey { case formatVersion, sampleRate, name, cueLists, rules, outputPatch, monitor }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        monitor = try c.decodeIfPresent(ShowMonitorSettings.self, forKey: .monitor) ?? ShowMonitorSettings()
+        try monitor.validate()
         outputPatch = try c.decodeIfPresent(ShowOutputPatch.self, forKey: .outputPatch) ?? ShowOutputPatch()
         try outputPatch.validate()
         sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 48000
@@ -275,6 +279,8 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     public var muted: Bool
     /// One-based physical output channel for this audio file (mono = one output;
     /// stereo = consecutive L/R outputs). Defaults to output 1 on older shows.
+    public var pan: Double
+    public var sendToMonitor: Bool
     public var outputStartChannel: Int
 
     public init(id: UUID = UUID(), kind: CueElementKind, name: String,
@@ -283,7 +289,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
                 timecodeStart: String = "00:00:00:00", ltcTrim: String = "-00:00:00:00",
                 ltcLevelTrimDB: Double = 0, frameRate: Int = 25,
                 timecodeDropFrame: Bool = false, ltcOutputChannel: Int? = nil,
-                gain: Double = 1.0, muted: Bool = false, outputStartChannel: Int = 1) {
+                gain: Double = 1.0, muted: Bool = false, outputStartChannel: Int = 1, pan: Double = 0, sendToMonitor: Bool = true) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -300,6 +306,8 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
         self.ltcOutputChannel = ltcOutputChannel.flatMap { (1...64).contains($0) ? $0 : nil }
         self.gain = gain.isFinite ? min(max(gain, 0), 1) : 1
         self.muted = muted
+        self.pan = pan.isFinite ? min(1, max(-1, pan)) : 0
+        self.sendToMonitor = sendToMonitor
         self.outputStartChannel = min(64, max(1, outputStartChannel))
     }
 
@@ -307,7 +315,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     // Decode these two settings with safe defaults so old projects still open.
     private enum CodingKeys: String, CodingKey {
         case id, kind, name, sourcePath, originalSourcePath, startSeconds, inSeconds, outSeconds
-        case timecodeStart, ltcTrim, ltcLevelTrimDB, frameRate, timecodeDropFrame, ltcOutputChannel, gain, muted, outputStartChannel
+        case timecodeStart, ltcTrim, ltcLevelTrimDB, frameRate, timecodeDropFrame, ltcOutputChannel, gain, muted, outputStartChannel, pan, sendToMonitor
     }
 
     public init(from decoder: Decoder) throws {
@@ -328,7 +336,9 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
             ltcOutputChannel: try c.decodeIfPresent(Int.self, forKey: .ltcOutputChannel),
             gain: try c.decodeIfPresent(Double.self, forKey: .gain) ?? 1,
             muted: try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false,
-            outputStartChannel: try c.decodeIfPresent(Int.self, forKey: .outputStartChannel) ?? 1
+            outputStartChannel: try c.decodeIfPresent(Int.self, forKey: .outputStartChannel) ?? 1,
+            pan: try c.decodeIfPresent(Double.self, forKey: .pan) ?? 0,
+            sendToMonitor: try c.decodeIfPresent(Bool.self, forKey: .sendToMonitor) ?? true
         )
         originalSourcePath = try c.decodeIfPresent(String.self, forKey: .originalSourcePath)
     }

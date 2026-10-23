@@ -142,6 +142,58 @@ final class ShowStore: ObservableObject {
         return true
     }
 
+    @discardableResult
+    func configureMonitor(_ settings: ShowMonitorSettings, using playback: PlaybackEngine) -> Bool {
+        guard playback.snapshots.isEmpty, !isLoadingProject, !preparingSessionAudio, pendingAudioImports == 0 else {
+            errorMessage = "Stop all cues and finish media preparation before configuring Monitor outputs."; return false
+        }
+        do { try settings.validate() } catch { errorMessage = error.localizedDescription; return false }
+        guard !settings.enabled || settings.isAvailable(deviceUID: playback.routingDeviceUID, channels: playback.routingOutputCount) else {
+            errorMessage = ShowMonitorSettings.Failure.unavailable.localizedDescription; return false
+        }
+        var updated = show
+        updated.monitor = settings
+        // Automatic routing consumes only the remaining program pool, in stem order.
+        if updated.outputPatch.isAutomatic(on: playback.routingDeviceUID) {
+            let count = playback.routingOutputCount - settings.reservedOutputs(deviceUID: playback.routingDeviceUID, channels: playback.routingOutputCount).count
+            for list in show.cueLists {
+                for cue in list.cues {
+                    updated.updateCue(cue.id, in: list.id) { item in
+                        let indices = item.elements.indices.filter { item.elements[$0].kind == .audio }
+                        let widths = indices.map { ShowWaveformCache.shared.channels(at: item.elements[$0].sourcePath) ??
+                            (try? AVAudioFile(forReading: URL(fileURLWithPath: item.elements[$0].sourcePath))).map { Int($0.processingFormat.channelCount) } ?? 2 }
+                        let routes = AudioRoutePlan.automaticOutputs(channelCounts: widths, deviceChannels: max(1, count))
+                        for (index, route) in zip(indices, routes) { item.elements[index].outputStartChannel = route }
+                    }
+                }
+            }
+        }
+        playback.setMonitor(settings)
+        commit(updated)
+        return true
+    }
+
+    func setMonitorMix(gain: Double? = nil, pan: Double? = nil, muted: Bool? = nil,
+                       excludeFromMuteAll: Bool? = nil, using playback: PlaybackEngine) {
+        var updated = show
+        if let gain, gain.isFinite { updated.monitor.gain = min(1, max(0, gain)) }
+        if let pan, pan.isFinite { updated.monitor.pan = min(1, max(-1, pan)) }
+        if let muted { updated.monitor.muted = muted }
+        if let excludeFromMuteAll { updated.monitor.excludeFromMuteAll = excludeFromMuteAll }
+        playback.setMonitor(updated.monitor)
+        commit(updated)
+    }
+
+    func setStemMixer(_ elementID: UUID, cueID: UUID, listID: UUID, pan: Double? = nil,
+                      sendToMonitor: Bool? = nil, using playback: PlaybackEngine) {
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID && $0.kind == .audio }) else { return }
+            if let pan, pan.isFinite { cue.elements[index].pan = min(1, max(-1, pan)) }
+            if let sendToMonitor { cue.elements[index].sendToMonitor = sendToMonitor }
+        }
+        playback.setElementMix(elementID, for: cueID, pan: pan, sendToMonitor: sendToMonitor)
+    }
+
     func changeSessionSampleRate(_ rate: Int, using playback: PlaybackEngine) {
         guard Show.supportedSampleRates.contains(rate), playback.snapshots.isEmpty,
               !preparingSessionAudio, !isLoadingProject, pendingAudioImports == 0 else {
