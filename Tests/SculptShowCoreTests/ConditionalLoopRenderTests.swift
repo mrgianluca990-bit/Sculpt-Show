@@ -2,6 +2,44 @@ import XCTest
 import SculptLTCCore
 
 final class ConditionalLoopRenderTests: XCTestCase {
+    func testWholeCueLoopTogglePreservesSamplesAndSharedBoundary() throws {
+        let own = try XCTUnwrap(sculpt_signal_create())
+        defer { sculpt_signal_destroy(own) }
+        let transport = try XCTUnwrap(sculpt_loop_create(48000, 0, 8, 8, nil, 1, own))
+        defer { sculpt_loop_destroy(transport) }
+        let source: [Float] = [1,2,3,4,5,6,7,8]
+        source.withUnsafeBufferPointer { pcm in
+            for voice in 0..<7 { XCTAssertTrue(sculpt_loop_voice(transport, UInt32(voice), pcm.baseAddress, nil, 8)) }
+            sculpt_loop_arm(transport, 0, 0)
+            sculpt_loop_set_repeat(transport, false)
+            var left = [Float](repeating: 0, count: 4), right = left
+            for voice in 0..<7 {
+                sculpt_loop_render_frames(transport, UInt32(voice), 0, 4, &left, &right)
+                XCTAssertEqual(left, [1,2,3,4])
+            }
+            sculpt_loop_set_repeat(transport, true)
+            sculpt_loop_set_repeat(transport, false)
+            sculpt_loop_set_repeat(transport, true)
+            for voice in 0..<7 {
+                sculpt_loop_render_frames(transport, UInt32(voice), 4, 4, &left, &right)
+                XCTAssertEqual(left, [5,6,7,8])
+            }
+            for voice in 0..<7 {
+                // First voice owns the decision; toggling between voices cannot split stems.
+                if voice == 1 { sculpt_loop_set_repeat(transport, false) }
+                sculpt_loop_render_frames(transport, UInt32(voice), 8, 4, &left, &right)
+                XCTAssertEqual(left, [1,2,3,4])
+            }
+            for voice in 0..<7 {
+                sculpt_loop_render_frames(transport, UInt32(voice), 12, 4, &left, &right)
+                XCTAssertEqual(left, [5,6,7,8])
+                sculpt_loop_render_frames(transport, UInt32(voice), 16, 4, &left, &right)
+                XCTAssertEqual(left, [0,0,0,0])
+            }
+            XCTAssertEqual(sculpt_loop_boundary_count(transport), 2)
+        }
+    }
+
     func testSevenStemsRepeatAndExitAtExactBoundaryWithSharedDecision() throws {
         let condition = try XCTUnwrap(sculpt_signal_create())
         let own = try XCTUnwrap(sculpt_signal_create())

@@ -22,6 +22,7 @@ struct AudioMIDISetupView: View {
                 Text("Core Audio").tag(0)
                 Text("MIDI Control").tag(1)
                 Text("Output Patch").tag(2)
+                Text("OSC Control").tag(3)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
@@ -30,8 +31,10 @@ struct AudioMIDISetupView: View {
                 OutputRoutingView().environmentObject(playback)
             } else if tab == 1 {
                 MIDIControlSettings().environmentObject(midi)
-            } else {
+            } else if tab == 2 {
                 OutputPatchView()
+            } else {
+                OSCControlSettings()
             }
         }
         .frame(width: 690)

@@ -6,6 +6,7 @@ struct SculptShowApp: App {
     @StateObject private var showStore = ShowStore()
     @StateObject private var playback = PlaybackEngine()
     @StateObject private var midi = MIDIControl()
+    @StateObject private var osc = OSCControl()
     @State private var showingAudioMIDISetup = false
 
     /// Text editors own Cmd-Z/Cmd-Shift-Z while the insertion cursor is active.
@@ -27,6 +28,10 @@ struct SculptShowApp: App {
                 .environmentObject(midi)
                 .preferredColorScheme(.dark)
                 .onAppear {
+                    osc.handle = { [weak showStore, weak playback] command in
+                        guard let showStore, let playback else { return "Show unavailable" }
+                        return showStore.performOSC(command, using: playback)
+                    }
                     showStore.onSavedMediaMoved = { [weak playback] paths in
                         playback?.remapSavedMedia(paths)
                     }
@@ -37,6 +42,7 @@ struct SculptShowApp: App {
                 }
                 .sheet(isPresented: $showingAudioMIDISetup) {
                     AudioMIDISetupView()
+                        .environmentObject(osc)
                         .environmentObject(playback)
                         .environmentObject(midi)
                         .environmentObject(showStore)

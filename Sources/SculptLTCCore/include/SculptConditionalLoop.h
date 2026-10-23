@@ -31,6 +31,7 @@ SculptConditionalLoop *sculpt_loop_create(double rate, int64_t in_frame, int64_t
     int64_t end_frame, SculptCueSignal *condition, int required_phase, SculptCueSignal *own);
 void sculpt_loop_destroy(SculptConditionalLoop *s);
 bool sculpt_loop_voice(SculptConditionalLoop *s, unsigned voice, const float *left, const float *right, int64_t frames);
+void sculpt_loop_set_repeat(SculptConditionalLoop *s, bool enabled);
 void sculpt_loop_arm(SculptConditionalLoop *s, uint64_t start_ns, int64_t from_frame);
 // Number of OUT boundaries decided, including the final exit; shared by all voices.
 uint64_t sculpt_loop_boundary_count(const SculptConditionalLoop *s);

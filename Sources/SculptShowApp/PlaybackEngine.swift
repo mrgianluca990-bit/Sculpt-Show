@@ -984,11 +984,8 @@ final class PlaybackEngine: ObservableObject {
 
     func setLoop(_ enabled: Bool, for id: UUID) {
         guard activeCues[id]?.loop != enabled else { return }
-        let position = cueElapsed(id)
         activeCues[id]?.loop = enabled
-        if routedCues.contains(id), snapshots[id]?.phase == .playing {
-            armAudio(for: id, from: position)
-        }
+        routedAudio.setWholeCueLoop(enabled, for: id)
     }
 
     func stopAll() {
@@ -1009,7 +1006,7 @@ final class PlaybackEngine: ObservableObject {
         if let id = routedAudio.failedConditionalCue() {
             stop(id, notifyRules: false)
             onPlaybackFailed?(id)
-            errorMessage = "Conditional-loop audio stopped: the disk could not supply prepared PCM in time. Other cues are unchanged. Verify the drive and prepare audio again."
+            errorMessage = "Audio stopped: the disk could not supply prepared PCM in time. Other cues are unchanged. Verify the drive and prepare audio again."
         }
         for (id, deadline) in pendingDeadlines {
             guard var state = snapshots[id], state.phase == .waiting else { continue }

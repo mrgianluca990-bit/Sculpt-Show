@@ -98,6 +98,7 @@ final class RoutedAudioEngine {
         return opened
     }
     var outputPatch = ShowOutputPatch()
+    private var wholeCueLoops: Set<UUID> = []
     var monitor = ShowMonitorSettings()
     var soloedInputs: Set<UUID> = []
     private(set) var selectedDevice: OutputDevice?
@@ -582,13 +583,17 @@ final class RoutedAudioEngine {
         let cueLength = cue.timelineLength(audioEnds: files.map {
             Double($0.1.length) / $0.1.processingFormat.sampleRate
         })
-        let candidate = NativeMarkerLoopPlanner.plan(for: cue) ??
-            (cue.loop && !cue.hasTimecode && cueLength >= 0.4 && cueLength <= 600
-                ? NativeMarkerLoop(triggerMarkerID: nil, inSeconds: 0, outSeconds: cueLength) : nil)
+        let hasMarkerReturn = cue.markers.contains { marker in marker.rules.contains {
+            $0.enabled && $0.action == .fire && ($0.target == .itself || ($0.target == .specificCue && $0.targetID == cue.id))
+        } }
+        let wholeCue = !cue.hasTimecode && !hasMarkerReturn && !files.isEmpty && cueLength > 0
+        let candidate = NativeMarkerLoopPlanner.plan(for: cue)
         var conditional: ConditionalLoopRealtime?
-        if let plan = candidate, let conditionID = plan.conditionCueID, elapsed < plan.outSeconds {
+        let streamPlan = wholeCue ? NativeMarkerLoop(triggerMarkerID: nil, inSeconds: 0, outSeconds: cueLength, conditionCueID: cue.id) : candidate
+        if let plan = streamPlan, let conditionID = plan.conditionCueID, elapsed < plan.outSeconds {
             let pcm = try files.map { stem, _ -> PreparedConditionalPCM in
-                guard let prepared = preparedConditionalFiles[stem.sourcePath],
+                let prepared = try preparedConditionalFiles[stem.sourcePath] ?? PreparedConditionalPCM(path: stem.sourcePath, sampleRate: Int(sampleRate))
+                guard
                       prepared.matches(path: stem.sourcePath, sampleRate: Int(sampleRate)) else {
                     throw SessionAudioPreparation.Failure.invalid("Prepare conditional-loop media before GO")
                 }
@@ -604,7 +609,7 @@ final class RoutedAudioEngine {
         // Short loops repeat inside the audio renderer, with no main-queue
         // replenishment that another cue's preparation could delay.
         var loopBuffers: [AVAudioPCMBuffer] = []
-        let nativePlan = candidate.flatMap { plan -> NativeMarkerLoop? in
+        let nativePlan = (wholeCue ? nil : candidate).flatMap { plan -> NativeMarkerLoop? in
             guard plan.conditionCueID == nil else { return nil }
             guard files.allSatisfy({ abs($0.1.processingFormat.sampleRate - sampleRate) < 0.5 }),
                   elapsed < plan.outSeconds else { return nil }
@@ -685,6 +690,10 @@ final class RoutedAudioEngine {
             if let conditional {
                 sculpt_loop_arm(conditional.pointer, AudioConvertHostTimeToNanos(deadline),
                     Int64((elapsed * sampleRate).rounded()))
+                if wholeCue {
+                    wholeCueLoops.insert(cue.id)
+                    sculpt_loop_set_repeat(conditional.pointer, cue.loop)
+                }
                 for index in assigned { sculpt_loop_slot_bind(voices[index].loopSlot.pointer, conditional.pointer) }
             } else {
                 let own = try signal(for: cue.id)
@@ -887,6 +896,11 @@ final class RoutedAudioEngine {
         voices[index].matrixGains = next
     }
 
+    func setWholeCueLoop(_ enabled: Bool, for id: UUID) {
+        guard wholeCueLoops.contains(id), let loop = conditionalLoops[id] else { return }
+        sculpt_loop_set_repeat(loop.pointer, enabled)
+    }
+
     func updateMix(_ cue: Cue, fadeFactor: Float, dimFactor: Float) throws {
         for index in cueToVoices[cue.id] ?? [] {
             guard let elementID = voices[index].elementID,
@@ -899,6 +913,7 @@ final class RoutedAudioEngine {
 
     func stop(_ cueID: UUID, updateSignal: Bool = true) {
         if updateSignal, let signal = signals[cueID] { sculpt_signal_phase(signal.pointer, 0) }
+        wholeCueLoops.remove(cueID)
         if let loop = conditionalLoops.removeValue(forKey: cueID) {
             loop.unbind()
             retiredLoops.append(loop)

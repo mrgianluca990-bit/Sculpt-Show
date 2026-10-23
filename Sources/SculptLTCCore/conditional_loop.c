@@ -90,6 +90,7 @@ struct SculptConditionalLoop {
     int64_t in_frame, out_frame, end_frame, from_frame;
     uint64_t start_ns;
     SculptCueSignal *condition, *own;
+    _Atomic int repeat_override; // -1: marker condition, 0/1: live whole-cue loop
     int required_phase;
     // Low bit: exit. Remaining bits: last boundary decided. Earlier decisions
     // are necessarily repeats, so all voices share one coherent decision word.
@@ -138,6 +139,7 @@ SculptConditionalLoop *sculpt_loop_create(double rate, int64_t in, int64_t out,
     if (!s) return NULL;
     s->rate = rate; s->in_frame = in; s->out_frame = out; s->end_frame = end;
     s->condition = condition; s->required_phase = wanted; s->own = own;
+    atomic_init(&s->repeat_override, -1);
     atomic_init(&s->failure, 0);
     atomic_init(&s->decision, 0);
     atomic_init(&s->start_sample, INT64_MIN);
@@ -166,6 +168,20 @@ void sculpt_loop_arm(SculptConditionalLoop *s, uint64_t start, int64_t from) {
     // A possible loop has no predetermined end. The render boundary that exits
     // it publishes the final end time, including the remaining tail.
     sculpt_signal_set(s->own, 1, start, UINT64_MAX);
+}
+// Main thread changes intent only; all voices share the existing boundary decision.
+void sculpt_loop_set_repeat(SculptConditionalLoop *s, bool enabled) {
+    if (!s) return;
+    atomic_store(&s->repeat_override, enabled ? 1 : 0);
+    uint64_t decision = atomic_load(&s->decision);
+    if (!s->own || (decision & 1)) return; // an already completed cue is never revived
+    uint64_t end = UINT64_MAX;
+    if (!enabled) {
+        double frame = (double)s->end_frame + (double)(decision >> 1) * (double)(s->out_frame - s->in_frame);
+        double delta = (frame - (double)s->from_frame) / s->rate * 1e9;
+        end = s->start_ns + (uint64_t)llround(fmax(0, delta));
+    }
+    atomic_store(&s->own->end_ns, end);
 }
 static int64_t source_position(const SculptConditionalLoop *s, int64_t frame, uint64_t decision) {
     if (frame < s->out_frame) return frame;
@@ -200,7 +216,8 @@ void sculpt_loop_render_frames(SculptConditionalLoop *s, unsigned voice, int64_t
                     // Only one voice can publish each boundary. A later voice
                     // must use that decision even if the condition has changed.
                     uint64_t next_cycle = (decision >> 1) + 1;
-                    bool repeat = matches(s->condition, s->required_phase, boundary_time(s, next_cycle));
+                    int override = atomic_load(&s->repeat_override);
+                    bool repeat = override >= 0 ? override != 0 : matches(s->condition, s->required_phase, boundary_time(s, next_cycle));
                     uint64_t next = (next_cycle << 1) | (repeat ? 0 : 1);
                     if (atomic_compare_exchange_strong(&s->decision, &decision, next)) {
                         decision = next;
