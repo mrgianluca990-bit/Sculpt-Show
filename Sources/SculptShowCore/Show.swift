@@ -154,6 +154,7 @@ public struct Show: Codable, Equatable, Sendable {
               let cueIndex = cueLists[listIndex].cues.firstIndex(where: { $0.id == cueID }) else { return nil }
         var copy = cueLists[listIndex].cues[cueIndex]
         copy.id = UUID()
+        copy.triggers = CueTriggers()
         copy.name += " copy"
         copy.elements = copy.elements.map { element in
             var cloned = element
@@ -415,6 +416,7 @@ public enum CueTint: String, CaseIterable, Codable, Sendable {
 }
 
 public struct Cue: Identifiable, Codable, Equatable, Sendable {
+    public var triggers = CueTriggers()
     public var id: UUID
     public var name: String
     public var tint: CueTint
@@ -524,6 +526,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case triggers
         case id, name, tint, elements, markers, durationMode, gain, fadeOutSeconds, enabled
         case fadeInSeconds, loop, followOnFinish, preWaitSeconds, rules, ignoreParentRules
         case durationSeconds
@@ -553,6 +556,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         if let contents = try c.decodeIfPresent([CueElement].self, forKey: .elements) {
             elements = contents
         }
+        triggers = try c.decodeIfPresent(CueTriggers.self, forKey: .triggers) ?? CueTriggers()
+        if let error = triggers.validationError { throw DecodingError.dataCorruptedError(forKey: .triggers, in: c, debugDescription: error) }
         tint = try c.decodeIfPresent(CueTint.self, forKey: .tint) ?? .none
         markers = try c.decodeIfPresent([CueMarker].self, forKey: .markers) ?? []
         rules = try c.decodeIfPresent([InteractionRule].self, forKey: .rules) ?? []
@@ -563,6 +568,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
+        try c.encode(triggers, forKey: .triggers)
         try c.encode(tint, forKey: .tint)
         try c.encode(elements, forKey: .elements)
         try c.encode(markers, forKey: .markers)

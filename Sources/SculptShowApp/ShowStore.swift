@@ -1889,6 +1889,16 @@ final class ShowStore: ObservableObject {
         commit(updated)
     }
 
+    func setCueTriggers(_ triggers: CueTriggers, cueID: UUID, using midi: MIDIControl) {
+        guard let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }) else { return }
+        if let error = CueTriggerResolver.conflict(triggers, cueID: cueID, in: show) { errorMessage = error; return }
+        if let note = triggers.midi, midi.mappings.values.contains(note) { errorMessage = "This MIDI control is assigned to global transport. Clear that mapping in MIDI Setup first."; return }
+        var updated = show; updated.updateCue(cueID, in: list.id) { $0.triggers = triggers }
+        // Use the same Undo/save transaction as other inspector controls.
+        commit(updated)
+    }
+
+
     private func commit(_ updated: Show) {
         guard updated != show else { return }
         undoStack.append(snapshot())

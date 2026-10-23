@@ -23,6 +23,7 @@ struct AudioMIDISetupView: View {
                 Text("MIDI Control").tag(1)
                 Text("Output Patch").tag(2)
                 Text("OSC Control").tag(3)
+                Text("Backup Check").tag(4)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
@@ -33,8 +34,10 @@ struct AudioMIDISetupView: View {
                 MIDIControlSettings().environmentObject(midi)
             } else if tab == 2 {
                 OutputPatchView()
-            } else {
+            } else if tab == 3 {
                 OSCControlSettings()
+            } else {
+                BackupCheckView()
             }
         }
         .frame(width: 690)

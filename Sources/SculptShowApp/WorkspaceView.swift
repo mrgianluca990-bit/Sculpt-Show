@@ -240,6 +240,17 @@ struct WorkspaceView: View {
                 await playback.startRoutingAutomatically()
                 store.requestSessionAudioPreparation(using: playback)
             }
+            midi.isCueTriggerAssigned = { [weak store] trigger in
+                store?.show.cueLists.flatMap(\.cues).contains(where: { $0.triggers.midi == trigger }) == true
+            }
+            midi.onCueLearned = { [weak store, weak midi] id, trigger in
+                guard let store, let midi, var settings = store.show.cue(id)?.triggers else { return }
+                settings.midi = trigger; store.setCueTriggers(settings, cueID: id, using: midi)
+            }
+            midi.onCueTrigger = { [weak store, weak playback] trigger in
+                guard let store, let playback, let id = CueTriggerResolver.matching(in: store.show, midi: trigger) else { return false }
+                store.fireTriggeredCue(id, using: playback); return true
+            }
             midi.onCommand = { [weak store, weak playback] command in
                 guard let store, let playback else { return }
                 switch command {
@@ -328,8 +339,15 @@ struct WorkspaceView: View {
                   window.attachedSheet == nil,
                   !(window.firstResponder is NSTextView),
                   !(window.firstResponder is NSTextField),
-                  event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+                  !event.modifierFlags.contains(.command),
                   !self.store.isLoadingProject else { return event }
+            let flags = event.modifierFlags
+            let modifiers: UInt8 = (flags.contains(.shift) ? 1 : 0) | (flags.contains(.option) ? 2 : 0) | (flags.contains(.control) ? 4 : 0)
+            if let id = CueTriggerResolver.matching(in: self.store.show, keyCode: event.keyCode, modifiers: modifiers) {
+                if !event.isARepeat { self.store.fireTriggeredCue(id, using: self.playback) }
+                return nil
+            }
+            guard flags.intersection([.option, .control]).isEmpty else { return event }
             switch event.keyCode {
             case 49: // Space = GO. Never fire multiple GO on key repeat.
                 if !event.isARepeat { self.store.fireSelected(using: self.playback) }
@@ -716,7 +734,9 @@ struct WorkspaceView: View {
                                     Spacer()
                                     Text("\(clock(state.elapsed)) / \(clock(state.duration))").monospacedDigit()
                                 }.font(.caption)
-                                ProgressView(value: min(max(state.elapsed, 0), max(state.duration, 0.001)), total: max(state.duration, 0.001))
+                                PlaybackPositionView(snapshot: state) { position in
+                                    ProgressView(value: min(max(position, 0), max(state.duration, 0.001)), total: max(state.duration, 0.001))
+                                }
                                 HStack {
                                     Button {
                                         if state.phase == .paused { _ = playback.play(cue) }
@@ -771,6 +791,28 @@ struct WorkspaceView: View {
                     Group {
                         if inspectorTab == "GENERAL" {
                             VStack(alignment: .leading, spacing: 12) {
+                        CueTriggerEditor(cue: cue, listID: listID).id(cue.id)
+                        Divider()
+                        HStack {
+                            Button { store.duplicateCue(cue.id, in: listID) } label: {
+                                Label("Duplicate", systemImage: "plus.square.on.square")
+                            }
+                        }
+                        HStack {
+                            Button { store.moveCue(cue.id, in: listID, by: -1) } label: {
+                                Label("Up", systemImage: "arrow.up")
+                            }
+                            Button { store.moveCue(cue.id, in: listID, by: 1) } label: {
+                                Label("Down", systemImage: "arrow.down")
+                            }
+                        }
+                        Button(role: .destructive) {
+                            playback.stop(cue.id)
+                            store.removeCue(cue.id, from: listID)
+                        } label: {
+                            Label("Remove Cue", systemImage: "trash")
+                        }
+                        Divider()
                         CueColorPicker(cue: cue, listID: listID)
                                 Divider()
                         HStack {
@@ -881,25 +923,6 @@ struct WorkspaceView: View {
                         }
                         .buttonStyle(.bordered)
 
-                        HStack {
-                            Button { store.duplicateCue(cue.id, in: listID) } label: {
-                                Label("Duplicate", systemImage: "plus.square.on.square")
-                            }
-                        }
-                        HStack {
-                            Button { store.moveCue(cue.id, in: listID, by: -1) } label: {
-                                Label("Up", systemImage: "arrow.up")
-                            }
-                            Button { store.moveCue(cue.id, in: listID, by: 1) } label: {
-                                Label("Down", systemImage: "arrow.down")
-                            }
-                        }
-                        Button(role: .destructive) {
-                            playback.stop(cue.id)
-                            store.removeCue(cue.id, from: listID)
-                        } label: {
-                            Label("Remove Cue", systemImage: "trash")
-                        }
                             if cue.hasAudio {
                             Button {
                                 normalizeSelection = NormalizationCueSelection(cueID: cue.id, listID: listID)
@@ -1644,8 +1667,17 @@ private struct CueRow: View {
     }
 
     private var progressBar: some View {
+        Group {
+            if let state {
+                PlaybackPositionView(snapshot: state) { position in
+                    progressSlider(fraction: position / max(0.001, state.duration))
+                }
+            } else { progressSlider(fraction: 0) }
+        }
+    }
+    private func progressSlider(fraction: Double) -> some View {
         Slider(value: Binding(
-            get: { pendingSeek ?? state?.fraction ?? 0 },
+            get: { pendingSeek ?? fraction },
             set: { pendingSeek = $0 }
         ), in: 0...1, onEditingChanged: { isEditing in
             if !isEditing, let value = pendingSeek {

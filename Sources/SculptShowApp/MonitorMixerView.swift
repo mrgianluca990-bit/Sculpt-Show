@@ -49,15 +49,16 @@ private struct StemInputStrip: View {
             MixerFader(value: Binding(get: { element.gain }, set: {
                 store.setElementGain(element.id, in: cue.id, listID: listID, to: $0, using: playback)
             }), height: faderHeight, name: "Volume " + element.name)
-            Text("PAN \(Int(element.pan * 100))").font(.system(size: 9, design: .monospaced))
-                .onTapGesture(count: 2) { store.setStemMixer(element.id, cueID: cue.id, listID: listID, pan: 0, using: playback) }
-            Slider(value: Binding(get: { element.pan }, set: {
+            Button {
+                store.setStemMixer(element.id, cueID: cue.id, listID: listID, pan: 0, using: playback)
+            } label: {
+                Text("PAN " + (element.pan == 0 ? "C" : String(Int((element.pan * 100).rounded()))) + " ↺")
+                    .font(.system(size: 8, design: .monospaced)).frame(maxWidth: .infinity, minHeight: 20)
+                    .contentShape(Rectangle()).background(Color.gray.opacity(0.2), in: RoundedRectangle(cornerRadius: 3))
+            }.buttonStyle(.plain).help("Click to center pan").accessibilityLabel("Center pan " + element.name)
+            CenteringPanControl(value: Binding(get: { element.pan }, set: {
                 store.setStemMixer(element.id, cueID: cue.id, listID: listID, pan: $0, using: playback)
-            }), in: -1...1).controlSize(.mini).accessibilityLabel("Pan " + element.name)
-                .simultaneousGesture(TapGesture(count: 2).onEnded {
-                    store.setStemMixer(element.id, cueID: cue.id, listID: listID, pan: 0, using: playback)
-                })
-                .help("Double-click to center. Mono: position in stereo Monitor; direct mono OUT stays mono. Stereo: balance for program and Monitor.")
+            }), label: "Pan " + element.name).frame(height: 18)
             HStack(spacing: 2) {
                 MixerSwitch(title: "M", active: element.muted, color: .red) {
                     store.setElementMuted(element.id, in: cue.id, listID: listID, to: !element.muted, using: playback)
@@ -75,7 +76,7 @@ private struct StemInputStrip: View {
                 channels: ShowWaveformCache.shared.channels(at: element.sourcePath) ?? 2))
                 .font(.system(size: 8)).lineLimit(1)
         }
-        .padding(4).frame(width: 51).help(element.name)
+        .padding(4).frame(width: 51)
         .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
     }
 }
@@ -92,13 +93,16 @@ private struct MonitorMasterStrip: View {
             MixerFader(value: Binding(get: { store.show.monitor.gain }, set: {
                 store.setMonitorMix(gain: $0, using: playback)
             }), height: faderHeight, name: "Monitor volume")
-            Text("PAN \(Int(store.show.monitor.pan * 100))").font(.system(size: 9, design: .monospaced))
-                .onTapGesture(count: 2) { store.setMonitorMix(pan: 0, using: playback) }
-            Slider(value: Binding(get: { store.show.monitor.pan }, set: {
+            Button {
+                store.setMonitorMix(pan: 0, using: playback)
+            } label: {
+                Text("PAN " + (store.show.monitor.pan == 0 ? "C" : String(Int((store.show.monitor.pan * 100).rounded()))) + " ↺")
+                    .font(.system(size: 9, design: .monospaced)).frame(maxWidth: .infinity, minHeight: 20)
+                    .contentShape(Rectangle()).background(Color.cyan.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
+            }.buttonStyle(.plain).help("Click to center Monitor pan").accessibilityLabel("Center Monitor pan")
+            CenteringPanControl(value: Binding(get: { store.show.monitor.pan }, set: {
                 store.setMonitorMix(pan: $0, using: playback)
-            }), in: -1...1).controlSize(.mini).accessibilityLabel("Monitor pan")
-                .simultaneousGesture(TapGesture(count: 2).onEnded { store.setMonitorMix(pan: 0, using: playback) })
-                .help("Double-click to center Monitor pan")
+            }), label: "Monitor pan").frame(height: 18)
             MixerSwitch(title: "MUTE", active: store.show.monitor.muted, color: .red) {
                 store.setMonitorMix(muted: !store.show.monitor.muted, using: playback)
             }.accessibilityLabel("Monitor mute")

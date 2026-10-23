@@ -58,7 +58,7 @@ final class RoutedAudioEngine {
     }
 
     static let maximumVoices = 64
-    private var activeVoiceLimit = 64
+    private(set) var activeVoiceLimit = 64
     private var engine: AVAudioEngine?
     private var configurationObserver: NSObjectProtocol?
     var onSampleRateInvalidated: ((Double) -> Void)?
@@ -906,8 +906,9 @@ final class RoutedAudioEngine {
             guard let elementID = voices[index].elementID,
                   let element = cue.elements.first(where: { $0.id == elementID }) else { continue }
             try applyVoiceRouting(index: index, element: element)
-            voices[index].gainNode.outputVolume = AudioGainPlan.linear(cue: cue.gain, element: element.gain,
+            let gain = AudioGainPlan.linear(cue: cue.gain, element: element.gain,
                 fade: fadeFactor, trim: dimFactor, muted: element.muted || (!soloedInputs.isEmpty && !soloedInputs.contains(elementID)))
+            if voices[index].gainNode.outputVolume != gain { voices[index].gainNode.outputVolume = gain }
         }
     }
 

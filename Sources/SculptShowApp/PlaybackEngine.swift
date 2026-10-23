@@ -17,10 +17,14 @@ final class PlaybackEngine: ObservableObject {
         case fading = "FADING"
     }
 
-    struct Snapshot {
+    struct Snapshot: Equatable {
         var phase: Phase
         var elapsed: TimeInterval
         var duration: TimeInterval
+        var sampledAt = ProcessInfo.processInfo.systemUptime
+        func presentedElapsed(at now: TimeInterval) -> Double {
+            min(duration, elapsed + (phase == .playing || phase == .fading ? min(0.1, max(0, now - sampledAt)) : 0))
+        }
         var fraction: Double { duration > 0 ? min(max(elapsed / duration, 0), 1) : 0 }
         var remaining: TimeInterval { max(duration - elapsed, 0) }
     }
@@ -44,6 +48,7 @@ final class PlaybackEngine: ObservableObject {
     @Published private(set) var deviceSampleRate: Double = 0
     var projectAudioReady = false
 
+    private var lastConditionPhases: [UUID: Int32] = [:]
     private func syncConditionPhases() {
         var phases: [UUID: Int32] = [:]
         for (id, state) in snapshots {
@@ -53,6 +58,8 @@ final class PlaybackEngine: ObservableObject {
             case .waiting: phases[id] = 3
             }
         }
+        guard phases != lastConditionPhases else { return }
+        lastConditionPhases = phases
         routedAudio.conditionPhases(phases)
     }
     func knowProject(_ show: Show) {
@@ -250,6 +257,7 @@ final class PlaybackEngine: ObservableObject {
     @Published private(set) var inputSoloIDs: Set<UUID> = []
     var activeInputCueIDs: Set<UUID> { Set(activeCues.keys) }
     var monitorOutputs: Set<Int> { monitor.reservedOutputs(deviceUID: routingDeviceUID, channels: routingOutputCount) }
+    var routingVoiceLimit: Int { routedAudio.activeVoiceLimit }
     var programOutputCount: Int { max(0, routingOutputCount - monitorOutputs.count) }
     func setMonitor(_ settings: ShowMonitorSettings) {
         guard settings != monitor else { return }
@@ -460,9 +468,11 @@ final class PlaybackEngine: ObservableObject {
     }
 
     init() {
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
     }
 
     func mediaDuration(for cue: Cue) -> Double? {
@@ -571,7 +581,7 @@ final class PlaybackEngine: ObservableObject {
             elapsedAtStart[cue.id] = position
             lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
             startedAt[cue.id] = ProcessInfo.processInfo.systemUptime + lead
-            snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length)
+            snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length, sampledAt: max(ProcessInfo.processInfo.systemUptime, startedAt[cue.id] ?? 0))
             updateGeneratedLTC()
             onStarted?(cue.id)
             return true
@@ -617,7 +627,7 @@ final class PlaybackEngine: ObservableObject {
         tracks[cue.id] = prepared
         elapsedAtStart[cue.id] = position
         lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
-        snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length)
+        snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length, sampledAt: max(ProcessInfo.processInfo.systemUptime, startedAt[cue.id] ?? 0))
         armAudio(for: cue.id, from: position)
         onStarted?(cue.id)
         return true
@@ -664,6 +674,7 @@ final class PlaybackEngine: ObservableObject {
     /// All audio stems share the same scheduled start (device clock).
     /// Never start individual stems from the UI refresh timer.
     private func armAudio(for id: UUID, from elapsed: Double, leadOverride: Double? = nil) {
+        defer { if snapshots[id] != nil { snapshots[id]?.sampledAt = max(ProcessInfo.processInfo.systemUptime, startedAt[id] ?? 0) } }
         if routedCues.contains(id), let cue = activeCues[id] {
             do {
                 let lead = try routedAudio.jump(cue, from: elapsed,
@@ -1003,6 +1014,18 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func refresh() {
+        var updates: [UUID: (Snapshot, TimeInterval?, UUID?)] = [:]
+        func stage(_ id: UUID, _ state: Snapshot) {
+            var timed = state; timed.sampledAt = max(ProcessInfo.processInfo.systemUptime, startedAt[id] ?? 0)
+            updates[id] = (timed, startedAt[id], pendingTokens[id])
+        }
+        defer {
+            var next = snapshots
+            for (id, entry) in updates where next[id]?.phase == entry.0.phase &&
+                startedAt[id] == entry.1 && pendingTokens[id] == entry.2 { next[id] = entry.0 }
+            if next != snapshots { snapshots = next }
+            updateGeneratedLTC()
+        }
         if let id = routedAudio.failedConditionalCue() {
             stop(id, notifyRules: false)
             onPlaybackFailed?(id)
@@ -1011,7 +1034,7 @@ final class PlaybackEngine: ObservableObject {
         for (id, deadline) in pendingDeadlines {
             guard var state = snapshots[id], state.phase == .waiting else { continue }
             state.elapsed = min(max(state.duration - (deadline - ProcessInfo.processInfo.systemUptime), 0), state.duration)
-            snapshots[id] = state
+            stage(id, state)
         }
         for id in Array(activeCues.keys) {
             guard var snapshot = snapshots[id], snapshot.phase == .playing || snapshot.phase == .fading else { continue }
@@ -1020,12 +1043,14 @@ final class PlaybackEngine: ObservableObject {
             // Keep updating routed gain until the fade task stops the voice.
             if snapshot.phase == .fading {
                 snapshot.elapsed = min(snapshot.duration, elapsed)
-                snapshots[id] = snapshot
+                stage(id, snapshot)
                 if routedCues.contains(id) { refreshAudio(for: id, elapsed: elapsed) }
                 continue
             }
             // Catch markers crossed since the previous UI tick, including near END.
+            let anchor = startedAt[id]
             emitCrossedMarkers(id, at: elapsed, duration: snapshot.duration)
+            guard startedAt[id] == anchor, snapshots[id]?.phase == snapshot.phase else { continue }
             if elapsed >= snapshot.duration {
                 if activeCues[id]?.loop == true && snapshot.phase == .playing {
                     // Preserve overshoot so the loop does not drift by
@@ -1033,7 +1058,7 @@ final class PlaybackEngine: ObservableObject {
                     let offset = min(max(0, elapsed - snapshot.duration),
                                      max(0, snapshot.duration - 0.001))
                     snapshot.elapsed = offset
-                    snapshots[id] = snapshot
+                    stage(id, snapshot)
                     lastMarkerPosition[id] = -0.0001
                     // No fixed 80ms silence is inserted before the next cycle.
                     // Truly sample-continuous loops still require pre-scheduled
@@ -1045,9 +1070,8 @@ final class PlaybackEngine: ObservableObject {
                 continue
             }
             snapshot.elapsed = elapsed
-            snapshots[id] = snapshot
+            stage(id, snapshot)
             if snapshot.phase == .playing || routedCues.contains(id) { refreshAudio(for: id, elapsed: elapsed) }
         }
-        updateGeneratedLTC()
     }
 }

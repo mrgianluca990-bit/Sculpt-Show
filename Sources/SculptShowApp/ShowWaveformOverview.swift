@@ -522,13 +522,14 @@ private struct WaveformStemLane: View {
                                 duration: duration)))
                             .allowsHitTesting(false)
                     }
-                    if let playhead {
-                        Rectangle().fill(Color.white)
-                            .frame(width: 2)
-                            .offset(x: CGFloat(MarkerTimelineGeometry.x(
-                                time: playhead, width: Double(geometry.size.width),
-                                duration: duration)))
-                            .allowsHitTesting(false)
+                    if playhead != nil {
+                        if let state = playback.snapshots[cue.id] {
+                            PlaybackPositionView(snapshot: state) { position in
+                                Rectangle().fill(Color.white).frame(width: 2)
+                                    .offset(x: CGFloat(MarkerTimelineGeometry.x(time: position,
+                                        width: Double(geometry.size.width), duration: duration)))
+                            }.allowsHitTesting(false)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

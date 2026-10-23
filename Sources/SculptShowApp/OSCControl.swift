@@ -125,6 +125,9 @@ extension ShowStore {
         guard !isLoadingProject else { return "Project is loading" }
         switch command {
         case .status: break
+        case .trigger(let alias):
+            guard let id = CueTriggerResolver.matching(in: show, oscAlias: alias), let cue = show.cue(id) else { return "Unknown or ambiguous cue OSC alias" }
+            if !playback.play(cue, restartPaused: true) { return playback.errorMessage ?? "Cue cannot start" }
         case .global(let action):
             switch action {
             case "go": fireSelected(using: playback)
@@ -150,7 +153,9 @@ extension ShowStore {
         case .cue(let id, let action, let enabled):
             guard let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == id }) }), let cue = show.cue(id) else { return "Unknown cue ID" }
             switch action {
-            case "fire": if !playback.play(cue, restartPaused: true) { return playback.errorMessage ?? "Cue cannot start" }
+            case "fire":
+                guard cue.triggers.oscEnabled else { return "OSC Fire trigger is disabled for this cue" }
+                if !playback.play(cue, restartPaused: true) { return playback.errorMessage ?? "Cue cannot start" }
             case "stop": playback.stop(id)
             case "pause": playback.pause(id)
             case "resume": if playback.snapshots[id]?.phase == .paused { playback.togglePause(id) }

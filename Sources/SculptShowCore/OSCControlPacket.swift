@@ -3,7 +3,7 @@ import Foundation
 /// Deliberately bounded OSC 1.0 control subset: literal methods, immediate bundles.
 public enum OSCControlPacket {
     public enum Command: Equatable, Sendable {
-        case global(String), cue(UUID, String, Bool?), list(UUID, String), status
+        case trigger(String), global(String), cue(UUID, String, Bool?), list(UUID, String), status
     }
     public enum Failure: Error { case malformed, unsupported }
     public static func decode(_ data: Data) throws -> [Command] {
@@ -55,6 +55,12 @@ public enum OSCControlPacket {
         guard cursor == bytes.count, result.count < 64 else { throw Failure.malformed }
         let parts = address.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count >= 3, parts[0].isEmpty, parts[1] == "sculpt" else { throw Failure.unsupported }
+        if parts.count == 4, parts[2] == "trigger" {
+            var settings = CueTriggers(); settings.oscAlias = address
+            guard settings.validationError == nil else { throw Failure.unsupported }
+            if value != false { result.append(.trigger(address)) }
+            return
+        }
         if parts.count == 3 {
             let action = String(parts[2])
             if action == "status", value == nil { result.append(.status); return }
