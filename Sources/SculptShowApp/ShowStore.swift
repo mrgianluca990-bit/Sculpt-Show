@@ -120,7 +120,8 @@ final class ShowStore: ObservableObject {
         let loops = model.cueLists.flatMap(\.cues).filter {
             NativeMarkerLoopPlanner.plan(for: $0)?.conditionCueID != nil
         }.map { $0.id.uuidString }.sorted()
-        return "\(model.sampleRate)|" + paths.joined(separator: "|") + loops.joined(separator: "|")
+        let videos = model.cueLists.flatMap(\.cues).compactMap { $0.video.map { "\($0.sourcePath):\($0.audioPrepared == true)" } }.sorted()
+        return videos.joined(separator: "|") + "\(model.sampleRate)|" + paths.joined(separator: "|") + loops.joined(separator: "|")
     }
 
     @discardableResult
@@ -232,6 +233,26 @@ final class ShowStore: ObservableObject {
             do {
                 guard await playback.configureProjectSampleRate(show.sampleRate) else {
                     throw SessionAudioPreparation.Failure.invalid(playback.errorMessage ?? "Audio device is not ready")
+                }
+                for list in show.cueLists {
+                    for cue in list.cues where cue.video?.audioPrepared != true && cue.video != nil {
+                        guard let movie = cue.video else { continue }
+                        sessionAudioStatus = "Preparing video soundtrack…"
+                        let directory = (documentURL?.deletingLastPathComponent() ?? FileManager.default.temporaryDirectory.appendingPathComponent("Sculpt Video Imports")).appendingPathComponent("Audio Files/Video")
+                        let audio = try await VideoSoundtrack.prepare(source: URL(fileURLWithPath: movie.sourcePath), directory: directory, sampleRate: show.sampleRate)
+                        if let audio {
+                            let failed = await ShowWaveformCache.shared.prepare(paths: [audio.path])
+                            guard failed.isEmpty else { throw VideoPlayback.Failure("Video audio waveform verification failed") }
+                        }
+                        guard generation == showOpenGeneration, show.cue(cue.id)?.video == movie else { preparationRequested = true; return }
+                        var updated = show
+                        updated.updateCue(cue.id, in: list.id) { current in
+                            if let audio { var element = CueElement.audio(audio); element.name = current.name + " · Audio"; current.elements.append(element) }
+                            current.video?.audioPrepared = true
+                        }
+                        assignAutomaticOutputs(to: &updated, cueID: cue.id, listID: list.id)
+                        show = updated; dirty = true
+                    }
                 }
                 let inspected = show
                 let needsConversion = try await Task.detached(priority: .userInitiated) {

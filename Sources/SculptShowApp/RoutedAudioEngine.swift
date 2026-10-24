@@ -516,6 +516,8 @@ final class RoutedAudioEngine {
         selectedDevice = nil
     }
 
+    private(set) var scheduledHostTimes: [UUID: UInt64] = [:]
+
     func start(_ cue: Cue, from elapsed: Double, fade: Float, hostLead: Double = 0.22) throws -> Double {
         stopTestTone()
         guard isReady, let matrix, let device = selectedDevice else { throw RoutingError.engineNotReady }
@@ -687,6 +689,7 @@ final class RoutedAudioEngine {
             let synchronizedLead = hostLead <= 0.01 ? hostLead :
                 max(hostLead, files.count >= 48 ? 0.45 : (files.count >= 24 ? 0.32 : hostLead))
             let deadline = AudioGetCurrentHostTime() + AVAudioTime.hostTime(forSeconds: synchronizedLead)
+            scheduledHostTimes[cue.id] = deadline
             if let conditional {
                 sculpt_loop_arm(conditional.pointer, AudioConvertHostTimeToNanos(deadline),
                     Int64((elapsed * sampleRate).rounded()))
@@ -760,6 +763,7 @@ final class RoutedAudioEngine {
                 * ((stems[order].muted || (!soloedInputs.isEmpty && !soloedInputs.contains(stems[order].id))) ? 0 : 1)
         }
         let deadline = AudioGetCurrentHostTime() + AVAudioTime.hostTime(forSeconds: lead)
+        scheduledHostTimes[cue.id] = deadline
         if let timecode = cue.elements.first(where: { $0.kind == .timecode && !$0.muted }) {
             try startLTC(timecode, owner: cue.id, hostDeadline: deadline,
                 from: elapsed, duration: cue.timelineLength(audioEnds: assigned.compactMap {
@@ -913,6 +917,7 @@ final class RoutedAudioEngine {
     }
 
     func stop(_ cueID: UUID, updateSignal: Bool = true) {
+        scheduledHostTimes.removeValue(forKey: cueID)
         if updateSignal, let signal = signals[cueID] { sculpt_signal_phase(signal.pointer, 0) }
         wholeCueLoops.remove(cueID)
         if let loop = conditionalLoops.removeValue(forKey: cueID) {

@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import AVFoundation
 import SwiftUI
 import SculptShowCore
@@ -14,6 +15,7 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
     let player = AVPlayer()
     private var generation = UUID()
     private var task: Task<Void, Never>?
+    private var transportGeneration = UUID()
     private var window: NSWindow?
     private var surface: VideoSurface?
     private var observers: [NSObjectProtocol] = []
@@ -22,6 +24,7 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
     override init() {
         super.init()
         player.isMuted = true
+        player.automaticallyWaitsToMinimizeStalling = false
         player.actionAtItemEnd = .pause
         for name in [AVPlayerItem.didPlayToEndTimeNotification, AVPlayerItem.failedToPlayToEndTimeNotification] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
@@ -55,7 +58,7 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
         return (composition, duration)
     }
     struct Failure: LocalizedError { let message: String; init(_ message: String) { self.message = message }; var errorDescription: String? { message } }
-    func start(_ cue: Cue, position: Double, ready: @escaping (Double) -> Void) {
+    func start(_ cue: Cue, position: Double, ready: @escaping (Double) -> UInt64?) {
         stop()
         owner = cue.id; preparing = true; scale = cue.video?.scale ?? 1
         let token = generation
@@ -81,8 +84,13 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
                 try self.showOutput()
                 self.preparing = false
                 self.setOpacity(CueVideo.opacity(elapsed: p, duration: duration, fadeIn: cue.fadeInSeconds, fadeOut: cue.fadeOutSeconds))
-                self.player.play()
-                ready(duration)
+                let prerolled = await self.player.preroll(atRate: 1)
+                try Task.checkCancellation()
+                guard self.generation == token else { return }
+                guard prerolled else { throw Failure("Video preroll failed") }
+                let host = ready(duration)
+                guard self.generation == token, self.owner == cue.id else { return }
+                self.play(at: p, host: host)
             } catch is CancellationError { }
             catch {
                 guard self.generation == token else { return }
@@ -92,11 +100,34 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
     }
     var elapsed: Double { let value = CMTimeGetSeconds(player.currentTime()); return value.isFinite ? max(0, value) : 0 }
     var playbackError: String? { player.currentItem?.status == .failed ? player.currentItem?.error?.localizedDescription ?? "Video decoding failed." : nil }
-    func pause() { player.pause() }
-    func resume() { player.play() }
-    func seek(_ position: Double) { player.currentItem?.cancelPendingSeeks(); player.seek(to: CMTime(seconds: position, preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero) }
+    private func play(at position: Double, host: UInt64?) {
+        let deadline = host ?? AudioGetCurrentHostTime()
+        player.setRate(1, time: CMTime(seconds: position, preferredTimescale: 60000), atHostTime: CMClockMakeHostTimeFromSystemUnits(deadline))
+    }
+    func pause() { transportGeneration = UUID(); player.cancelPendingPrerolls(); player.pause() }
+    func reposition(_ position: Double, playing: Bool, ready: @escaping () -> UInt64?) {
+        let token = UUID(); transportGeneration = token
+        player.pause(); player.cancelPendingPrerolls(); player.currentItem?.cancelPendingSeeks()
+        Task { [weak self] in
+            guard let self else { return }
+            let sought = await self.player.seek(to: CMTime(seconds: position, preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero)
+            guard self.transportGeneration == token, self.owner != nil, sought else { return }
+            if playing {
+                let primed = await self.player.preroll(atRate: 1)
+                guard self.transportGeneration == token, let id = self.owner else { return }
+                guard primed else { self.onFailure?(id, "Video preroll failed"); return }
+            }
+            let host = ready()
+            guard self.transportGeneration == token, self.owner != nil else { return }
+            if playing { self.play(at: position, host: host) }
+        }
+    }
+    func align(to position: Double) {
+        if !preparing && abs(elapsed - position) > 0.1 { play(at: position, host: nil) }
+    }
     func stop() {
-        generation = UUID(); task?.cancel(); task = nil
+        generation = UUID(); transportGeneration = UUID(); task?.cancel(); task = nil
+        player.cancelPendingPrerolls()
         player.pause(); setOpacity(0); player.replaceCurrentItem(with: nil)
         owner = nil; preparing = false
     }
@@ -188,7 +219,7 @@ struct VideoOutputSettings: View {
     @State private var error = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("VIDEO OUTPUT · SILENT").font(.headline)
+            Text("VIDEO OUTPUT").font(.headline)
             Picker("Display", selection: Binding(get: { video.screenID }, set: { video.selectScreen($0) })) {
                 Text("Automatic · second display, otherwise main").tag("")
                 ForEach(NSScreen.screens, id: \.self) { screen in Text(screen.localizedName).tag(VideoPlayback.id(screen)) }
@@ -200,7 +231,7 @@ struct VideoOutputSettings: View {
                 Button("Hide output") { video.hideOutput() }.disabled(video.owner != nil)
             }
             VideoPreview(video: video).frame(height: 220)
-            Text("One video cue at a time. Window is resizable; image scale is set per cue in General. Embedded audio is never played. Fade durations use the cue's Fade In / Fade Out. At the end the output returns to black.").font(.callout)
+            Text("One video cue at a time. Window is resizable; image scale is set per cue in General. Embedded audio is prepared offline and routed through the SHOW mixer. Fade durations use the cue's Fade In / Fade Out. At the end the output returns to black.").font(.callout)
             if !error.isEmpty { Text(error).foregroundColor(.red) }
         }.padding(20).frame(width: 650)
     }

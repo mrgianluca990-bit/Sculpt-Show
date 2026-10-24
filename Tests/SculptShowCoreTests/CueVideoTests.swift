@@ -58,4 +58,20 @@ final class CueVideoTests: XCTestCase {
         show.cueLists[0].cues = [cue]
         XCTAssertThrowsError(try ShowProjectPackage.resolve(show, documentURL: URL(fileURLWithPath: "/tmp/project/show.scshow")))
     }
+    func testSoundtrackAssociationSurvivesRoundTrip() throws {
+        var cue = Cue(name: "Movie", mediaPath: "/tmp/soundtrack.wav")
+        cue.video = CueVideo(sourcePath: "/tmp/movie.mov", duration: 3)
+        cue.video?.audioPrepared = true
+        let decoded = try JSONDecoder().decode(Cue.self, from: JSONEncoder().encode(cue))
+        XCTAssertEqual(decoded, cue)
+        XCTAssertTrue(decoded.hasAudio)
+        XCTAssertEqual(decoded.video?.audioPrepared, true)
+    }
+    func testVideoMarkerReturnNeverLoopsAudioIndependently() {
+        var cue = Cue(name: "Movie", mediaPath: "/tmp/soundtrack.wav")
+        cue.video = CueVideo(sourcePath: "/tmp/movie.mov", duration: 3)
+        cue.markers = [CueMarker(name: "IN", positionSeconds: 0), CueMarker(name: "OUT", positionSeconds: 1, rules: [InteractionRule(action: .fire, target: .itself)])]
+        XCTAssertNil(NativeMarkerLoopPlanner.plan(for: cue))
+    }
+
 }

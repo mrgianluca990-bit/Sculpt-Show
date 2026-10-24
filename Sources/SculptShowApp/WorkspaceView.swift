@@ -793,7 +793,7 @@ struct WorkspaceView: View {
                             VStack(alignment: .leading, spacing: 12) {
                         CueTriggerEditor(cue: cue, listID: listID).id(cue.id)
                         if let movie = cue.video {
-                            Text("VIDEO · SILENT").font(.headline)
+                            Text("VIDEO").font(.headline)
                             VideoPreview(video: playback.video).frame(height: 130)
                             HStack {
                                 Button("Show video output") { do { try playback.video.showOutput() } catch { playback.errorMessage = error.localizedDescription } }
@@ -804,7 +804,7 @@ struct WorkspaceView: View {
                                 store.setVideoScale($0, cueID: cue.id, in: listID)
                                 if playback.video.owner == cue.id { playback.video.setScale($0) }
                             }), in: 0.1...1)
-                            Text("Embedded audio off · black at end").font(.caption)
+                            Text("Audio through SHOW mixer · black at end").font(.caption)
                         }
                         Divider()
                         HStack {
@@ -829,7 +829,6 @@ struct WorkspaceView: View {
                         Divider()
                         CueColorPicker(cue: cue, listID: listID)
                                 Divider()
-                        if cue.video == nil {
                         HStack {
                             Text("GAIN")
                             Spacer()
@@ -843,7 +842,6 @@ struct WorkspaceView: View {
                             set: { store.setGain(cue.id, in: listID, to: $0); playback.setGain($0, for: cue.id) }
                         ), in: 0...1)
                         .tint(Skin.gold)
-                        }
 
                         Divider()
                         HStack {
@@ -1038,7 +1036,7 @@ struct WorkspaceView: View {
                 Text("NORMALIZING CUE LIST…")
             }
             Spacer()
-            Text("SCULPT SHOW 0.19.0")
+            Text("SCULPT SHOW 0.19.1")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -1586,7 +1584,7 @@ private struct CueRow: View {
                 .help("Drag this handle to reorder or move to another list")
             selectionButton
             statusIndicator
-            if cue.hasAudio {
+            if cue.hasAudio && cue.video == nil {
                 Button {
                     store.editCueInDAW(cue.id, in: listID)
                 } label: {
@@ -1633,7 +1631,7 @@ private struct CueRow: View {
                 .lineLimit(1)
                 .foregroundColor(cue.enabled ? .white : Skin.soft)
             HStack(spacing: 6) {
-                Image(systemName: cue.hasAudio ? "waveform" : cue.hasTimecode ? "clock" : "square.dashed")
+                Image(systemName: cue.video != nil ? "film" : cue.hasAudio ? "waveform" : cue.hasTimecode ? "clock" : "square.dashed")
                 Text(playbackLabel)
                 if !cue.markers.isEmpty {
                     Image(systemName: "mappin")
@@ -1650,7 +1648,7 @@ private struct CueRow: View {
 
     private var playbackLabel: String {
         guard let state else {
-            let type = cue.video != nil ? "VIDEO · SILENT" : cue.isEmpty ? "RULES / EMPTY" : cue.hasAudio ? "AUDIO ×\(cue.audioElements.count)" : "TIMECODE"
+            let type = cue.video != nil ? "VIDEO" : cue.isEmpty ? "RULES / EMPTY" : cue.hasAudio ? "AUDIO ×\(cue.audioElements.count)" : "TIMECODE"
             let length = cue.durationMode == .fixed ? String(format: "%.1fs", cue.durationSeconds) : "SOURCE"
             return "\(type)  ·  \(length)"
         }

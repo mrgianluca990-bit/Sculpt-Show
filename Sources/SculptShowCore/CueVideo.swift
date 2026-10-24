@@ -4,6 +4,7 @@ import Foundation
 public struct CueVideo: Codable, Equatable, Sendable {
     public var sourcePath: String
     public var duration: Double
+    public var audioPrepared: Bool? = nil
     public var scale: Double
     public init(sourcePath: String, duration: Double, scale: Double = 1) {
         self.sourcePath = sourcePath

@@ -106,8 +106,8 @@ struct ShowPreflightPanel: View {
             if !FileManager.default.isReadableFile(atPath: video.sourcePath) {
                 issues.append(PreflightIssue(severity: .blocking, code: "video-missing", cueID: cue.id, cueName: cue.name, mediaPath: video.sourcePath, message: "Video file is missing or unreadable. Re-import the movie as a new video cue."))
             }
-            if !cue.elements.isEmpty || !video.isValid {
-                issues.append(PreflightIssue(severity: .blocking, code: "video-invalid", cueID: cue.id, cueName: cue.name, mediaPath: video.sourcePath, message: "Invalid video cue: one silent movie without audio/LTC elements is supported."))
+            if cue.hasTimecode || cue.audioElements.count > 1 || !video.isValid {
+                issues.append(PreflightIssue(severity: .blocking, code: "video-invalid", cueID: cue.id, cueName: cue.name, mediaPath: video.sourcePath, message: "Invalid video cue: one movie with its prepared soundtrack and no LTC elements is supported."))
             }
         }
         result = ShowPreflightReport(checkedCues: audioReport.checkedCues, checkedAudioFiles: audioReport.checkedAudioFiles, issues: issues)

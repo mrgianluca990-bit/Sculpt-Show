@@ -24,7 +24,7 @@ public enum NativeMarkerLoopPlanner {
     /// Only unambiguous zero-delay self-loop rules are rendered ahead of time.
     /// Other Rules keep the existing event engine for full compatibility.
     public static func plan(for cue: Cue) -> NativeMarkerLoop? {
-        guard !cue.hasTimecode else { return nil }
+        guard !cue.hasTimecode, cue.video == nil else { return nil }
         let markers = cue.sortedMarkers
         var matches: [NativeMarkerLoop] = []
         for (i, marker) in markers.enumerated() where i > 0 {
