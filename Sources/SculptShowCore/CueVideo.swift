@@ -1,7 +1,24 @@
 import Foundation
 
-/// Silent, single-layer video. Audio is deliberately not part of this transport.
+/// Framing shared by still images and the single visual output layer.
+public enum VideoFraming: String, Codable, CaseIterable, Sendable {
+    case fit, fill, stretch
+    public var label: String {
+        switch self { case .fit: return "Keep proportions"; case .fill: return "Fill / crop"; case .stretch: return "Stretch" }
+    }
+    public func frame(source: CGSize, in canvas: CGRect) -> CGRect {
+        guard source.width > 0, source.height > 0 else { return canvas }
+        if self == .stretch { return canvas }
+        let x = canvas.width / source.width, y = canvas.height / source.height
+        let ratio = self == .fit ? min(x, y) : max(x, y)
+        let width = source.width * ratio, height = source.height * ratio
+        return CGRect(x: canvas.midX - width / 2, y: canvas.midY - height / 2, width: width, height: height)
+    }
+}
+
 public struct CueVideo: Codable, Equatable, Sendable {
+    public var isImage: Bool? = nil
+    public var framing: VideoFraming? = nil
     public var sourcePath: String
     public var duration: Double
     public var audioPrepared: Bool? = nil

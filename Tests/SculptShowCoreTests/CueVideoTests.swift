@@ -74,4 +74,64 @@ final class CueVideoTests: XCTestCase {
         XCTAssertNil(NativeMarkerLoopPlanner.plan(for: cue))
     }
 
+    func testLegacyVideoDefaultsToProportionalMovie() throws {
+        let data = Data(#"{"sourcePath":"movie.mov","duration":3,"scale":1}"#.utf8)
+        let movie = try JSONDecoder().decode(CueVideo.self, from: data)
+        XCTAssertNil(movie.isImage)
+        XCTAssertNil(movie.framing)
+        XCTAssertNil(movie.audioPrepared)
+        XCTAssertTrue(movie.isValid)
+    }
+    func testImageLoopAndFramingRoundTrip() throws {
+        var cue = Cue(name: "Still", durationSeconds: 10)
+        cue.video = CueVideo(sourcePath: "still.png", duration: 10, scale: 0.5)
+        cue.video?.isImage = true; cue.video?.framing = .fill; cue.video?.audioPrepared = true
+        cue.loop = true
+        let decoded = try JSONDecoder().decode(Cue.self, from: JSONEncoder().encode(cue))
+        XCTAssertEqual(decoded, cue)
+        XCTAssertEqual(decoded.timelineLength(audioEnds: []), 10)
+        XCTAssertFalse(decoded.hasAudio)
+    }
+    func testFitCentersWithoutCropping() {
+        let frame = VideoFraming.fit.frame(source: CGSize(width: 1920, height: 1080), in: CGRect(x: 0, y: 0, width: 1000, height: 1000))
+        XCTAssertEqual(frame.width, 1000, accuracy: 0.001)
+        XCTAssertEqual(frame.height, 562.5, accuracy: 0.001)
+        XCTAssertEqual(frame.minY, 218.75, accuracy: 0.001)
+    }
+    func testFillCropsSymmetricallyAndStretchUsesEntireCanvas() {
+        let canvas = CGRect(x: 30, y: 20, width: 1000, height: 1000)
+        let source = CGSize(width: 1920, height: 1080)
+        let frame = VideoFraming.fill.frame(source: source, in: canvas)
+        XCTAssertEqual(frame.height, 1000, accuracy: 0.001)
+        XCTAssertEqual(frame.width, 1777.777777, accuracy: 0.001)
+        XCTAssertEqual(frame.midX, canvas.midX, accuracy: 0.001)
+        XCTAssertEqual(frame.midY, canvas.midY, accuracy: 0.001)
+        XCTAssertEqual(VideoFraming.stretch.frame(source: source, in: canvas), canvas)
+    }
+    func testPortraitAndInvalidSourceGeometry() {
+        let canvas = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let fit = VideoFraming.fit.frame(source: CGSize(width: 400, height: 800), in: canvas)
+        XCTAssertEqual(fit.width, 540)
+        XCTAssertEqual(fit.minX, 690)
+        XCTAssertEqual(VideoFraming.fill.frame(source: .zero, in: canvas), canvas)
+    }
+    func testPortableImageKeepsFramingAndLoop() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("still.png")
+        try Data([1,2,3]).write(to: source)
+        var show = Show(); var cue = Cue(name: "Still", durationSeconds: 10)
+        cue.video = CueVideo(sourcePath: source.path, duration: 10)
+        cue.video?.isImage = true; cue.video?.framing = .stretch; cue.loop = true
+        show.cueLists[0].cues = [cue]
+        let saved = try ShowProjectPackage.create(show, requestedDocumentURL: root.appendingPathComponent("Images.scshow"))
+        try FileManager.default.removeItem(at: source)
+        let reopened = try ShowProjectPackage.resolve(ShowCodec.decode(contentsOf: saved.documentURL), documentURL: saved.documentURL)
+        XCTAssertEqual(reopened.cue(cue.id)?.video?.framing, .stretch)
+        XCTAssertEqual(reopened.cue(cue.id)?.video?.isImage, true)
+        XCTAssertEqual(reopened.cue(cue.id)?.loop, true)
+        XCTAssertTrue(FileManager.default.isReadableFile(atPath: try XCTUnwrap(reopened.cue(cue.id)?.video?.sourcePath)))
+    }
+
 }

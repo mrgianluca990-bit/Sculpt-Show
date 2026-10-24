@@ -140,6 +140,7 @@ private struct EditableTitle: View {
 }
 
 struct WorkspaceView: View {
+    @Environment(\.openWindow) private var openWindow
     @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var playback: PlaybackEngine
     @State private var rulesScope: RuleScope?
@@ -335,7 +336,7 @@ struct WorkspaceView: View {
         guard keyboardMonitor == nil else { return }
         keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard let window = NSApp.keyWindow,
-                  !(window is NSPanel), !(window is VideoOutputWindow), !window.isSheet,
+                  !(window is NSPanel), !(window is VideoOutputWindow), !window.isSheet, window.title == "Sculpt Show",
                   window.attachedSheet == nil,
                   !(window.firstResponder is NSTextView),
                   !(window.firstResponder is NSTextField),
@@ -793,18 +794,27 @@ struct WorkspaceView: View {
                             VStack(alignment: .leading, spacing: 12) {
                         CueTriggerEditor(cue: cue, listID: listID).id(cue.id)
                         if let movie = cue.video {
-                            Text("VIDEO").font(.headline)
+                            Text(movie.isImage == true ? "IMAGE" : "VIDEO").font(.headline)
                             VideoPreview(video: playback.video).frame(height: 130)
-                            HStack {
-                                Button("Show video output") { do { try playback.video.showOutput() } catch { playback.errorMessage = error.localizedDescription } }
-                                Button("Fullscreen") { playback.video.fullscreen() }
+                            Button("Screens…") { openWindow(id: "sculpt-screens") }
+                            Picker("Resize mode", selection: Binding(get: { store.show.cue(cue.id)?.video?.framing ?? .fit }, set: {
+                                store.setVideoFraming($0, cueID: cue.id, in: listID)
+                                if playback.video.owner == cue.id { playback.video.setFraming($0) }
+                            })) {
+                                ForEach(VideoFraming.allCases, id: \.self) { Text($0.label).tag($0) }
                             }
                             Text("Image size · \(Int(movie.scale * 100)) %")
                             Slider(value: Binding(get: { store.show.cue(cue.id)?.video?.scale ?? movie.scale }, set: {
                                 store.setVideoScale($0, cueID: cue.id, in: listID)
                                 if playback.video.owner == cue.id { playback.video.setScale($0) }
                             }), in: 0.1...1)
-                            Text("Audio through SHOW mixer · black at end").font(.caption)
+                            if movie.isImage != true {
+                                Text(movie.audioPrepared != true ? "Soundtrack: preparing…" : cue.hasAudio ? "Soundtrack: ready · SHOW mixer" : "No audio track detected").font(.caption)
+                                Button("Prepare soundtrack again") { store.rebuildVideoSoundtrack(cue.id, in: listID, using: playback) }
+                                    .disabled(!playback.snapshots.isEmpty || store.preparingSessionAudio || store.pendingAudioImports > 0)
+                                    .help("Decode the movie audio again, preserving its mixer settings. Stop all cues first.")
+                            }
+                            Text("Fullscreen projection · black at STOP").font(.caption)
                         }
                         Divider()
                         HStack {
@@ -860,7 +870,14 @@ struct WorkspaceView: View {
                         .help("Delay before a cue starts after GO. STOP cancels a waiting cue.")
                                 Divider()
                         if let movie = cue.video {
-                            Text("MOVIE DURATION · \(movie.duration, specifier: "%.2f") s").font(.caption)
+                            if movie.isImage == true {
+                                HStack {
+                                    Text("IMAGE DURATION (s)")
+                                    TextField("Seconds", value: Binding(get: { store.show.cue(cue.id)?.video?.duration ?? movie.duration }, set: {
+                                        store.setImageDuration($0, cueID: cue.id, in: listID)
+                                    }), format: .number).frame(width: 80).disabled(playback.snapshots[cue.id] != nil)
+                                }
+                            } else { Text("MOVIE DURATION · \(movie.duration, specifier: "%.2f") s").font(.caption) }
                         } else {
                             CueTimingEditor(cue: cue, listID: listID).id(cue.id)
                         }
@@ -898,8 +915,7 @@ struct WorkspaceView: View {
                             set: { store.setLoop(cue.id, in: listID, to: $0); playback.setLoop($0, for: cue.id) }
                         ))
                         .toggleStyle(.switch)
-                        .help("Repeatedly play this audio file until stopped manually")
-                        .disabled(cue.video != nil)
+                        .help("Repeat this cue until stopped. Disable loop to finish the current cycle.")
 
                         Toggle("Auto-follow next cue", isOn: Binding(
                             get: { store.show.cue(cue.id)?.followOnFinish ?? cue.followOnFinish },
@@ -1275,7 +1291,7 @@ private struct CueListPanel: View {
                     } label: {
                         Label("AUDIO", systemImage: "waveform.badge.plus")
                     }
-                    Button { store.importVideo(to: list.id) } label: { Label("VIDEO", systemImage: "film") }
+                    Button { store.importVideo(to: list.id) } label: { Label("VIDEO / IMAGE", systemImage: "photo.on.rectangle") }
                     Button {
                         store.addEmptyCue(to: list.id)
                     } label: {
@@ -1631,7 +1647,7 @@ private struct CueRow: View {
                 .lineLimit(1)
                 .foregroundColor(cue.enabled ? .white : Skin.soft)
             HStack(spacing: 6) {
-                Image(systemName: cue.video != nil ? "film" : cue.hasAudio ? "waveform" : cue.hasTimecode ? "clock" : "square.dashed")
+                Image(systemName: cue.video != nil ? (cue.video?.isImage == true ? "photo" : "film") : cue.hasAudio ? "waveform" : cue.hasTimecode ? "clock" : "square.dashed")
                 Text(playbackLabel)
                 if !cue.markers.isEmpty {
                     Image(systemName: "mappin")
@@ -1648,7 +1664,7 @@ private struct CueRow: View {
 
     private var playbackLabel: String {
         guard let state else {
-            let type = cue.video != nil ? "VIDEO" : cue.isEmpty ? "RULES / EMPTY" : cue.hasAudio ? "AUDIO ×\(cue.audioElements.count)" : "TIMECODE"
+            let type = cue.video != nil ? (cue.video?.isImage == true ? "IMAGE" : "VIDEO") : cue.isEmpty ? "RULES / EMPTY" : cue.hasAudio ? "AUDIO ×\(cue.audioElements.count)" : "TIMECODE"
             let length = cue.durationMode == .fixed ? String(format: "%.1fs", cue.durationSeconds) : "SOURCE"
             return "\(type)  ·  \(length)"
         }

@@ -3,6 +3,7 @@ import AppKit
 
 @main
 struct SculptShowApp: App {
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var showStore = ShowStore()
     @StateObject private var playback = PlaybackEngine()
     @StateObject private var midi = MIDIControl()
@@ -114,6 +115,12 @@ struct SculptShowApp: App {
                 Button("Save Version") { showStore.saveVersion() }
                     .keyboardShortcut("s", modifiers: [.command, .option])
             }
+            CommandMenu("Screens") {
+                Button("Screens Setup…") { openWindow(id: "sculpt-screens") }
+                Button("Enable Projection") { playback.video.enableProjection() }
+                Button("Disable Projection") { playback.video.disableProjection() }
+                    .keyboardShortcut("v", modifiers: [.command, .option])
+            }
             CommandMenu("Cues") {
                 Button("Duplicate Selected Cue") {
                     if let listID = showStore.selectedListID,
@@ -150,5 +157,8 @@ struct SculptShowApp: App {
                     .keyboardShortcut(".", modifiers: .command)
             }
         }
+        Window("Screens", id: "sculpt-screens") {
+            VideoOutputSettings(video: playback.video).preferredColorScheme(.dark)
+        }.windowResizability(.contentSize)
     }
 }

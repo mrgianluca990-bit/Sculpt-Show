@@ -235,7 +235,7 @@ final class ShowStore: ObservableObject {
                     throw SessionAudioPreparation.Failure.invalid(playback.errorMessage ?? "Audio device is not ready")
                 }
                 for list in show.cueLists {
-                    for cue in list.cues where cue.video?.audioPrepared != true && cue.video != nil {
+                    for cue in list.cues where cue.video?.audioPrepared != true && cue.video != nil && cue.video?.isImage != true {
                         guard let movie = cue.video else { continue }
                         sessionAudioStatus = "Preparing video soundtrack…"
                         let directory = (documentURL?.deletingLastPathComponent() ?? FileManager.default.temporaryDirectory.appendingPathComponent("Sculpt Video Imports")).appendingPathComponent("Audio Files/Video")
@@ -247,7 +247,14 @@ final class ShowStore: ObservableObject {
                         guard generation == showOpenGeneration, show.cue(cue.id)?.video == movie else { preparationRequested = true; return }
                         var updated = show
                         updated.updateCue(cue.id, in: list.id) { current in
-                            if let audio { var element = CueElement.audio(audio); element.name = current.name + " · Audio"; current.elements.append(element) }
+                            if let audio {
+                                if let index = current.elements.firstIndex(where: { $0.kind == .audio }) {
+                                    current.elements[index].sourcePath = audio.path
+                                    current.elements[index].originalSourcePath = nil
+                                } else {
+                                    var element = CueElement.audio(audio); element.name = current.name + " · Audio"; current.elements.append(element)
+                                }
+                            } else { current.elements.removeAll { $0.kind == .audio } }
                             current.video?.audioPrepared = true
                         }
                         assignAutomaticOutputs(to: &updated, cueID: cue.id, listID: list.id)
@@ -428,8 +435,8 @@ final class ShowStore: ObservableObject {
     }
 
     func importVideo(to listID: UUID) {
-        let panel = NSOpenPanel(); panel.title = "Import video cue"
-        panel.allowedContentTypes = [.movie]; panel.allowsMultipleSelection = false
+        let panel = NSOpenPanel(); panel.title = "Import video or image cue"
+        panel.allowedContentTypes = [.movie, .image]; panel.allowsMultipleSelection = false
         panel.canChooseFiles = true; panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         addVideo(url, to: listID)
@@ -441,7 +448,10 @@ final class ShowStore: ObservableObject {
         Task {
             defer { pendingAudioImports -= 1; audioImportProgress = "" }
             do {
-                let (_, duration) = try await VideoPlayback.silentAsset(url)
+                let image = UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+                let duration: Double
+                if image { _ = try await VideoPlayback.loadStillImage(url); duration = 10 }
+                else { (_, duration) = try await VideoPlayback.silentAsset(url) }
                 guard generation == showOpenGeneration, show.cueLists.contains(where: { $0.id == listID }) else { return }
                 let directory: URL
                 if let documentURL, ShowProjectPackage.isPackaged(documentURL) {
@@ -455,16 +465,49 @@ final class ShowStore: ObservableObject {
                     try FileManager.default.copyItem(at: url, to: copy)
                 }.value
                 guard generation == showOpenGeneration else { try? FileManager.default.removeItem(at: copy); return }
+                // Publish the cue only after its soundtrack is decoded and verified.
+                // Import completion must never expose a silent, half-prepared movie.
+                let audioDirectory = (documentURL?.deletingLastPathComponent() ?? directory).appendingPathComponent("Audio Files/Video")
+                let audio = image ? nil : try await VideoSoundtrack.prepare(source: copy, directory: audioDirectory, sampleRate: show.sampleRate)
+                if let audio {
+                    let failed = await ShowWaveformCache.shared.prepare(paths: [audio.path])
+                    guard failed.isEmpty else { throw VideoPlayback.Failure("Cannot verify video soundtrack") }
+                }
+                guard generation == showOpenGeneration else { return }
                 var updated = show
                 guard let li = updated.cueLists.firstIndex(where: { $0.id == listID }) else { return }
                 var cue = Cue(name: url.deletingPathExtension().lastPathComponent, fadeOutSeconds: 1, fadeInSeconds: 1, durationSeconds: duration)
                 cue.video = CueVideo(sourcePath: copy.path, duration: duration)
-                updated.cueLists[li].cues.append(cue); commit(updated); select(cue.id, in: listID)
+                cue.video?.isImage = image
+                cue.video?.audioPrepared = true
+                if image { cue.loop = true }
+                if let audio { var stem = CueElement.audio(audio); stem.name = cue.name + " · Audio"; cue.elements.append(stem) }
+                updated.cueLists[li].cues.append(cue)
+                assignAutomaticOutputs(to: &updated, cueID: cue.id, listID: listID)
+                commit(updated); select(cue.id, in: listID)
             } catch { errorMessage = "Video import failed: \(error.localizedDescription)" }
         }
     }
     func setVideoScale(_ value: Double, cueID: UUID, in listID: UUID) {
         editCue(cueID, list: listID) { $0.video?.scale = min(1, max(0.1, value)) }
+    }
+
+    func rebuildVideoSoundtrack(_ cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        guard playback.snapshots.isEmpty, !preparingSessionAudio, pendingAudioImports == 0,
+              let movie = show.cue(cueID)?.video, movie.isImage != true else { return }
+        editCue(cueID, list: listID) { $0.video?.audioPrepared = nil }
+        requestSessionAudioPreparation(using: playback, force: true)
+    }
+
+    func setVideoFraming(_ value: VideoFraming, cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) { $0.video?.framing = value }
+    }
+    func setImageDuration(_ value: Double, cueID: UUID, in listID: UUID) {
+        guard value.isFinite, show.cue(cueID)?.video?.isImage == true else { return }
+        editCue(cueID, list: listID) {
+            let duration = min(86400, max(0.1, value))
+            $0.video?.duration = duration; $0.durationSeconds = duration
+        }
     }
 
     func importAudio(to listID: UUID) {
