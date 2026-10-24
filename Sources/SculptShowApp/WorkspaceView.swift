@@ -796,7 +796,10 @@ struct WorkspaceView: View {
                         if let movie = cue.video {
                             Text(movie.isImage == true ? "IMAGE" : "VIDEO").font(.headline)
                             VideoPreview(video: playback.video).frame(height: 130)
-                            Button("Screens…") { openWindow(id: "sculpt-screens") }
+                            HStack {
+                                Button("Show Video") { playback.video.showVideoOutput() }
+                                Button("Screens…") { openWindow(id: "sculpt-screens") }
+                            }
                             Picker("Resize mode", selection: Binding(get: { store.show.cue(cue.id)?.video?.framing ?? .fit }, set: {
                                 store.setVideoFraming($0, cueID: cue.id, in: listID)
                                 if playback.video.owner == cue.id { playback.video.setFraming($0) }
@@ -814,7 +817,7 @@ struct WorkspaceView: View {
                                     .disabled(!playback.snapshots.isEmpty || store.preparingSessionAudio || store.pendingAudioImports > 0)
                                     .help("Decode the movie audio again, preserving its mixer settings. Stop all cues first.")
                             }
-                            Text("Fullscreen projection · black at STOP").font(.caption)
+                            Text("One screen: video window · second screen: fullscreen").font(.caption)
                         }
                         Divider()
                         HStack {

@@ -116,6 +116,7 @@ struct SculptShowApp: App {
                     .keyboardShortcut("s", modifiers: [.command, .option])
             }
             CommandMenu("Screens") {
+                Button("Show Video") { playback.video.showVideoOutput() }
                 Button("Screens Setup…") { openWindow(id: "sculpt-screens") }
                 Button("Enable Projection") { playback.video.enableProjection() }
                 Button("Disable Projection") { playback.video.disableProjection() }

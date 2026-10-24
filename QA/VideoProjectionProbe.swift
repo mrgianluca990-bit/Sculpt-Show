@@ -49,7 +49,16 @@ import SculptShowCore
         for _ in 0..<100 { if engine.snapshots[cue.id]?.phase == .playing { break }; await wait(0.05) }
         await wait(0.9)
         require(engine.snapshots[cue.id]?.phase == .playing, "video and soundtrack started: \(engine.errorMessage ?? "OK")")
-        require(!liveVideo.outputVisible && !liveVideo.projectionEnabled && liveVideo.outputGeometry == nil, "video/audio playback never blacks out the primary display")
+        require(!liveVideo.outputVisible && !liveVideo.projectionEnabled && liveVideo.outputGeometry == nil, "video/audio playback never projects fullscreen onto primary display")
+        require(liveVideo.localPreviewVisible, "one display automatically opens local video window")
+        guard let preview = liveVideo.localPreviewGeometry else { fatalError("Missing preview window") }
+        require(preview.titled && preview.resizable && !preview.fullScreenAllowed && preview.surfaceAttached, "local window is resizable, bounded and attached to the existing player")
+        require(primary.visibleFrame.contains(preview.frame) && preview.frame.width <= primary.visibleFrame.width * 0.85 && preview.frame.height <= primary.visibleFrame.height * 0.85, "video window never fills or covers the operator display")
+        let sameItem = liveVideo.player.currentItem
+        liveVideo.hideLocalPreview()
+        require(!liveVideo.localPreviewVisible && engine.snapshots[cue.id]?.phase == .playing, "closing local preview leaves the cue running")
+        liveVideo.showVideoOutput()
+        require(liveVideo.localPreviewVisible && liveVideo.player.currentItem === sameItem && liveVideo.localPreviewGeometry?.surfaceAttached == true, "Show Video reopens the same renderer without restarting audio")
         let rms = engine.outputMeter(channel: 1).rms
         require(rms > 0.000000001, "nonzero post-mixer physical audio: RMS \(rms)")
         await wait(4.4)
@@ -71,7 +80,7 @@ import SculptShowCore
         picture.video = CueVideo(sourcePath: still.path, duration: 0.25); picture.video?.isImage = true; picture.video?.audioPrepared = true; picture.loop = true
         require(engine.play(picture), "image GO accepted")
         await wait(1.3)
-        require(engine.snapshots[picture.id]?.phase == .playing && engine.video.opacity > 0.9, "still remains visible across repeated cycles")
+        require(engine.snapshots[picture.id]?.phase == .playing && engine.video.opacity > 0.9 && engine.video.localPreviewVisible, "still remains visible in local window across repeated cycles")
         engine.pause(picture.id); await wait(0.15)
         let frozen = engine.video.elapsed; await wait(0.2)
         require(abs(engine.video.elapsed - frozen) < 0.01, "still pause freezes clock")
@@ -135,6 +144,7 @@ import SculptShowCore
         let importedImage = store.show.cueLists[0].cues.last!
         require(importedImage.video?.isImage == true && importedImage.loop && !importedImage.hasAudio, "image import defaults to held image loop")
         engine.stopAll()
+        liveVideo.hideOutput()
         print("ALL VIDEO/IMAGE/AUDIO/PROJECTION CHECKS PASSED")
         exit(0)
     }

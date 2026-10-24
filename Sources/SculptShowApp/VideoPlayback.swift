@@ -21,11 +21,13 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var framing: VideoFraming = .fit
     @Published var screenID: String = UserDefaults.standard.string(forKey: "sculpt.show.videoScreen") ?? ""
     @Published private(set) var outputVisible = false
+    @Published private(set) var localPreviewVisible = false
     let player = AVPlayer()
     private var generation = UUID()
     private var task: Task<Void, Never>?
     private var transportGeneration = UUID()
     private var window: NSWindow?
+    private var previewWindow: NSWindow?
     private var surface: VideoSurface?
     private var observers: [NSObjectProtocol] = []
     var onEnded: ((UUID) -> Void)?
@@ -88,32 +90,99 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
         do { try showOutput() }
         catch { hideOutput(); outputError = error.localizedDescription }
     }
+    private func destination() -> VideoOutputDestination {
+        let preferred = availableScreens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.stringValue == screenID
+        }).map(Self.id) ?? screenID
+        let excluded = Set(availableScreens.filter { screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return true }
+            return CGDisplayIsInMirrorSet(number.uint32Value) != 0
+        }.map(Self.id))
+        return ProjectionDisplayPolicy.destination(connected: availableScreens.map(Self.id),
+            operatorDisplay: operatorScreenID, preferred: preferred, excluded: excluded)
+    }
     func refreshDisplays() {
         availableScreens = NSScreen.screens
-        guard projectionEnabled else { return }
-        guard let display = selectedDisplay() else {
-            // Hide immediately, before notifying transport or allowing CoreGraphics
-            // to relocate an unplugged display's window onto the operator screen.
+        guard presentsOutput else { return }
+        let wasProjecting = outputVisible
+        let wasPreviewing = localPreviewVisible
+        switch destination() {
+        case .localWindow:
+            if wasProjecting {
+                // Never let macOS relocate a fullscreen projection onto the primary.
+                hideOutput()
+                if let id = owner { onFailure?(id, "External display disconnected. Visual cue stopped; local video window available.") }
+            }
+            if wasProjecting || wasPreviewing || owner != nil { showLocalPreview() }
+            else if projectionEnabled { hideOutput() }
+        case .externalDisplay:
+            guard wasProjecting || wasPreviewing || owner != nil || projectionEnabled else { return }
+            do { try prepareOutputForPlayback() } catch { hideOutput(); outputError = error.localizedDescription }
+        case .unavailable:
             hideOutput()
-            if let id = owner { onFailure?(id, "External projection display unavailable. Visual cue stopped.") }
-            outputError = "Projection disabled. Connect and select an additional display; the operator display is never used."
-            return
+            if wasProjecting, let id = owner { onFailure?(id, "Selected projection display unavailable. Visual cue stopped.") }
+            outputError = "Select a connected external display in Screens."
         }
-        if let old = window?.screen, Self.id(old) != Self.id(display), let id = owner {
-            onFailure?(id, "Projection display changed. Cue stopped.")
-        }
-        restoreProjection()
     }
     private func prepareOutputForPlayback() throws {
         guard presentsOutput else { return }
         availableScreens = NSScreen.screens
-        if selectedDisplay() == nil {
+        switch destination() {
+        case .localWindow:
+            showLocalPreview()
+        case .externalDisplay(let id):
+            guard let screen = projectionScreens.first(where: { Self.id($0) == id }) else {
+                throw Failure("External display unavailable.")
+            }
+            if selectedDisplay() == nil {
+                screenID = ""; UserDefaults.standard.set("", forKey: "sculpt.show.videoScreen")
+            }
+            presentExternal(on: screen)
+        case .unavailable:
             hideOutput()
-            outputError = "No eligible external display. Projection is disabled; soundtrack playback remains available."
-            return
+            throw Failure("Select a connected external display in Screens, or choose Automatic.")
         }
-        try showOutput()
     }
+    func showVideoOutput() {
+        do { try prepareOutputForPlayback() } catch { outputError = error.localizedDescription }
+    }
+    private func attachSurface(to target: NSWindow) {
+        if surface == nil {
+            let view = VideoSurface(); view.playerLayer.player = player
+            view.autoresizingMask = [.width, .height]; surface = view
+        }
+        guard let surface else { return }
+        if surface.window !== target {
+            surface.window?.contentView = nil
+            target.contentView = surface
+        }
+        surface.image = image; surface.imageScale = scale
+        surface.framing = framing; surface.imageOpacity = opacity
+    }
+    private func showLocalPreview() {
+        guard presentsOutput, let screen = NSApp.windows.first(where: { $0.title == "Sculpt Show" })?.screen ?? NSScreen.screens.first else { return }
+        window?.orderOut(nil); outputVisible = false; projectionEnabled = false
+        UserDefaults.standard.set(false, forKey: "sculpt.show.projectionEnabled")
+        if previewWindow == nil {
+            let w = LocalVideoWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            w.title = "SCULPT · VIDEO"; w.backgroundColor = .black; w.isOpaque = true
+            w.isReleasedWhenClosed = false; w.delegate = self; w.collectionBehavior = [.fullScreenNone]
+            w.standardWindowButton(.zoomButton)?.isHidden = true
+            w.standardWindowButton(.zoomButton)?.isEnabled = false
+            w.center(); _ = w.setFrameAutosaveName("sculpt.show.localVideoWindow")
+            _ = w.setFrameUsingName("sculpt.show.localVideoWindow")
+            previewWindow = w
+        }
+        guard let previewWindow else { return }
+        let visible = screen.visibleFrame
+        previewWindow.minSize = NSSize(width: min(320, visible.width * 0.85), height: min(200, visible.height * 0.85))
+        previewWindow.maxSize = NSSize(width: visible.width * 0.85, height: visible.height * 0.85)
+        previewWindow.setFrame(LocalVideoWindowGeometry.clamped(previewWindow.frame, in: visible), display: true)
+        attachSurface(to: previewWindow)
+        previewWindow.orderFront(nil); localPreviewVisible = true; outputError = nil
+    }
+    func hideLocalPreview() { previewWindow?.orderOut(nil); localPreviewVisible = false }
     static func loadStillImage(_ url: URL) async throws -> CGImage {
         try await Task.detached(priority: .userInitiated) {
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -271,8 +340,12 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
         availableScreens = NSScreen.screens
         guard let screen = selectedDisplay() else {
             hideOutput()
-            throw Failure("Connect and select an additional display. Projection onto the primary or operator display is disabled.")
+            throw Failure("Connect and select an additional display. Fullscreen projection onto the primary or operator display is disabled.")
         }
+        presentExternal(on: screen)
+    }
+    private func presentExternal(on screen: NSScreen) {
+        hideLocalPreview()
         if window == nil {
             let w = VideoOutputWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
             w.title = "SCULPT · PROJECTION"; w.backgroundColor = .black
@@ -280,24 +353,35 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
             w.ignoresMouseEvents = true; w.hidesOnDeactivate = false
             w.level = .screenSaver
             w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-            let view = VideoSurface(); view.playerLayer.player = player
-            w.contentView = view; window = w; surface = view
+            window = w
         }
-        surface?.image = image; surface?.imageScale = scale; surface?.framing = framing; surface?.imageOpacity = opacity
-        window?.setFrame(screen.frame, display: true)
-        window?.orderFrontRegardless()
+        guard let window else { return }
+        attachSurface(to: window)
+        window.setFrame(screen.frame, display: true); window.orderFrontRegardless()
         outputVisible = true; projectionEnabled = true; outputError = nil
         UserDefaults.standard.set(true, forKey: "sculpt.show.projectionEnabled")
     }
     func hideOutput() {
         window?.orderOut(nil); outputVisible = false; projectionEnabled = false
+        hideLocalPreview()
         UserDefaults.standard.set(false, forKey: "sculpt.show.projectionEnabled")
     }
     func fullscreen() { enableProjection() }
     var outputGeometry: (frame: NSRect, borderless: Bool, ignoresMouse: Bool, key: Bool)? {
         window.map { ($0.frame, $0.styleMask.isEmpty, $0.ignoresMouseEvents, $0.canBecomeKey) }
     }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { false }
+    var localPreviewGeometry: (frame: NSRect, titled: Bool, resizable: Bool, fullScreenAllowed: Bool, surfaceAttached: Bool)? {
+        previewWindow.map { ($0.frame, $0.styleMask.contains(.titled), $0.styleMask.contains(.resizable),
+            !$0.collectionBehavior.contains(.fullScreenNone), surface?.window === $0 && surface?.playerLayer.player === player) }
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender === previewWindow { hideLocalPreview() }
+        return false
+    }
+}
+
+final class LocalVideoWindow: NSWindow {
+    override var canBecomeMain: Bool { false }
 }
 
 final class VideoOutputWindow: NSWindow {
@@ -350,8 +434,8 @@ struct VideoPreview: View {
             Color.black
             VStack(spacing: 8) {
                 Image(systemName: "display").font(.largeTitle)
-                Text(video.preparing ? "Preparing video…" : !video.outputVisible ? "EXTERNAL PROJECTION · OFF" : video.owner == nil ? "VIDEO OUTPUT · BLACK" : "VIDEO OUTPUT · ACTIVE")
-                Text(video.outputVisible ? "Image is displayed on the external output" : "The operator display remains available").font(.caption)
+                Text(video.preparing ? "Preparing video…" : video.localPreviewVisible ? "LOCAL VIDEO WINDOW" : !video.outputVisible ? "VIDEO OUTPUT · OFF" : video.owner == nil ? "VIDEO OUTPUT · BLACK" : "VIDEO OUTPUT · ACTIVE")
+                Text(video.localPreviewVisible ? "Video plays in the resizable window" : video.outputVisible ? "Image is displayed on the external output" : "Use Show Video to open the output").font(.caption)
             }.foregroundColor(.gray)
         }
     }
@@ -376,6 +460,7 @@ struct VideoOutputSettings: View {
     private var controls: some View {
         HStack {
             Button("Refresh displays") { video.refreshDisplays() }
+            Button("Show Video") { video.showVideoOutput() }
             Button(video.projectionEnabled ? "Projection enabled" : "Enable projection") { video.enableProjection() }.disabled(video.projectionScreens.isEmpty)
             Button("Disable projection") { video.disableProjection() }
         }
@@ -386,7 +471,7 @@ struct VideoOutputSettings: View {
             displayPicker
             controls
             VideoPreview(video: video).frame(height: 160)
-            Text("The selected display is always fullscreen, with a black background and no title bar or playback controls. It stays black between cues and while SHOW is in the background. The primary and operator displays cannot be selected. With only one display, projection stays disabled and audio playback remains available.").font(.callout)
+            Text("The selected display is always fullscreen, with a black background and no title bar or playback controls. It stays black between cues and while SHOW is in the background. The primary and operator displays cannot be selected. With one display, video opens in a resizable window. With an additional display, video is projected fullscreen there; the operator display remains available.").font(.callout)
             Text("⌥⌘V disables projection from any SHOW window. Screen selection is available with visual cues stopped.").font(.caption)
             if let error = video.outputError { Text(error).foregroundColor(.orange) }
         }.padding(20).frame(width: 650).onAppear { video.refreshDisplays() }
