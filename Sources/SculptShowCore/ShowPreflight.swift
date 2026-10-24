@@ -19,6 +19,9 @@ public enum PreflightSeverity: Int, Codable, Sendable {
 }
 
 public struct PreflightIssue: Identifiable, Equatable, Sendable {
+    public init(severity: PreflightSeverity, code: String, cueID: UUID?, cueName: String, mediaPath: String?, message: String) {
+        self.severity = severity; self.code = code; self.cueID = cueID; self.cueName = cueName; self.mediaPath = mediaPath; self.message = message
+    }
     public var id: String { "\(cueID?.uuidString ?? "show"):\(code):\(mediaPath ?? "")" }
     public let severity: PreflightSeverity
     public let code: String
@@ -29,6 +32,9 @@ public struct PreflightIssue: Identifiable, Equatable, Sendable {
 }
 
 public struct ShowPreflightReport: Sendable {
+    public init(checkedCues: Int, checkedAudioFiles: Int, issues: [PreflightIssue]) {
+        self.checkedCues = checkedCues; self.checkedAudioFiles = checkedAudioFiles; self.issues = issues
+    }
     public let checkedCues: Int
     public let checkedAudioFiles: Int
     public let issues: [PreflightIssue]

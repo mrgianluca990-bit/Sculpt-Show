@@ -10,6 +10,8 @@ import SculptShowCore
 /// planned AVAudioEngine-based show engine remains necessary.
 @MainActor
 final class PlaybackEngine: ObservableObject {
+    let video = VideoPlayback()
+    private var videoFadeLevels: [UUID: Double] = [:]
     enum Phase: String {
         case waiting = "WAITING"
         case playing = "PLAYING"
@@ -468,6 +470,13 @@ final class PlaybackEngine: ObservableObject {
     }
 
     init() {
+        video.onEnded = { [weak self] id in
+            if self?.snapshots[id]?.phase == .fading { self?.stop(id, notifyRules: false) }
+            else { self?.finishNaturally(id) }
+        }
+        video.onFailure = { [weak self] id, message in
+            self?.stop(id, notifyRules: false); self?.onPlaybackFailed?(id); self?.errorMessage = message
+        }
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
@@ -594,6 +603,7 @@ final class PlaybackEngine: ObservableObject {
 
     @discardableResult
     private func playImmediately(_ cue: Cue, from requestedPosition: Double = 0) -> Bool {
+        if cue.video != nil { return playVideo(cue, from: requestedPosition) }
         if routingEnabled && (cue.hasAudio || cue.hasTimecode) { return playRouted(cue, from: requestedPosition) }
         var prepared: [AudioTrack] = []
         do {
@@ -633,7 +643,27 @@ final class PlaybackEngine: ObservableObject {
         return true
     }
 
+    private func playVideo(_ cue: Cue, from position: Double) -> Bool {
+        guard let movie = cue.video, movie.isValid, cue.elements.isEmpty,
+              FileManager.default.isReadableFile(atPath: movie.sourcePath) else {
+            errorMessage = "Video is missing, invalid or combined with unsupported audio/LTC elements."; return false
+        }
+        if let previous = video.owner { stop(previous) }
+        activeCues[cue.id] = cue
+        elapsedAtStart[cue.id] = position
+        snapshots[cue.id] = Snapshot(phase: .waiting, elapsed: 0, duration: movie.duration)
+        video.start(cue, position: position) { [weak self] duration in
+            guard let self, self.activeCues[cue.id] != nil, self.video.owner == cue.id else { return }
+            self.startedAt[cue.id] = ProcessInfo.processInfo.systemUptime
+            self.lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
+            self.snapshots[cue.id] = Snapshot(phase: .playing, elapsed: self.video.elapsed, duration: duration)
+            self.onStarted?(cue.id)
+        }
+        return true
+    }
+
     private func cueElapsed(_ id: UUID) -> Double {
+        if video.owner == id { return video.elapsed }
         if let position = routedAudio.conditionalPosition(for: id) { return position }
         let base = elapsedAtStart[id] ?? 0
         let linear = max(0, base + (startedAt[id].map { max(0, ProcessInfo.processInfo.systemUptime - $0) } ?? 0))
@@ -792,6 +822,7 @@ final class PlaybackEngine: ObservableObject {
 
     private func resume(_ id: UUID) {
         guard snapshots[id]?.phase == .paused else { return }
+        if video.owner == id { video.resume(); startedAt[id] = ProcessInfo.processInfo.systemUptime; snapshots[id]?.phase = .playing; return }
         let position = elapsedAtStart[id] ?? 0
         snapshots[id]?.phase = .playing
         if heldLTC?.owner == id { heldLTC = nil }
@@ -828,6 +859,7 @@ final class PlaybackEngine: ObservableObject {
     func pause(_ id: UUID) {
         guard snapshots[id]?.phase == .playing else { return }
         let elapsed = cueElapsed(id)
+        if video.owner == id { video.pause() }
         elapsedAtStart[id] = elapsed
         startedAt.removeValue(forKey: id)
         // Preserve the SMPTE position, but silence the physical LTC signal.
@@ -843,9 +875,11 @@ final class PlaybackEngine: ObservableObject {
 
     func stop(_ id: UUID, notifyRules: Bool = true) {
         let previous = snapshots[id]
+        if video.owner == id { video.stop() }
         pendingTokens.removeValue(forKey: id)
         pendingDeadlines.removeValue(forKey: id)
         fadeTokens.removeValue(forKey: id)
+        videoFadeLevels.removeValue(forKey: id)
         routedFadeStarts.removeValue(forKey: id)
         if routedCues.remove(id) != nil { routedAudio.stop(id) }
         for track in tracks[id] ?? [] { track.player.stop() }
@@ -867,13 +901,14 @@ final class PlaybackEngine: ObservableObject {
         if state.phase == .waiting { stop(cue.id); return }
         guard state.phase != .fading else { return }
         let seconds = overrideSeconds.map { max(0, min($0, 600)) } ?? cue.fadeOutSeconds
-        guard seconds > 0, !(tracks[cue.id] ?? []).isEmpty || routedCues.contains(cue.id) else { stop(cue.id); return }
+        guard seconds > 0, !(tracks[cue.id] ?? []).isEmpty || routedCues.contains(cue.id) || video.owner == cue.id else { stop(cue.id); return }
         let token = UUID()
+        if video.owner == cue.id { videoFadeLevels[cue.id] = video.opacity }
         routedAudio.extendCueTimeline(cue.id, duration: seconds)
         fadeTokens[cue.id] = token
         snapshots[cue.id]?.phase = .fading
         onStopped?(cue.id)
-        if routedCues.contains(cue.id) {
+        if routedCues.contains(cue.id) || video.owner == cue.id {
             routedFadeStarts[cue.id] = (ProcessInfo.processInfo.systemUptime, seconds)
         }
         for track in tracks[cue.id] ?? [] where track.started {
@@ -924,6 +959,7 @@ final class PlaybackEngine: ObservableObject {
                     cue.elements[index].sourcePath = next
                 }
             }
+            if let path = cue.video?.sourcePath, let next = paths[path] { cue.video?.sourcePath = next }
             activeCues[id] = cue
         }
     }
@@ -942,6 +978,11 @@ final class PlaybackEngine: ObservableObject {
         elapsedAtStart[id] = position
         lastMarkerPosition[id] = position
         snapshots[id]?.elapsed = position
+        if video.owner == id {
+            video.seek(position)
+            if let cue = activeCues[id] { video.setOpacity(CueVideo.opacity(elapsed: position, duration: state.duration, fadeIn: cue.fadeInSeconds, fadeOut: cue.fadeOutSeconds)) }
+            return
+        }
         if state.phase == .playing {
             // Every stem must be armed BEFORE the same future hardware
             // timestamp. Zero lead creates drift at 48-64 active voices.
@@ -1026,6 +1067,9 @@ final class PlaybackEngine: ObservableObject {
             if next != snapshots { snapshots = next }
             updateGeneratedLTC()
         }
+        if let id = video.owner, let failure = video.playbackError {
+            stop(id, notifyRules: false); onPlaybackFailed?(id); errorMessage = failure
+        }
         if let id = routedAudio.failedConditionalCue() {
             stop(id, notifyRules: false)
             onPlaybackFailed?(id)
@@ -1044,6 +1088,9 @@ final class PlaybackEngine: ObservableObject {
             if snapshot.phase == .fading {
                 snapshot.elapsed = min(snapshot.duration, elapsed)
                 stage(id, snapshot)
+                if video.owner == id, let fade = routedFadeStarts[id] {
+                    video.setOpacity(videoFadeLevels[id, default: 1] * max(0, 1 - (ProcessInfo.processInfo.systemUptime - fade.0) / max(0.001, fade.1)))
+                }
                 if routedCues.contains(id) { refreshAudio(for: id, elapsed: elapsed) }
                 continue
             }
@@ -1052,7 +1099,7 @@ final class PlaybackEngine: ObservableObject {
             emitCrossedMarkers(id, at: elapsed, duration: snapshot.duration)
             guard startedAt[id] == anchor, snapshots[id]?.phase == snapshot.phase else { continue }
             if elapsed >= snapshot.duration {
-                if activeCues[id]?.loop == true && snapshot.phase == .playing {
+                if activeCues[id]?.video == nil && activeCues[id]?.loop == true && snapshot.phase == .playing {
                     // Preserve overshoot so the loop does not drift by
                     // a full refresh-timer interval on every repetition.
                     let offset = min(max(0, elapsed - snapshot.duration),
@@ -1068,6 +1115,9 @@ final class PlaybackEngine: ObservableObject {
                     finishNaturally(id)
                 }
                 continue
+            }
+            if video.owner == id, let cue = activeCues[id] {
+                video.setOpacity(CueVideo.opacity(elapsed: elapsed, duration: snapshot.duration, fadeIn: cue.fadeInSeconds, fadeOut: cue.fadeOutSeconds))
             }
             snapshot.elapsed = elapsed
             stage(id, snapshot)

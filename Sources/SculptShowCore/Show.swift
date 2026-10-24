@@ -141,6 +141,7 @@ public struct Show: Codable, Equatable, Sendable {
     public mutating func appendAudio(_ urls: [URL], to cueID: UUID) -> Bool {
         guard let li = cueLists.firstIndex(where: { $0.cues.contains(where: { $0.id == cueID }) }),
               let ci = cueLists[li].cues.firstIndex(where: { $0.id == cueID }) else { return false }
+        guard cueLists[li].cues[ci].video == nil else { return false }
         let audio = urls.filter(\.isFileURL).map(CueElement.audio)
         guard !audio.isEmpty else { return false }
         cueLists[li].cues[ci].elements.append(contentsOf: audio)
@@ -416,6 +417,7 @@ public enum CueTint: String, CaseIterable, Codable, Sendable {
 }
 
 public struct Cue: Identifiable, Codable, Equatable, Sendable {
+    public var video: CueVideo? = nil
     public var triggers = CueTriggers()
     public var id: UUID
     public var name: String
@@ -439,7 +441,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     /// This belongs to the cue, not the files inside it.
     public var durationSeconds: Double
 
-    public var isEmpty: Bool { elements.isEmpty }
+    public var isEmpty: Bool { elements.isEmpty && video == nil }
     public var hasAudio: Bool { elements.contains { $0.kind == .audio } }
     public var audioElements: [CueElement] { elements.filter { $0.kind == .audio } }
 
@@ -493,6 +495,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
 
     /// The app uses this for the effective timeline length; source lengths are measured at playback.
     public func timelineLength(audioEnds: [Double]) -> Double {
+        if let video { return video.duration }
         if durationMode == .fixed { return max(0, min(86400, durationSeconds)) }
         return max(audioEnds.max() ?? 0, 0)
     }
@@ -526,7 +529,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case triggers
+        case triggers, video
         case id, name, tint, elements, markers, durationMode, gain, fadeOutSeconds, enabled
         case fadeInSeconds, loop, followOnFinish, preWaitSeconds, rules, ignoreParentRules
         case durationSeconds
@@ -556,6 +559,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         if let contents = try c.decodeIfPresent([CueElement].self, forKey: .elements) {
             elements = contents
         }
+        video = try c.decodeIfPresent(CueVideo.self, forKey: .video)
+        if let video, !video.isValid { throw DecodingError.dataCorruptedError(forKey: .video, in: c, debugDescription: "Invalid video settings") }
         triggers = try c.decodeIfPresent(CueTriggers.self, forKey: .triggers) ?? CueTriggers()
         if let error = triggers.validationError { throw DecodingError.dataCorruptedError(forKey: .triggers, in: c, debugDescription: error) }
         tint = try c.decodeIfPresent(CueTint.self, forKey: .tint) ?? .none
@@ -568,6 +573,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(video, forKey: .video)
         try c.encode(triggers, forKey: .triggers)
         try c.encode(tint, forKey: .tint)
         try c.encode(elements, forKey: .elements)

@@ -1,5 +1,6 @@
 import AppKit
 import AVFAudio
+import AVFoundation
 import Foundation
 import SculptShowCore
 import UniformTypeIdentifiers
@@ -405,6 +406,46 @@ final class ShowStore: ObservableObject {
         }
     }
 
+    func importVideo(to listID: UUID) {
+        let panel = NSOpenPanel(); panel.title = "Import silent video cue"
+        panel.allowedContentTypes = [.movie]; panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true; panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addVideo(url, to: listID)
+    }
+    func addVideo(_ url: URL, to listID: UUID) {
+        guard pendingAudioImports == 0, !isLoadingProject else { return }
+        let generation = showOpenGeneration
+        pendingAudioImports += 1; audioImportProgress = "Video"
+        Task {
+            defer { pendingAudioImports -= 1; audioImportProgress = "" }
+            do {
+                let (_, duration) = try await VideoPlayback.silentAsset(url)
+                guard generation == showOpenGeneration, show.cueLists.contains(where: { $0.id == listID }) else { return }
+                let directory: URL
+                if let documentURL, ShowProjectPackage.isPackaged(documentURL) {
+                    directory = documentURL.deletingLastPathComponent().appendingPathComponent("Video Files")
+                } else {
+                    directory = FileManager.default.temporaryDirectory.appendingPathComponent("Sculpt Video Imports")
+                }
+                let copy = directory.appendingPathComponent(UUID().uuidString + "-" + url.lastPathComponent)
+                try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(at: url, to: copy)
+                }.value
+                guard generation == showOpenGeneration else { try? FileManager.default.removeItem(at: copy); return }
+                var updated = show
+                guard let li = updated.cueLists.firstIndex(where: { $0.id == listID }) else { return }
+                var cue = Cue(name: url.deletingPathExtension().lastPathComponent, fadeOutSeconds: 1, fadeInSeconds: 1, durationSeconds: duration)
+                cue.video = CueVideo(sourcePath: copy.path, duration: duration)
+                updated.cueLists[li].cues.append(cue); commit(updated); select(cue.id, in: listID)
+            } catch { errorMessage = "Video import failed: \(error.localizedDescription)" }
+        }
+    }
+    func setVideoScale(_ value: Double, cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) { $0.video?.scale = min(1, max(0.1, value)) }
+    }
+
     func importAudio(to listID: UUID) {
         let panel = NSOpenPanel()
         panel.message = "Import audio as new cue containers"
@@ -532,6 +573,7 @@ final class ShowStore: ObservableObject {
 
     func attachAudioURLs(_ urls: [URL], to cueID: UUID, in listID: UUID,
                          using playback: PlaybackEngine) {
+        guard show.cue(cueID)?.video == nil else { errorMessage = "Use a separate audio cue for the soundtrack."; return }
         let files = urls.filter(\.isFileURL)
         guard !files.isEmpty else { return }
         guard pendingAudioImports == 0 else {
@@ -970,6 +1012,7 @@ final class ShowStore: ObservableObject {
     }
 
     func addTimecode(to cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        guard show.cue(cueID)?.video == nil else { errorMessage = "Video cues cannot contain LTC elements."; return }
         // Attaching LTC is non-destructive; a running cue adopts it on next GO.
         editCue(cueID, list: listID) { cue in
             if cue.elements.contains(where: { $0.kind == .timecode }) { return }
@@ -1851,6 +1894,7 @@ final class ShowStore: ObservableObject {
         for list in old.cueLists {
             for cue in list.cues {
                 guard let next = saved.cue(cue.id) else { continue }
+                if let old = cue.video?.sourcePath, let new = next.video?.sourcePath, old != new { paths[old] = new }
                 for element in cue.audioElements {
                     if let changed = next.audioElements.first(where: { $0.id == element.id }),
                        changed.sourcePath != element.sourcePath {
@@ -1870,6 +1914,7 @@ final class ShowStore: ObservableObject {
             var model = item.show
             for li in model.cueLists.indices {
                 for ci in model.cueLists[li].cues.indices {
+                    if let path = model.cueLists[li].cues[ci].video?.sourcePath, let next = paths[path] { model.cueLists[li].cues[ci].video?.sourcePath = next }
                     for ei in model.cueLists[li].cues[ci].elements.indices {
                         let path = model.cueLists[li].cues[ci].elements[ei].sourcePath
                         if let next = paths[path] { model.cueLists[li].cues[ci].elements[ei].sourcePath = next }

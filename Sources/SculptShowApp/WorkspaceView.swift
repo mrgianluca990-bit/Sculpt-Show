@@ -792,6 +792,20 @@ struct WorkspaceView: View {
                         if inspectorTab == "GENERAL" {
                             VStack(alignment: .leading, spacing: 12) {
                         CueTriggerEditor(cue: cue, listID: listID).id(cue.id)
+                        if let movie = cue.video {
+                            Text("VIDEO · SILENT").font(.headline)
+                            VideoPreview(video: playback.video).frame(height: 130)
+                            HStack {
+                                Button("Show video output") { do { try playback.video.showOutput() } catch { playback.errorMessage = error.localizedDescription } }
+                                Button("Fullscreen") { playback.video.fullscreen() }
+                            }
+                            Text("Image size · \(Int(movie.scale * 100)) %")
+                            Slider(value: Binding(get: { store.show.cue(cue.id)?.video?.scale ?? movie.scale }, set: {
+                                store.setVideoScale($0, cueID: cue.id, in: listID)
+                                if playback.video.owner == cue.id { playback.video.setScale($0) }
+                            }), in: 0.1...1)
+                            Text("Embedded audio off · black at end").font(.caption)
+                        }
                         Divider()
                         HStack {
                             Button { store.duplicateCue(cue.id, in: listID) } label: {
@@ -815,6 +829,7 @@ struct WorkspaceView: View {
                         Divider()
                         CueColorPicker(cue: cue, listID: listID)
                                 Divider()
+                        if cue.video == nil {
                         HStack {
                             Text("GAIN")
                             Spacer()
@@ -828,6 +843,7 @@ struct WorkspaceView: View {
                             set: { store.setGain(cue.id, in: listID, to: $0); playback.setGain($0, for: cue.id) }
                         ), in: 0...1)
                         .tint(Skin.gold)
+                        }
 
                         Divider()
                         HStack {
@@ -845,8 +861,11 @@ struct WorkspaceView: View {
                         .tint(Skin.gold)
                         .help("Delay before a cue starts after GO. STOP cancels a waiting cue.")
                                 Divider()
-                        CueTimingEditor(cue: cue, listID: listID)
-                            .id(cue.id) // independent draft + focus for every selected cue
+                        if let movie = cue.video {
+                            Text("MOVIE DURATION · \(movie.duration, specifier: "%.2f") s").font(.caption)
+                        } else {
+                            CueTimingEditor(cue: cue, listID: listID).id(cue.id)
+                        }
                                 Divider()
                         HStack {
                             Text("FADE OUT")
@@ -882,6 +901,7 @@ struct WorkspaceView: View {
                         ))
                         .toggleStyle(.switch)
                         .help("Repeatedly play this audio file until stopped manually")
+                        .disabled(cue.video != nil)
 
                         Toggle("Auto-follow next cue", isOn: Binding(
                             get: { store.show.cue(cue.id)?.followOnFinish ?? cue.followOnFinish },
@@ -1018,7 +1038,7 @@ struct WorkspaceView: View {
                 Text("NORMALIZING CUE LIST…")
             }
             Spacer()
-            Text("SCULPT SHOW 0.18.2")
+            Text("SCULPT SHOW 0.19.0")
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)
@@ -1257,6 +1277,7 @@ private struct CueListPanel: View {
                     } label: {
                         Label("AUDIO", systemImage: "waveform.badge.plus")
                     }
+                    Button { store.importVideo(to: list.id) } label: { Label("VIDEO", systemImage: "film") }
                     Button {
                         store.addEmptyCue(to: list.id)
                     } label: {
@@ -1629,7 +1650,7 @@ private struct CueRow: View {
 
     private var playbackLabel: String {
         guard let state else {
-            let type = cue.isEmpty ? "RULES / EMPTY" : cue.hasAudio ? "AUDIO ×\(cue.audioElements.count)" : "TIMECODE"
+            let type = cue.video != nil ? "VIDEO · SILENT" : cue.isEmpty ? "RULES / EMPTY" : cue.hasAudio ? "AUDIO ×\(cue.audioElements.count)" : "TIMECODE"
             let length = cue.durationMode == .fixed ? String(format: "%.1fs", cue.durationSeconds) : "SOURCE"
             return "\(type)  ·  \(length)"
         }

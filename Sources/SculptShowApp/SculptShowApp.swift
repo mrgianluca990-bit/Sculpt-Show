@@ -103,7 +103,7 @@ struct SculptShowApp: App {
             }
             CommandGroup(after: .newItem) {
                 Button("Receive DAW Publication…") { showStore.chooseDAWPublication(using: playback) }
-                Button("Audio/MIDI Setup…") { showingAudioMIDISetup = true }
+                Button("Audio/MIDI/Video Setup…") { showingAudioMIDISetup = true }
                     .keyboardShortcut(",", modifiers: [.command, .option])
             }
             CommandGroup(replacing: .saveItem) {

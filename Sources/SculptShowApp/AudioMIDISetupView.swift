@@ -11,7 +11,7 @@ struct AudioMIDISetupView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("AUDIO / MIDI SETUP")
+                Text("AUDIO / MIDI / VIDEO SETUP")
                     .font(.system(size: 16, weight: .bold, design: .monospaced))
                 Spacer()
                 Button("Close") { dismiss() }
@@ -23,7 +23,7 @@ struct AudioMIDISetupView: View {
                 Text("MIDI Control").tag(1)
                 Text("Output Patch").tag(2)
                 Text("OSC Control").tag(3)
-                Text("Backup Check").tag(4)
+                Text("Video Output").tag(4)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
@@ -37,7 +37,7 @@ struct AudioMIDISetupView: View {
             } else if tab == 3 {
                 OSCControlSettings()
             } else {
-                BackupCheckView()
+                VideoOutputSettings(video: playback.video)
             }
         }
         .frame(width: 690)
