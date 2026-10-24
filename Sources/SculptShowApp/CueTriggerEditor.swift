@@ -15,15 +15,29 @@ struct CueTriggerEditor: View {
     let cue: Cue
     let listID: UUID
     @State private var alias = ""
-    @State private var expanded = false
+    @State private var expanded = true
+    @State private var timecode = "00:00:00:00"
     private var settings: CueTriggers { store.show.cue(cue.id)?.triggers ?? cue.triggers }
     private func update(_ change: (inout CueTriggers) -> Void) {
         var next = settings; change(&next); store.setCueTriggers(next, cueID: cue.id, using: midi)
     }
     var body: some View {
-        DisclosureGroup("CUE TRIGGERS · FIRE", isExpanded: $expanded) {
+        VStack(alignment: .leading, spacing: 12) {
+        DisclosureGroup("RECEIVE → CUE GO · TIMECODE / MIDI / OSC", isExpanded: $expanded) {
         VStack(alignment: .leading, spacing: 10) {
             Text("Start this cue directly, independently of the selected cue. Saved with the show.").font(.caption).foregroundStyle(.secondary)
+            Toggle("Receive LTC timecode", isOn: Binding(get: { settings.timecode != nil }, set: { enabled in update { $0.timecode = enabled ? CueTimecodeTrigger(address: timecode) : nil } }))
+            if let trigger = settings.timecode {
+                HStack {
+                    TextField("HH:MM:SS:FF", text: $timecode).textFieldStyle(.roundedBorder)
+                    Button("Set") { update { $0.timecode?.address = timecode } }
+                }
+                Picker("LTC FPS", selection: Binding(get: { trigger.rate }, set: { rate in update { $0.timecode?.rate = rate } })) {
+                    ForEach(LTCFrameRate.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                Text("Select/start the LTC input and arm cue triggers in the Timecode panel. Incoming cue GO is independent of LTC output elements.").font(.caption2).foregroundStyle(.secondary)
+            }
+            Divider()
             HStack {
                 Text("KEY")
                 CueKeyRecorder(label: settings.key?.label ?? "Click and press a shortcut") { key in update { $0.key = key } }
@@ -58,7 +72,9 @@ struct CueTriggerEditor: View {
             Text("OSC receiver must be enabled in Audio/MIDI Setup → OSC Control. Duplicate key/MIDI/OSC assignments are rejected.").font(.caption2).foregroundStyle(.secondary)
         }
         }
-        .onAppear { alias = settings.oscAlias; midi.refresh() }
+        CueMessageEditor(cueID: cue.id)
+        }
+        .onAppear { alias = settings.oscAlias; timecode = settings.timecode?.address ?? "00:00:00:00"; midi.refresh() }
         .onDisappear { if midi.learningCueID == cue.id { midi.learningCueID = nil } }
         .onChange(of: expanded) { if !$0 && midi.learningCueID == cue.id { midi.learningCueID = nil } }
     }

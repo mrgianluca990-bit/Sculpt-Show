@@ -14,7 +14,7 @@ struct VideoTransformEditor: View {
             HStack {
                 Text(name).font(.caption)
                 Spacer()
-                TextField("Percent", value: Binding(get: { binding.wrappedValue * 100 }, set: { binding.wrappedValue = $0 / 100 }), format: .number.precision(.fractionLength(0...1)))
+                TextField("Percent", value: Binding(get: { binding.wrappedValue * 100 }, set: { binding.wrappedValue = $0 / 100 }), format: .number.precision(.fractionLength(0...2)))
                     .frame(width: 70).textFieldStyle(.roundedBorder)
                 Text("%").font(.caption)
             }
@@ -25,22 +25,20 @@ struct VideoTransformEditor: View {
         if let movie {
             VStack(alignment: .leading, spacing: 10) {
                 Text("VIDEO TRANSFORM").font(.caption.bold())
-                Picker("Framing", selection: Binding(get: { movie.framing ?? .fit }, set: {
+                Picker("Transform", selection: Binding(get: { movie.framing ?? .fit }, set: {
                     store.setVideoFraming($0, cueID: cueID, in: listID); refresh()
                 })) { ForEach(VideoFraming.allCases, id: \.self) { Text($0.label).tag($0) } }
                 row("ZOOM", value: movie.scale, range: 0.1...4) { store.setVideoScale($0, cueID: cueID, in: listID) }
                 row("HORIZONTAL · →", value: movie.offsetX ?? 0, range: -2...2) { store.setVideoPosition(x: $0, cueID: cueID, in: listID) }
                 row("VERTICAL · ↑", value: movie.offsetY ?? 0, range: -2...2) { store.setVideoPosition(y: $0, cueID: cueID, in: listID) }
                 HStack {
-                    Button("←") { store.setVideoPosition(x: (movie.offsetX ?? 0) - 0.01, cueID: cueID, in: listID); refresh() }
-                    Button("→") { store.setVideoPosition(x: (movie.offsetX ?? 0) + 0.01, cueID: cueID, in: listID); refresh() }
-                    Button("↑") { store.setVideoPosition(y: (movie.offsetY ?? 0) + 0.01, cueID: cueID, in: listID); refresh() }
-                    Button("↓") { store.setVideoPosition(y: (movie.offsetY ?? 0) - 0.01, cueID: cueID, in: listID); refresh() }
+                    Button("←") { store.setVideoPosition(x: (movie.offsetX ?? 0) - 0.0001, cueID: cueID, in: listID); refresh() }
+                    Button("→") { store.setVideoPosition(x: (movie.offsetX ?? 0) + 0.0001, cueID: cueID, in: listID); refresh() }
+                    Button("↑") { store.setVideoPosition(y: (movie.offsetY ?? 0) + 0.0001, cueID: cueID, in: listID); refresh() }
+                    Button("↓") { store.setVideoPosition(y: (movie.offsetY ?? 0) - 0.0001, cueID: cueID, in: listID); refresh() }
                     Button("Center") { store.setVideoPosition(x: 0, y: 0, cueID: cueID, in: listID); refresh() }
-                }.controlSize(.small).help("Move by 1% of the output canvas")
-                Toggle("Lock original proportions", isOn: Binding(get: { movie.keepsAspectRatio }, set: {
-                    store.setVideoAspectLock($0, cueID: cueID, in: listID); refresh()
-                }))
+                }.controlSize(.small).help("Move by 0.01% of the output canvas")
+                Text(movie.framing == .fill ? "Crop: width and height resize the crop area; the image keeps its proportions." : movie.framing == .stretch ? "Stretch: width and height deform the image independently." : "Keep proportions: width and height move together.").font(.caption2).foregroundStyle(.secondary)
                 row("WIDTH", value: movie.widthScale ?? 1, range: 0.1...4) { store.setVideoDimensions(width: $0, cueID: cueID, in: listID) }
                 row("HEIGHT", value: movie.heightScale ?? 1, range: 0.1...4) { store.setVideoDimensions(height: $0, cueID: cueID, in: listID) }
                 Button("Reset transform") { store.resetVideoTransform(cueID, in: listID); refresh() }

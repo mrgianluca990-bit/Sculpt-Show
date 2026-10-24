@@ -241,6 +241,10 @@ struct WorkspaceView: View {
                 await playback.startRoutingAutomatically()
                 store.requestSessionAudioPreparation(using: playback)
             }
+            timecodeReader.showProvider = { [weak store] in store?.show }
+            timecodeReader.onCue = { [weak store, weak playback] id in
+                guard let store, let playback else { return }; store.fireTriggeredCue(id, using: playback)
+            }
             midi.isCueTriggerAssigned = { [weak store] trigger in
                 store?.show.cueLists.flatMap(\.cues).contains(where: { $0.triggers.midi == trigger }) == true
             }
@@ -271,8 +275,9 @@ struct WorkspaceView: View {
                 guard let store, let playback else { return }
                 store.didFinishNaturally(id, using: playback)
             }
-            playback.onStarted = { [weak store, weak playback] id in
+            playback.onStarted = { [weak store, weak playback, weak midi] id in
                 guard let store, let playback else { return }
+                if let cue = store.show.cue(id), let midi { store.sendCueMessages(cue, using: midi) }
                 store.didStartCue(id)
                 store.handleRuleEvent(.starting, source: id, using: playback)
             }
@@ -286,6 +291,8 @@ struct WorkspaceView: View {
                 store.handleRuleEvent(.stopping, source: id, using: playback)
             }
         }
+        .onChange(of: store.documentURL) { _ in timecodeReader.triggersArmed = false }
+        .onChange(of: store.isLoadingProject) { loading in if loading { timecodeReader.triggersArmed = false } }
         .onChange(of: store.show) { next in
             playback.applyCueListTrims(next)
             store.requestSessionAudioPreparation(using: playback)

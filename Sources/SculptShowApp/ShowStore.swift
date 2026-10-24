@@ -536,7 +536,12 @@ final class ShowStore: ObservableObject {
     }
 
     func setVideoFraming(_ value: VideoFraming, cueID: UUID, in listID: UUID) {
-        editCue(cueID, list: listID) { $0.video?.framing = value; if value == .stretch { $0.video?.lockAspectRatio = false } }
+        editCue(cueID, list: listID) { cue in
+            guard var movie = cue.video else { return }
+            movie.framing = value; movie.lockAspectRatio = value == .fit
+            if value == .fit { movie.heightScale = movie.widthScale ?? 1 }
+            cue.video = movie
+        }
     }
     func setImageDuration(_ value: Double, cueID: UUID, in listID: UUID) {
         guard value.isFinite, show.cue(cueID)?.video?.isImage == true else { return }

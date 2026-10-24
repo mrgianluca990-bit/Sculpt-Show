@@ -27,6 +27,8 @@ final class MIDIControl: ObservableObject {
         func hash(into hasher: inout Hasher) { hasher.combine(id) }
     }
 
+    @Published private(set) var destinations: [Source] = []
+    private var outputPort: MIDIPortRef = 0
     @Published private(set) var sources: [Source] = []
     @Published private(set) var selectedID: MIDIUniqueID?
     @Published private(set) var mappings: [LiveCommand: MIDITrigger] = [:]
@@ -71,7 +73,28 @@ final class MIDIControl: ObservableObject {
         if portStatus != noErr { errorMessage = "CoreMIDI input failed (\(portStatus))" }
     }
 
+    func send(_ message: CueMIDIMessage) -> String? {
+        guard message.isValid else { return "Invalid MIDI output message" }
+        if outputPort == 0 { _ = MIDIOutputPortCreate(client, "Sculpt Show Cue Out" as CFString, &outputPort) }
+        guard outputPort != 0, let target = destinations.first(where: { $0.id == message.destination }) else { return "MIDI output destination is unavailable" }
+        let bytes = message.bytes
+        var list = MIDIPacketList()
+        let result: OSStatus = withUnsafeMutablePointer(to: &list) { ptr in
+            let first = MIDIPacketListInit(ptr)
+            _ = bytes.withUnsafeBufferPointer { MIDIPacketListAdd(ptr, MemoryLayout<MIDIPacketList>.size, first, 0, bytes.count, $0.baseAddress!) }
+            return MIDISend(outputPort, target.endpoint, ptr)
+        }
+        return result == noErr ? nil : "MIDI send failed (\(result))"
+    }
+
     func refresh() {
+        destinations = (0..<MIDIGetNumberOfDestinations()).compactMap { index -> Source? in
+            let endpoint = MIDIGetDestination(index); guard endpoint != 0 else { return nil }
+            var id: MIDIUniqueID = 0; MIDIObjectGetIntegerProperty(endpoint, kMIDIPropertyUniqueID, &id)
+            var name: Unmanaged<CFString>?
+            MIDIObjectGetStringProperty(endpoint, kMIDIPropertyDisplayName, &name)
+            return Source(id: id, endpoint: endpoint, name: name?.takeRetainedValue() as String? ?? "MIDI Out \(index + 1)")
+        }
         sources = (0..<MIDIGetNumberOfSources()).compactMap { index -> Source? in
             let candidate = MIDIGetSource(index)
             guard candidate != 0 else { return nil }

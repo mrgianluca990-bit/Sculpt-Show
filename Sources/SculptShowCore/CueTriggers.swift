@@ -19,12 +19,19 @@ public struct CueKeyTrigger: Codable, Hashable, Sendable {
     }
 }
 public struct CueTriggers: Codable, Equatable, Sendable {
+    public var timecode: CueTimecodeTrigger?
+    public var midiMessages: [CueMIDIMessage]?
+    public var oscMessages: [CueOSCMessage]?
     public var midi: CueMIDITrigger?
     public var key: CueKeyTrigger?
     public var oscEnabled = true
     public var oscAlias = "" // full literal address below /sculpt/trigger/
     public init() {}
     public var validationError: String? {
+        if let timecode, LTCTimecode(text: timecode.address, rate: timecode.rate) == nil { return "Invalid incoming timecode address for the selected FPS." }
+        if (midiMessages?.count ?? 0) > 16 || (oscMessages?.count ?? 0) > 16 { return "Maximum 16 MIDI and 16 OSC messages per cue." }
+        if midiMessages?.contains(where: { !$0.isValid }) == true { return "Invalid MIDI output destination or message." }
+        if oscMessages?.contains(where: { !$0.isValid }) == true { return "Invalid OSC output. Use an IPv4 address, port 1–65535 and a literal OSC path." }
         if let midi, !(0...15).contains(midi.channel) || ![0x90,0xB0].contains(midi.status) || !(0...127).contains(midi.number) { return "Invalid MIDI Note/CC trigger" }
         if let key, !key.isValid { return "This key is reserved for transport/editing. Choose another key or add Option/Control." }
         if !oscAlias.isEmpty {

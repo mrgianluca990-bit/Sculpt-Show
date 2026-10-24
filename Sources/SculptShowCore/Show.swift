@@ -155,7 +155,10 @@ public struct Show: Codable, Equatable, Sendable {
               let cueIndex = cueLists[listIndex].cues.firstIndex(where: { $0.id == cueID }) else { return nil }
         var copy = cueLists[listIndex].cues[cueIndex]
         copy.id = UUID()
+        let outputs = copy.triggers
         copy.triggers = CueTriggers()
+        copy.triggers.midiMessages = outputs.midiMessages
+        copy.triggers.oscMessages = outputs.oscMessages
         copy.name += " copy"
         copy.elements = copy.elements.map { element in
             var cloned = element

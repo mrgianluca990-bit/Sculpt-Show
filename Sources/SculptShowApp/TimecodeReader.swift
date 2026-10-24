@@ -27,6 +27,21 @@ final class LTCInputReader: ObservableObject {
     @Published private(set) var received = "--:--:--:--"
     @Published var errorMessage: String?
 
+    @Published var triggersArmed = false { didSet { scheduler.reset() } }
+    @Published private(set) var lastTrigger = "No timecode cue fired"
+    var showProvider: (() -> Show?)?
+    var onCue: ((UUID) -> Void)?
+    private var scheduler = TimecodeCueScheduler()
+
+    func accept(_ address: LTCTimecode, at stamp: Double = ProcessInfo.processInfo.systemUptime) {
+        received = address.display; locked = true; lastValid = Date()
+        guard triggersArmed, let show = showProvider?() else { return }
+        for id in scheduler.consume(address, at: stamp, in: show) {
+            lastTrigger = "\(show.cue(id)?.name ?? "Cue") · \(address.display)"
+            onCue?(id)
+        }
+    }
+
     private var engine: AVAudioEngine?
     private var decoder: OpaquePointer?
     private var watchdog: Timer?
@@ -42,7 +57,7 @@ final class LTCInputReader: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 if let last = self.lastValid, Date().timeIntervalSince(last) > 0.7 {
-                    self.locked = false
+                    self.locked = false; self.scheduler.reset()
                 }
             }
         }
@@ -95,6 +110,7 @@ final class LTCInputReader: ObservableObject {
     func start() {
         guard !running else { return }
         errorMessage = nil
+        scheduler.reset()
         guard let device = devices.first(where: { $0.id == pickedID }),
               (1...device.channels).contains(channel) else {
             errorMessage = "Choose a connected Core Audio INPUT and channel first."
@@ -158,11 +174,9 @@ final class LTCInputReader: ObservableObject {
                                        UInt32(ptr.count), &address)
         }
         if decoded != 0 {
-            received = String(format: "%02d:%02d:%02d%@%02d", address.hours,
-                address.minutes, address.seconds, address.drop_frame != 0 ? ";" : ":",
-                address.frames)
-            locked = true
-            lastValid = Date()
+            let text = String(format: "%02d:%02d:%02d%@%02d", address.hours,
+                address.minutes, address.seconds, address.drop_frame != 0 ? ";" : ":", address.frames)
+            if let timecode = LTCTimecode(text: text, rate: rate) { accept(timecode) }
         }
     }
 
@@ -175,6 +189,8 @@ final class LTCInputReader: ObservableObject {
         if let decoder { sculpt_ltc_decoder_destroy(decoder) }
         decoder = nil
         running = false
+        triggersArmed = false
+        scheduler.reset()
         locked = false
         lastValid = nil
     }
@@ -233,6 +249,9 @@ struct TimecodeReaderView: View {
                 Text(reader.locked ? "LTC LOCKED" : "WAITING FOR LTC")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundColor(reader.locked ? .green : .orange)
+                Toggle("ARM CUE TIMECODE TRIGGERS", isOn: $reader.triggersArmed)
+                Text("LTC input → cue GO at the address set in General. Forward crossings only; no continuous chase. Stop input disarms triggers.").font(.caption2).foregroundStyle(.secondary)
+                Text(reader.lastTrigger).font(.caption2)
                 HStack(spacing: 5) {
                     Picker("INPUT", selection: $reader.pickedID) {
                         Text("Select device").tag(AudioDeviceID(0))
@@ -262,7 +281,7 @@ struct TimecodeReaderView: View {
                         if reader.running { reader.stop() } else { reader.start() }
                     }
                     .controlSize(.small)
-                    .disabled(!playback.snapshots.isEmpty)
+                    .disabled(!reader.running && !playback.snapshots.isEmpty)
                     .help("Configure LTC INPUT before playing cues; changing capture devices during a show is locked for safety")
                     Button { reader.refreshDevices() } label: {
                         Image(systemName: "arrow.clockwise")

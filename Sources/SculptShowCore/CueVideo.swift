@@ -4,7 +4,7 @@ import Foundation
 public enum VideoFraming: String, Codable, CaseIterable, Sendable {
     case fit, fill, stretch
     public var label: String {
-        switch self { case .fit: return "Keep proportions"; case .fill: return "Fill / crop"; case .stretch: return "Stretch" }
+        switch self { case .fit: return "Keep proportions"; case .fill: return "Crop"; case .stretch: return "Stretch" }
     }
     public func frame(source: CGSize, in canvas: CGRect) -> CGRect {
         guard source.width > 0, source.height > 0 else { return canvas }
@@ -46,7 +46,9 @@ public struct CueVideo: Codable, Equatable, Sendable {
     }
     public func contentFrame(source: CGSize, in canvas: CGRect) -> CGRect {
         let base = (framing ?? .fit).frame(source: source, in: canvas)
-        let sx = scale * (widthScale ?? 1), sy = scale * (heightScale ?? 1)
+        // Crop changes the mask, never the source aspect ratio.
+        let sx = scale * (framing == .fill ? 1 : (widthScale ?? 1))
+        let sy = scale * (framing == .fill ? 1 : (heightScale ?? 1))
         return CGRect(x: canvas.midX + (base.minX - canvas.midX) * sx + (offsetX ?? 0) * canvas.width,
                       y: canvas.midY + (base.minY - canvas.midY) * sy + (offsetY ?? 0) * canvas.height,
                       width: base.width * sx, height: base.height * sy)
