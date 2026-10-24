@@ -6,6 +6,7 @@ struct SculptShowApp: App {
     @StateObject private var showStore = ShowStore()
     @StateObject private var playback = PlaybackEngine()
     @StateObject private var midi = MIDIControl()
+    @StateObject private var osc = OSCControl()
     @State private var showingAudioMIDISetup = false
 
     /// Text editors own Cmd-Z/Cmd-Shift-Z while the insertion cursor is active.
@@ -26,10 +27,25 @@ struct SculptShowApp: App {
                 .environmentObject(playback)
                 .environmentObject(midi)
                 .preferredColorScheme(.dark)
+                .onAppear {
+                    osc.handle = { [weak showStore, weak playback] command in
+                        guard let showStore, let playback else { return "Show unavailable" }
+                        return showStore.performOSC(command, using: playback)
+                    }
+                    showStore.onSavedMediaMoved = { [weak playback] paths in
+                        playback?.remapSavedMedia(paths)
+                    }
+                    showStore.audioOutputCount = { [weak playback] in
+                        let count = playback?.programOutputCount ?? 0
+                        return count > 0 ? count : 2
+                    }
+                }
                 .sheet(isPresented: $showingAudioMIDISetup) {
                     AudioMIDISetupView()
+                        .environmentObject(osc)
                         .environmentObject(playback)
                         .environmentObject(midi)
+                        .environmentObject(showStore)
                 }
                 .onChange(of: Set(playback.snapshots.keys)) { _ in
                     showStore.applyPendingDAWPublications(using: playback)
@@ -37,11 +53,23 @@ struct SculptShowApp: App {
                 .onChange(of: showStore.isLoadingProject) { loading in
                     playback.projectTransitionInProgress = loading
                     showStore.stopAll(using: playback)
-                    if !loading { showStore.applyPendingDAWPublications(using: playback) }
+                    if !loading {
+                        showStore.requestSessionAudioPreparation(using: playback)
+                        showStore.applyPendingDAWPublications(using: playback)
+                    }
                 }
-                .onChange(of: showStore.pendingAudioImports) { _ in showStore.applyPendingDAWPublications(using: playback) }
-                .onChange(of: showStore.normalizingCueID) { _ in showStore.applyPendingDAWPublications(using: playback) }
-                .onChange(of: showStore.normalizingListID) { _ in showStore.applyPendingDAWPublications(using: playback) }
+                .onChange(of: showStore.pendingAudioImports) { _ in
+                    showStore.requestSessionAudioPreparation(using: playback)
+                    showStore.applyPendingDAWPublications(using: playback)
+                }
+                .onChange(of: showStore.normalizingCueID) { _ in
+                    showStore.requestSessionAudioPreparation(using: playback)
+                    showStore.applyPendingDAWPublications(using: playback)
+                }
+                .onChange(of: showStore.normalizingListID) { _ in
+                    showStore.requestSessionAudioPreparation(using: playback)
+                    showStore.applyPendingDAWPublications(using: playback)
+                }
                 .onOpenURL { documentURL in
                     if documentURL.pathExtension.lowercased() == "sculptbridge" {
                         showStore.receiveDAWPublication(at: documentURL, using: playback)
@@ -75,7 +103,7 @@ struct SculptShowApp: App {
             }
             CommandGroup(after: .newItem) {
                 Button("Receive DAW Publication…") { showStore.chooseDAWPublication(using: playback) }
-                Button("Audio/MIDI Setup…") { showingAudioMIDISetup = true }
+                Button("Audio/MIDI/Video Setup…") { showingAudioMIDISetup = true }
                     .keyboardShortcut(",", modifiers: [.command, .option])
             }
             CommandGroup(replacing: .saveItem) {

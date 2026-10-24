@@ -4,6 +4,9 @@ import SculptShowCore
 /// Docked output console in the main show window. No floating sheet and no
 /// audio-graph rebuild when the panel opens/closes or changes banks.
 struct ShowOutputMixerView: View {
+    @EnvironmentObject private var store: ShowStore
+    @State private var section = 0
+    @State private var showingMonitorSetup = false
     @EnvironmentObject private var playback: PlaybackEngine
     @State private var bank = 0 // 0 = All, matching the Cue console
     @State private var labels = ShowOutputLabels.load()
@@ -18,7 +21,12 @@ struct ShowOutputMixerView: View {
         VStack(alignment: .leading, spacing: 7) {
             header
             if playback.routingEnabled && channelCount > 0 {
-                activeMixer
+                Picker("Mixer section", selection: $section) {
+                    Text("INPUT · STEMS").tag(0)
+                    Text("OUTPUT · PHYSICAL").tag(1)
+                }.pickerStyle(.segmented).controlSize(.small)
+                if section == 0 { MonitorInputsView() }
+                else { activeMixer }
             } else {
                 Text("Audio not ready. Open File → Audio/MIDI Setup to select an output device.")
                     .foregroundStyle(.secondary)
@@ -29,11 +37,12 @@ struct ShowOutputMixerView: View {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: channelCount) { _ in bank = 0 }
+        .sheet(isPresented: $showingMonitorSetup) { MonitorSetupView().environmentObject(store).environmentObject(playback) }
     }
 
     private var header: some View {
         HStack(spacing: 12) {
-            Label("OUTPUT MIXER", systemImage: "slider.vertical.3")
+            Label("MIXER", systemImage: "slider.vertical.3")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundColor(Color(red: 0.93, green: 0.70, blue: 0.38))
             Text("\(deviceName) · \(channelCount) OUT")
@@ -47,6 +56,13 @@ struct ShowOutputMixerView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
+            Button(store.show.monitor.enabled ? "MONITOR \(store.show.monitor.leftOutput)/\(store.show.monitor.rightOutput)" : "ACTIVATE MONITOR") { showingMonitorSetup = true }
+                .controlSize(.small).tint(store.show.monitor.enabled ? .cyan : .accentColor)
+                .disabled(!playback.routingEnabled || !playback.snapshots.isEmpty || (!store.show.monitor.enabled && channelCount < 2))
+            if !playback.inputSoloIDs.isEmpty {
+                Button("CLEAR INPUT SOLO") { playback.clearInputSolos() }.controlSize(.small).tint(.yellow)
+            }
+            if section == 1 {
             Button("CLEAR PEAK") { playback.resetOutputPeakHolds() }
                 .controlSize(.small)
                 .help("Reset all Peak Hold and clip indicators")
@@ -54,12 +70,21 @@ struct ShowOutputMixerView: View {
             Button("RESET M/S") { playback.resetOutputMuteSolo() }
                 .controlSize(.small)
                 .disabled(!playback.routingEnabled ||
-                    (playback.outputControls.mutedCount == 0 && !playback.outputControls.anySolo))
+                    (playback.outputControls.mutedCount == 0 && !playback.outputControls.anySolo && !playback.outputControls.allMuted))
+            }
         }
     }
 
     private var activeMixer: some View {
         VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Button(playback.outputControls.allMuted ? "UNMUTE ALL" : "MUTE ALL") { playback.toggleMuteAllOutputs() }
+                    .tint(playback.outputControls.allMuted ? .red : .accentColor).controlSize(.small)
+                Toggle("Exclude Monitor", isOn: Binding(get: { store.show.monitor.excludeFromMuteAll }, set: {
+                    store.setMonitorMix(excludeFromMuteAll: $0, using: playback)
+                })).toggleStyle(.checkbox).font(.caption).disabled(!store.show.monitor.enabled)
+                Spacer(minLength: 0)
+            }
             HStack(spacing: 8) {
                 Text("BANK")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
@@ -148,7 +173,9 @@ private struct OutputChannelStrip: View {
                     playback.toggleOutputSolo(channel)
                 }
             }
-            if playback.generatedLTC?.output == channel {
+            if playback.monitorOutputs.contains(channel) {
+                Text("MON").font(.system(size: 9, weight: .bold)).foregroundStyle(.cyan)
+            } else if playback.generatedLTC?.output == channel {
                 Text("LTC")
                     .font(.system(size: 9, weight: .heavy, design: .monospaced))
                     .foregroundColor(.orange)

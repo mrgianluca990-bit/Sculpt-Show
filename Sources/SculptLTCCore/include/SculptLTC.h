@@ -1,6 +1,7 @@
 #ifndef SCULPT_LTC_H
 #define SCULPT_LTC_H
 #include <stdint.h>
+#include "SculptConditionalLoop.h"
 #ifdef __cplusplus
 extern "C" {
 #endif

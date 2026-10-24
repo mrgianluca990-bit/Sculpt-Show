@@ -20,6 +20,26 @@ public enum AudioRoutePlan {
         }
     }
 
+    /// Ordered mono/stereo stems reuse the connected outputs in cyclic banks.
+    /// Stereo always occupies an adjacent pair, starting a new bank if needed.
+    public static func automaticOutputs(channelCounts: [Int], deviceChannels: Int) -> [Int] {
+        let capacity = min(64, max(1, deviceChannels))
+        var next = 1
+        return channelCounts.map { width in
+            let channels = min(2, max(1, width))
+            if next + channels - 1 > capacity { next = 1 }
+            let output = next
+            next += channels
+            return output
+        }
+    }
+
+    public static func wrappedOutput(_ first: Int, sourceChannels: Int, deviceChannels: Int) -> Int {
+        guard deviceChannels > 0, first > 0 else { return first }
+        let output = (first - 1) % deviceChannels + 1
+        return output + sourceChannels - 1 <= deviceChannels ? output : 1
+    }
+
     public static func label(firstOutput: Int, sourceChannels: Int) -> String {
         sourceChannels == 1 ? "OUT \(firstOutput)" : "OUT \(firstOutput)/\(firstOutput + 1)"
     }

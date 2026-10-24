@@ -7,12 +7,19 @@ public struct OutputMuteSoloState: Equatable, Sendable {
     public private(set) var muted: Set<Int> = []
     public private(set) var soloed: Set<Int> = []
 
+    public private(set) var allMuted = false
+    public private(set) var excludedFromAll: Set<Int> = []
+    public private(set) var soloExempt: Set<Int> = []
+
+    public mutating func setAllMuted(_ muted: Bool, excluding: Set<Int>) { allMuted = muted; excludedFromAll = excluding.filter { isValid($0) } }
+    public mutating func setSoloExempt(_ channels: Set<Int>) { soloExempt = channels.filter { isValid($0) } }
+
     public init(channelCount: Int) {
         self.channelCount = max(0, min(64, channelCount))
     }
 
     public func isValid(_ channel: Int) -> Bool { channel > 0 && channel <= channelCount }
-    public func isMuted(_ channel: Int) -> Bool { muted.contains(channel) }
+    public func isMuted(_ channel: Int) -> Bool { muted.contains(channel) || (allMuted && !excludedFromAll.contains(channel)) }
     public func isSoloed(_ channel: Int) -> Bool { soloed.contains(channel) }
     public var anySolo: Bool { !soloed.isEmpty }
     public var soloDescription: String { soloed.sorted().map(String.init).joined(separator: ", ") }
@@ -20,7 +27,7 @@ public struct OutputMuteSoloState: Equatable, Sendable {
     public var soloCount: Int { soloed.count }
 
     public func isAudible(_ channel: Int) -> Bool {
-        isValid(channel) && !muted.contains(channel) && (soloed.isEmpty || soloed.contains(channel))
+        isValid(channel) && !isMuted(channel) && (soloed.isEmpty || soloed.contains(channel) || soloExempt.contains(channel))
     }
     public func outputGain(_ channel: Int) -> Float { isAudible(channel) ? 1 : 0 }
 
@@ -32,7 +39,7 @@ public struct OutputMuteSoloState: Equatable, Sendable {
         guard isValid(channel) else { return }
         if !soloed.insert(channel).inserted { soloed.remove(channel) }
     }
-    public mutating func clear() { muted.removeAll(); soloed.removeAll() }
+    public mutating func clear() { muted.removeAll(); soloed.removeAll(); allMuted = false }
 }
 
 public enum OutputMixerBanks {

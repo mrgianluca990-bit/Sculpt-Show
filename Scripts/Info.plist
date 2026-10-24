@@ -19,7 +19,7 @@
 	<key>CFBundleIconFile</key>
 	<string>SculptShow.icns</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.18.5</string>
+	<string>0.19.1</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
@@ -79,6 +79,16 @@
 					<string>sculptbridge</string>
 				</array>
 			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.sculptshow.cue-list-id</string>
+			<key>UTTypeDescription</key>
+			<string>Sculpt Cue List Drag</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
 		</dict>
 	</array>
 	<key>CFBundleDocumentTypes</key>

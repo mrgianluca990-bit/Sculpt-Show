@@ -62,7 +62,7 @@ public enum ShowProjectPackage {
         return folder
     }
 
-    private static func listFolderName(_ list: CueList) -> String {
+    static func listFolderName(_ list: CueList) -> String {
         safeName(list.name)
     }
 
@@ -111,9 +111,12 @@ public enum ShowProjectPackage {
         guard isPackaged(documentURL) else { throw Failure.notPackaged }
         let root = documentURL.deletingLastPathComponent()
         try validateUniqueListFolders(show)
-        let stored = try prepare(show, copyInto: root, existingProjectRoot: root)
-        try ShowCodec.encode(stored).write(to: documentURL, options: .atomic)
-        return Saved(documentURL: documentURL, runtimeShow: try resolve(stored, documentURL: documentURL))
+        return try ShowProjectFolderMigration.saving(show, documentURL: documentURL) { renamed in
+            let stored = try prepare(renamed, copyInto: root, existingProjectRoot: root)
+            let runtime = try resolve(stored, documentURL: documentURL)
+            try ShowCodec.encode(stored).write(to: documentURL, options: .atomic)
+            return Saved(documentURL: documentURL, runtimeShow: runtime)
+        }
     }
 
     /// A version is a standalone .scshow DOCUMENT inside the same portable
@@ -151,9 +154,19 @@ public enum ShowProjectPackage {
         var updated = show
         for li in updated.cueLists.indices {
             for ci in updated.cueLists[li].cues.indices {
+                if let video = updated.cueLists[li].cues[ci].video, !(video.sourcePath as NSString).isAbsolutePath {
+                    let absolute = root.appendingPathComponent(video.sourcePath).standardizedFileURL
+                    guard absolute.path.hasPrefix(root.path + "/") else { throw Failure.unsafeReference(video.sourcePath) }
+                    updated.cueLists[li].cues[ci].video?.sourcePath = absolute.path
+                }
                 for ei in updated.cueLists[li].cues[ci].elements.indices {
                     let element = updated.cueLists[li].cues[ci].elements[ei]
                     guard element.kind == .audio, !element.sourcePath.isEmpty else { continue }
+                    if let original = element.originalSourcePath, !(original as NSString).isAbsolutePath {
+                        let source = root.appendingPathComponent(original).standardizedFileURL
+                        guard source.path.hasPrefix(root.path + "/") else { throw Failure.unsafeReference(original) }
+                        updated.cueLists[li].cues[ci].elements[ei].originalSourcePath = source.path
+                    }
                     if (element.sourcePath as NSString).isAbsolutePath { continue }
                     let absolute = root.appendingPathComponent(element.sourcePath).standardizedFileURL
                     guard absolute.path.hasPrefix(root.path + "/") else {
@@ -176,12 +189,44 @@ public enum ShowProjectPackage {
             let folder = listFolderName(list)
             var reusedWithinList: [String: String] = [:]
             for ci in stored.cueLists[li].cues.indices {
+                if let video = stored.cueLists[li].cues[ci].video {
+                    let source = URL(fileURLWithPath: video.sourcePath).standardizedFileURL
+                    guard fm.isReadableFile(atPath: source.path) else { throw Failure.missingSource(source.path) }
+                    let relative: String
+                    if let extantRoot, source.path.hasPrefix(extantRoot.path + "/Video Files/") {
+                        relative = String(source.path.dropFirst(extantRoot.path.count + 1))
+                    } else {
+                        relative = "Video Files/" + UUID().uuidString + "-" + safeFilename(source.lastPathComponent)
+                        let destination = root.appendingPathComponent(relative)
+                        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        try fm.copyItem(at: source, to: destination)
+                    }
+                    stored.cueLists[li].cues[ci].video?.sourcePath = relative
+                }
                 for ei in stored.cueLists[li].cues[ci].elements.indices {
                     let element = stored.cueLists[li].cues[ci].elements[ei]
                     guard element.kind == .audio, !element.sourcePath.isEmpty else { continue }
                     let source = URL(fileURLWithPath: element.sourcePath).standardizedFileURL
                     guard fm.fileExists(atPath: source.path), fm.isReadableFile(atPath: source.path) else {
                         throw Failure.missingSource(source.path)
+                    }
+                    if let original = element.originalSourcePath {
+                        let origin = URL(fileURLWithPath: original).standardizedFileURL
+                        guard fm.isReadableFile(atPath: origin.path) else { throw Failure.missingSource(origin.path) }
+                        let relative: String
+                        if let extantRoot, origin.path.hasPrefix(extantRoot.path + "/") {
+                            relative = String(origin.path.dropFirst(extantRoot.path.count + 1))
+                        } else {
+                            relative = "Audio Files/\(folder)/" + element.id.uuidString + "-source-" + safeFilename(origin.lastPathComponent)
+                            let destination = root.appendingPathComponent(relative)
+                            if !fm.fileExists(atPath: destination.path) {
+                                try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                                try fm.copyItem(at: origin, to: destination)
+                            } else if !fm.contentsEqual(atPath: origin.path, andPath: destination.path) {
+                                throw Failure.destinationExists(relative)
+                            }
+                        }
+                        stored.cueLists[li].cues[ci].elements[ei].originalSourcePath = relative
                     }
                     if let previous = reusedWithinList[source.path] {
                         stored.cueLists[li].cues[ci].elements[ei].sourcePath = previous

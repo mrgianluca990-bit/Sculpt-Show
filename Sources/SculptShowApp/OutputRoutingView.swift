@@ -6,6 +6,7 @@ import CoreAudio
 /// Changing physical devices is rejected while cues are active (no interruption).
 struct OutputRoutingView: View {
     @EnvironmentObject private var playback: PlaybackEngine
+    @EnvironmentObject private var store: ShowStore
     @Environment(\.dismiss) private var dismiss
     @State private var pickedDevice: AudioDeviceID = 0
     @State private var applying = false
@@ -43,6 +44,27 @@ struct OutputRoutingView: View {
                           (playback.routingEnabled && playback.routingDeviceID == pickedDevice))
                 .buttonStyle(.borderedProminent)
             }
+            Divider()
+            Picker("PROJECT SAMPLE RATE", selection: Binding(
+                get: { store.show.sampleRate },
+                set: { store.changeSessionSampleRate($0, using: playback) })) {
+                ForEach(Show.supportedSampleRates, id: \.self) { rate in
+                    Text(String(format: "%g kHz", Double(rate) / 1000)).tag(rate)
+                }
+            }
+            .disabled(!playback.snapshots.isEmpty || store.preparingSessionAudio || store.pendingAudioImports > 0 || store.isLoadingProject)
+            Text("Files with another sample rate are copied and converted offline into the project. Originals are preserved. GO never performs sample-rate conversion.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                if store.preparingSessionAudio { ProgressView().controlSize(.small) }
+                Text(store.sessionAudioStatus).font(.caption)
+                Spacer()
+                Button("Prepare / Verify Audio") {
+                    store.requestSessionAudioPreparation(using: playback, force: true)
+                }.disabled(store.preparingSessionAudio || store.isLoadingProject || store.pendingAudioImports > 0)
+            }
+            Text("Device: " + String(format: "%g Hz", playback.deviceSampleRate))
+                .font(.caption).foregroundStyle(.secondary)
             Divider()
             HStack(spacing: 8) {
                 Circle().fill(playback.routingEnabled ? Color.green : Color.orange)

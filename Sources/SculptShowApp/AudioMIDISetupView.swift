@@ -11,7 +11,7 @@ struct AudioMIDISetupView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("AUDIO / MIDI SETUP")
+                Text("AUDIO / MIDI / VIDEO SETUP")
                     .font(.system(size: 16, weight: .bold, design: .monospaced))
                 Spacer()
                 Button("Close") { dismiss() }
@@ -21,14 +21,23 @@ struct AudioMIDISetupView: View {
             Picker("Section", selection: $tab) {
                 Text("Core Audio").tag(0)
                 Text("MIDI Control").tag(1)
+                Text("Output Patch").tag(2)
+                Text("OSC Control").tag(3)
+                Text("Video Output").tag(4)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
             .padding(.top, 12)
             if tab == 0 {
                 OutputRoutingView().environmentObject(playback)
-            } else {
+            } else if tab == 1 {
                 MIDIControlSettings().environmentObject(midi)
+            } else if tab == 2 {
+                OutputPatchView()
+            } else if tab == 3 {
+                OSCControlSettings()
+            } else {
+                VideoOutputSettings(video: playback.video)
             }
         }
         .frame(width: 690)
