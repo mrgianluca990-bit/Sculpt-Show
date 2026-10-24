@@ -45,11 +45,18 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
                 }
             })
         }
+        observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: nil, queue: .main) { [weak self] note in
+            guard let workspace = note.object as? NSWindow, workspace.title == "Sculpt Show" else { return }
+            Task { @MainActor in self?.refreshDisplays() }
+        })
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshDisplays() }
         })
         if projectionEnabled && presentsOutput {
-            DispatchQueue.main.async { [weak self] in self?.restoreProjection() }
+            DispatchQueue.main.async { [weak self] in
+                guard self?.projectionEnabled == true else { return }
+                self?.restoreProjection()
+            }
         }
     }
     static func id(_ screen: NSScreen) -> String {
@@ -57,28 +64,55 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
               let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue() else { return "" }
         return CFUUIDCreateString(nil, uuid) as String
     }
-    private func selectedDisplay() -> NSScreen? {
-        if screenID.isEmpty { return availableScreens.dropFirst().first }
-        return availableScreens.first {
-            Self.id($0) == screenID || ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.stringValue == screenID
+    private var operatorScreenID: String? {
+        NSApp.windows.first(where: { $0.title == "Sculpt Show" && !($0 is VideoOutputWindow) })?.screen.map(Self.id)
+    }
+    var projectionScreens: [NSScreen] {
+        let ids = ProjectionDisplayPolicy.eligible(connected: availableScreens.map(Self.id), operatorDisplay: operatorScreenID)
+        return availableScreens.filter {
+            guard ids.contains(Self.id($0)),
+                  let number = $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
+            return CGDisplayIsInMirrorSet(number.uint32Value) == 0
         }
     }
+    private func selectedDisplay() -> NSScreen? {
+        let preferred = availableScreens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.stringValue == screenID
+        }).map(Self.id) ?? screenID
+        let connected = availableScreens.prefix(1).map(Self.id) + projectionScreens.map(Self.id)
+        guard let target = ProjectionDisplayPolicy.target(connected: connected,
+                operatorDisplay: operatorScreenID, preferred: preferred) else { return nil }
+        return projectionScreens.first { Self.id($0) == target }
+    }
     private func restoreProjection() {
-        do { try showOutput() } catch { outputError = error.localizedDescription }
+        do { try showOutput() }
+        catch { hideOutput(); outputError = error.localizedDescription }
     }
     func refreshDisplays() {
         availableScreens = NSScreen.screens
         guard projectionEnabled else { return }
         guard let display = selectedDisplay() else {
-            if let id = owner { onFailure?(id, "Projection display disconnected. Cue stopped; no fallback to the operator screen.") }
-            window?.orderOut(nil); outputVisible = false
-            outputError = "Selected display unavailable. Projection will return to black when it reconnects."
+            // Hide immediately, before notifying transport or allowing CoreGraphics
+            // to relocate an unplugged display's window onto the operator screen.
+            hideOutput()
+            if let id = owner { onFailure?(id, "External projection display unavailable. Visual cue stopped.") }
+            outputError = "Projection disabled. Connect and select an additional display; the operator display is never used."
             return
         }
         if let old = window?.screen, Self.id(old) != Self.id(display), let id = owner {
             onFailure?(id, "Projection display changed. Cue stopped.")
         }
         restoreProjection()
+    }
+    private func prepareOutputForPlayback() throws {
+        guard presentsOutput else { return }
+        availableScreens = NSScreen.screens
+        if selectedDisplay() == nil {
+            hideOutput()
+            outputError = "No eligible external display. Projection is disabled; soundtrack playback remains available."
+            return
+        }
+        try showOutput()
     }
     static func loadStillImage(_ url: URL) async throws -> CGImage {
         try await Task.detached(priority: .userInitiated) {
@@ -118,7 +152,7 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
                     try Task.checkCancellation()
                     guard self.generation == token else { return }
                     self.image = decoded
-                    try self.showOutput()
+                    try self.prepareOutputForPlayback()
                     self.surface?.image = decoded
                     self.preparing = false
                     let host = ready(video.duration)
@@ -142,7 +176,7 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
                 let sought = await self.player.seek(to: CMTime(seconds: p, preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero)
                 try Task.checkCancellation()
                 guard self.generation == token, sought else { return }
-                try self.showOutput()
+                try self.prepareOutputForPlayback()
                 self.preparing = false
                 self.setOpacity(CueVideo.opacity(elapsed: p, duration: duration, fadeIn: cue.fadeInSeconds, fadeOut: cue.loop ? 0 : cue.fadeOutSeconds))
                 let prerolled = await self.player.preroll(atRate: 1)
@@ -236,7 +270,8 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
         guard presentsOutput else { return }
         availableScreens = NSScreen.screens
         guard let screen = selectedDisplay() else {
-            throw Failure("Choose a connected display in Screens. Automatic requires a second display.")
+            hideOutput()
+            throw Failure("Connect and select an additional display. Projection onto the primary or operator display is disabled.")
         }
         if window == nil {
             let w = VideoOutputWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
@@ -315,8 +350,8 @@ struct VideoPreview: View {
             Color.black
             VStack(spacing: 8) {
                 Image(systemName: "display").font(.largeTitle)
-                Text(video.preparing ? "Preparing video…" : video.owner == nil ? "VIDEO OUTPUT · BLACK" : "VIDEO OUTPUT · ACTIVE")
-                Text("Image is displayed in the separate output window").font(.caption)
+                Text(video.preparing ? "Preparing video…" : !video.outputVisible ? "EXTERNAL PROJECTION · OFF" : video.owner == nil ? "VIDEO OUTPUT · BLACK" : "VIDEO OUTPUT · ACTIVE")
+                Text(video.outputVisible ? "Image is displayed on the external output" : "The operator display remains available").font(.caption)
             }.foregroundColor(.gray)
         }
     }
@@ -330,18 +365,18 @@ struct VideoOutputSettings: View {
     private var displayPicker: some View {
         Picker("Projection display", selection: Binding(get: { video.screenID }, set: { video.selectScreen($0) })) {
             Text("Automatic · second display").tag("")
-            ForEach(video.availableScreens, id: \.self) { screen in
+            ForEach(video.projectionScreens, id: \.self) { screen in
                 Text(displayLabel(screen)).tag(VideoPlayback.id(screen))
             }
-            if !video.screenID.isEmpty && !video.availableScreens.contains(where: { VideoPlayback.id($0) == video.screenID }) {
-                Text("Saved display · disconnected").tag(video.screenID)
+            if !video.screenID.isEmpty && !video.projectionScreens.contains(where: { VideoPlayback.id($0) == video.screenID }) {
+                Text("Saved display · unavailable for projection").tag(video.screenID).disabled(true)
             }
         }.disabled(video.owner != nil)
     }
     private var controls: some View {
         HStack {
             Button("Refresh displays") { video.refreshDisplays() }
-            Button(video.projectionEnabled ? "Projection enabled" : "Enable projection") { video.enableProjection() }
+            Button(video.projectionEnabled ? "Projection enabled" : "Enable projection") { video.enableProjection() }.disabled(video.projectionScreens.isEmpty)
             Button("Disable projection") { video.disableProjection() }
         }
     }
@@ -351,7 +386,7 @@ struct VideoOutputSettings: View {
             displayPicker
             controls
             VideoPreview(video: video).frame(height: 160)
-            Text("The selected display is always fullscreen, with a black background and no title bar or playback controls. It stays black between cues and while SHOW is in the background. Select the external display, not the operator screen.").font(.callout)
+            Text("The selected display is always fullscreen, with a black background and no title bar or playback controls. It stays black between cues and while SHOW is in the background. The primary and operator displays cannot be selected. With only one display, projection stays disabled and audio playback remains available.").font(.callout)
             Text("⌥⌘V disables projection from any SHOW window. Screen selection is available with visual cues stopped.").font(.caption)
             if let error = video.outputError { Text(error).foregroundColor(.orange) }
         }.padding(20).frame(width: 650).onAppear { video.refreshDisplays() }

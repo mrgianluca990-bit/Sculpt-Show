@@ -32,7 +32,10 @@ import SculptShowCore
             for i in 0..<Int(buffer.frameLength) { buffer.floatChannelData![ch][i] *= 0.000001 }
         }
         do { let out = try AVAudioFile(forWriting: quiet, settings: buffer.format.settings); try out.write(from: buffer) }
-        let engine = PlaybackEngine(videoPlayback: VideoPlayback(presentsOutput: false))
+        let liveVideo = VideoPlayback()
+        guard let primary = NSScreen.screens.first else { fatalError("No display") }
+        liveVideo.screenID = VideoPlayback.id(primary) // Old saved primary preference must remain harmless.
+        let engine = PlaybackEngine(videoPlayback: liveVideo)
         engine.refreshRoutingDevices()
         let devices = engine.routingDevices
         guard let device = devices.first(where: { $0.id == RoutedAudioEngine.defaultOutputID() }) else { fatalError("No default hardware") }
@@ -46,6 +49,7 @@ import SculptShowCore
         for _ in 0..<100 { if engine.snapshots[cue.id]?.phase == .playing { break }; await wait(0.05) }
         await wait(0.9)
         require(engine.snapshots[cue.id]?.phase == .playing, "video and soundtrack started: \(engine.errorMessage ?? "OK")")
+        require(!liveVideo.outputVisible && !liveVideo.projectionEnabled && liveVideo.outputGeometry == nil, "video/audio playback never blacks out the primary display")
         let rms = engine.outputMeter(channel: 1).rms
         require(rms > 0.000000001, "nonzero post-mixer physical audio: RMS \(rms)")
         await wait(4.4)
@@ -78,17 +82,32 @@ import SculptShowCore
         let missing = VideoPlayback(); missing.screenID = "missing-test-display"
         do { try missing.showOutput(); fatalError("Unavailable display accepted") } catch { print("PASS · missing display rejected") }
         missing.hideOutput()
-        // Exercise the real projection window briefly on the primary display.
+        // Old explicit and numeric preferences cannot create any primary-screen curtain.
         let projection = VideoPlayback()
-        guard let screen = NSScreen.screens.first else { fatalError("No display") }
-        projection.screenID = VideoPlayback.id(screen)
-        try projection.showOutput()
-        let geometry = projection.outputGeometry!
-        require(geometry.frame == screen.frame && geometry.borderless && geometry.ignoresMouse && !geometry.key, "projection covers exact display with no controls/key focus")
-        projection.stop()
-        require(projection.outputVisible && projection.opacity == 0, "STOP leaves fullscreen black curtain")
-        projection.hideOutput()
-        require(!projection.outputVisible, "projection can be disabled")
+        projection.screenID = VideoPlayback.id(primary)
+        do { try projection.showOutput(); fatalError("Primary display accepted") } catch { print("PASS · primary display explicitly rejected") }
+        require(!projection.outputVisible && !projection.projectionEnabled && projection.outputGeometry == nil, "rejection leaves no projection window and disables saved activation")
+        if let number = primary.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            projection.selectScreen(number.stringValue)
+            require(!projection.projectionEnabled && projection.outputGeometry == nil, "legacy numeric primary preference cannot enable projection")
+        }
+        require(!projection.projectionScreens.contains(where: { VideoPlayback.id($0) == VideoPlayback.id(primary) }), "primary display absent from projection choices")
+        UserDefaults.standard.set(VideoPlayback.id(primary), forKey: "sculpt.show.videoScreen")
+        UserDefaults.standard.set(true, forKey: "sculpt.show.projectionEnabled")
+        let restored = VideoPlayback()
+        await wait(0.2)
+        require(!restored.projectionEnabled && !restored.outputVisible && restored.outputGeometry == nil, "startup with saved primary selection and enabled flag creates no blackout")
+        require(!UserDefaults.standard.bool(forKey: "sculpt.show.projectionEnabled"), "invalid startup activation cleared from saved preferences")
+        restored.hideOutput()
+        if let external = projection.projectionScreens.first {
+            projection.screenID = VideoPlayback.id(external)
+            try projection.showOutput()
+            let geometry = projection.outputGeometry!
+            require(geometry.frame == external.frame && geometry.borderless && geometry.ignoresMouse && !geometry.key, "external projection covers exact display without controls")
+            projection.stop()
+            require(projection.outputVisible && projection.opacity == 0, "STOP leaves only external display black")
+            projection.hideOutput()
+        } else { print("SKIP · physical second-display projection/hot-unplug (no eligible display connected)") }
         // Store path: new imports expose prepared audio; legacy repair preserves mix and does not duplicate.
         var store = ShowStore(); let listID = store.show.cueLists[0].id
         store.addVideo(movie, to: listID)
