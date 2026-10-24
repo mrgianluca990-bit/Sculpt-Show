@@ -189,7 +189,7 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
             let w = LocalVideoWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             w.title = "SCULPT · VIDEO"; w.backgroundColor = .black; w.isOpaque = true
-            w.isReleasedWhenClosed = false; w.delegate = self; w.collectionBehavior = [.fullScreenNone]
+            w.isReleasedWhenClosed = false; w.delegate = self; w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             w.level = .floating; w.hidesOnDeactivate = false
             w.standardWindowButton(.zoomButton)?.isHidden = true
             w.standardWindowButton(.zoomButton)?.isEnabled = false
@@ -283,7 +283,7 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
     }
     var localPreviewGeometry: (frame: NSRect, titled: Bool, resizable: Bool, fullScreenAllowed: Bool, surfaceAttached: Bool, alwaysOnTop: Bool)? {
         previewWindow.map { ($0.frame, $0.styleMask.contains(.titled), $0.styleMask.contains(.resizable),
-            !$0.collectionBehavior.contains(.fullScreenNone), surface?.window === $0, $0.level == .floating && !$0.hidesOnDeactivate) }
+            $0.collectionBehavior.contains(.fullScreenPrimary), surface?.window === $0, $0.level == .floating && !$0.hidesOnDeactivate && $0.collectionBehavior.contains(.canJoinAllSpaces) && $0.collectionBehavior.contains(.fullScreenAuxiliary)) }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if sender === previewWindow { hideLocalPreview() }
@@ -291,7 +291,10 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
     }
 }
 
-final class LocalVideoWindow: NSWindow { override var canBecomeMain: Bool { false } }
+final class LocalVideoWindow: NSWindow {
+    override var canBecomeMain: Bool { false }
+    override func toggleFullScreen(_ sender: Any?) { /* Local preview must never cover the operator display. */ }
+}
 final class VideoOutputWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
