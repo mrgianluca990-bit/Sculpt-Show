@@ -257,7 +257,8 @@ final class ShowStore: ObservableObject {
                             } else { current.elements.removeAll { $0.kind == .audio } }
                             current.video?.audioPrepared = true
                         }
-                        assignAutomaticOutputs(to: &updated, cueID: cue.id, listID: list.id)
+                        // A repair preserves the existing stem's route and mixer settings.
+                        if !cue.hasAudio { assignAutomaticOutputs(to: &updated, cueID: cue.id, listID: list.id) }
                         show = updated; dirty = true
                     }
                 }

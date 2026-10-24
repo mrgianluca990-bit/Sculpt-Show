@@ -90,16 +90,27 @@ import SculptShowCore
         projection.hideOutput()
         require(!projection.outputVisible, "projection can be disabled")
         // Store path: new imports expose prepared audio; legacy repair preserves mix and does not duplicate.
-        let store = ShowStore(); let listID = store.show.cueLists[0].id
+        var store = ShowStore(); let listID = store.show.cueLists[0].id
         store.addVideo(movie, to: listID)
         for _ in 0..<160 { if store.pendingAudioImports == 0 { break }; await wait(0.05) }
         guard let imported = store.show.cueLists[0].cues.last(where: { $0.video != nil }) else { fatalError(store.errorMessage ?? "Import failed") }
         require(imported.video?.audioPrepared == true && imported.audioElements.count == 1, "new import includes prepared soundtrack atomically")
         let elementID = imported.audioElements[0].id
+        store.setElementGain(elementID, in: imported.id, listID: listID, to: 0.43, using: engine)
+        store.setStemMixer(elementID, cueID: imported.id, listID: listID, pan: 0.25, sendToMonitor: false, using: engine)
+        store.setElementMuted(elementID, in: imported.id, listID: listID, to: true, using: engine)
+        // Save a deliberate route independently of this test Mac's output count.
+        var model = store.show
+        model.updateCue(imported.id, in: listID) { $0.elements[0].outputStartChannel = 5 }
+        let saved = try ShowProjectPackage.create(model, requestedDocumentURL: root.appendingPathComponent("Repair-" + UUID().uuidString + ".scshow"))
+        store = ShowStore() // Fresh document avoids an unsaved-changes modal in this unattended probe.
+        require(store.openShow(at: saved.documentURL), "open repair fixture")
+        for _ in 0..<160 { if !store.isLoadingProject { break }; await wait(0.05) }
         store.rebuildVideoSoundtrack(imported.id, in: listID, using: engine)
         for _ in 0..<160 { if !store.preparingSessionAudio { break }; await wait(0.05) }
         let repaired = store.show.cue(imported.id)!
         require(repaired.audioElements.count == 1 && repaired.audioElements[0].id == elementID && repaired.video?.audioPrepared == true && engine.projectAudioReady, "repair replaces soundtrack once and preserves mixer identity: \(store.errorMessage ?? "OK")")
+        require(repaired.audioElements[0].gain == 0.43 && repaired.audioElements[0].pan == 0.25 && repaired.audioElements[0].muted && !repaired.audioElements[0].sendToMonitor && repaired.audioElements[0].outputStartChannel == 5, "soundtrack repair preserves gain, pan, mute, monitor send and explicit output")
         store.addVideo(still, to: listID)
         for _ in 0..<160 { if store.pendingAudioImports == 0 { break }; await wait(0.05) }
         let importedImage = store.show.cueLists[0].cues.last!
