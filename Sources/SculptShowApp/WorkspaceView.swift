@@ -335,7 +335,7 @@ struct WorkspaceView: View {
         guard keyboardMonitor == nil else { return }
         keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard let window = NSApp.keyWindow,
-                  !(window is NSPanel), !window.isSheet,
+                  !(window is NSPanel), !(window is VideoOutputWindow), !window.isSheet,
                   window.attachedSheet == nil,
                   !(window.firstResponder is NSTextView),
                   !(window.firstResponder is NSTextField),
