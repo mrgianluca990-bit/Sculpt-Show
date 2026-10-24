@@ -52,6 +52,7 @@ import SculptShowCore
         require(!liveVideo.outputVisible && !liveVideo.projectionEnabled && liveVideo.outputGeometry == nil, "video/audio playback never projects fullscreen onto primary display")
         require(liveVideo.localPreviewVisible, "one display automatically opens local video window")
         guard let preview = liveVideo.localPreviewGeometry else { fatalError("Missing preview window") }
+        require(preview.alwaysOnTop, "local video window floats above other apps and stays visible when inactive")
         require(preview.titled && preview.resizable && !preview.fullScreenAllowed && preview.surfaceAttached, "local window is resizable, bounded and attached to the existing player")
         require(primary.visibleFrame.contains(preview.frame) && preview.frame.width <= primary.visibleFrame.width * 0.85 && preview.frame.height <= primary.visibleFrame.height * 0.85, "video window never fills or covers the operator display")
         let sameItem = liveVideo.player.currentItem
@@ -117,6 +118,57 @@ import SculptShowCore
             require(projection.outputVisible && projection.opacity == 0, "STOP leaves only external display black")
             projection.hideOutput()
         } else { print("SKIP · physical second-display projection/hot-unplug (no eligible display connected)") }
+        // Independent decoders, queued boundaries and per-cue mixer/transport.
+        func clip(_ name: String) -> Cue {
+            var value = Cue(name: name, mediaPath: quiet.path, fadeOutSeconds: 0, fadeInSeconds: 0, loop: true, durationSeconds: 2)
+            value.video = CueVideo(sourcePath: movie.path, duration: 2); value.video?.audioPrepared = true
+            return value
+        }
+        var first = clip("Left movie"), second = clip("Right movie")
+        first.video?.widthScale = 0.5; first.video?.heightScale = 0.5; first.video?.offsetX = -0.25
+        second.video?.widthScale = 0.5; second.video?.heightScale = 0.5; second.video?.offsetX = 0.25
+        second.elements[0].gain = 0.3
+        var multiShow = Show(); multiShow.cueLists[0].cues = [first, second]
+        engine.knowProject(multiShow); engine.projectAudioReady = true
+        require(engine.play(first) && engine.play(second), "two movie cues accepted concurrently")
+        for _ in 0..<120 {
+            if engine.snapshots[first.id]?.phase == .playing && engine.snapshots[second.id]?.phase == .playing { break }
+            await wait(0.05)
+        }
+        require(liveVideo.activeIDs.count == 2 && engine.snapshots[first.id]?.phase == .playing && engine.snapshots[second.id]?.phase == .playing, "second movie does not stop first movie")
+        require(liveVideo.player(for: first.id) !== liveVideo.player(for: second.id), "independent video decoders per cue")
+        guard let initialItem = liveVideo.player(for: first.id)?.currentItem else { fatalError("Missing queued movie") }
+        await wait(4.5)
+        require(liveVideo.loopCount(for: first.id) >= 2 && liveVideo.loopCount(for: second.id) >= 2, "both movies cross multiple prequeued boundaries")
+        require(liveVideo.player(for: first.id)?.currentItem !== initialItem && liveVideo.queueDepth(for: first.id) >= 2, "loop advances to prepared items instead of seeking old item")
+        require(liveVideo.correctionCount(for: first.id) == 0 && liveVideo.correctionCount(for: second.id) == 0, "no corrective seeks during ordinary concurrent loops")
+        guard let left = liveVideo.layerFrame(for: first.id), let right = liveVideo.layerFrame(for: second.id) else { fatalError("Missing rendered layers") }
+        require(left.minX < right.minX && left.width == right.width, "per-cue positions reach actual composition layers")
+        var zoomed = first.video!; zoomed.scale = 2.5; zoomed.lockAspectRatio = false; zoomed.heightScale = 0.25
+        liveVideo.setGeometry(zoomed, for: first.id)
+        let changed = liveVideo.layerFrame(for: first.id)!
+        require(changed.width > left.width * 2 && changed.height < left.height * 2 && liveVideo.layerFrame(for: second.id) == right, "zoom and independent stretch affect only selected movie")
+        liveVideo.bringToFront(first.id); require(liveVideo.activeIDs.last == first.id, "bring selected visual to front")
+        liveVideo.sendToBack(first.id); require(liveVideo.activeIDs.first == first.id, "send selected visual to back")
+        engine.pause(first.id); await wait(0.3)
+        require(engine.snapshots[first.id]?.phase == .paused && engine.snapshots[second.id]?.phase == .playing, "pausing one video leaves other playing")
+        _ = engine.play(first); await wait(0.6)
+        engine.seek(first.id, toSeconds: 0.5); await wait(0.8)
+        require(engine.snapshots[first.id]?.phase == .playing && engine.snapshots[second.id]?.phase == .playing, "resume and seek are scoped to one video")
+        engine.setLoop(false, for: first.id); await wait(2.4)
+        require(engine.snapshots[first.id] == nil && engine.snapshots[second.id]?.phase == .playing, "one video exits loop while other continues")
+        // A bounded composition rejects overflow without interrupting existing cues.
+        for index in 0..<7 {
+            var stillCue = Cue(name: "Layer \(index)", loop: true, durationSeconds: 10)
+            stillCue.video = CueVideo(sourcePath: still.path, duration: 10); stillCue.video?.isImage = true; stillCue.video?.audioPrepared = true
+            require(engine.play(stillCue), "additional image layer \(index) accepted")
+        }
+        await wait(0.5)
+        var overflow = Cue(name: "Overflow")
+        overflow.video = CueVideo(sourcePath: still.path, duration: 10); overflow.video?.isImage = true; overflow.video?.audioPrepared = true
+        require(!engine.play(overflow) && liveVideo.activeIDs.count == VideoCompositionPolicy.maximumCues && engine.snapshots[second.id]?.phase == .playing, "capacity failure preserves eight active visual cues")
+        engine.errorMessage = nil
+        engine.stopAll(); require(liveVideo.activeIDs.isEmpty, "STOP ALL clears every visual and soundtrack")
         // Store path: new imports expose prepared audio; legacy repair preserves mix and does not duplicate.
         var store = ShowStore(); let listID = store.show.cueLists[0].id
         store.addVideo(movie, to: listID)
@@ -143,6 +195,22 @@ import SculptShowCore
         for _ in 0..<160 { if store.pendingAudioImports == 0 { break }; await wait(0.05) }
         let importedImage = store.show.cueLists[0].cues.last!
         require(importedImage.video?.isImage == true && importedImage.loop && !importedImage.hasAudio, "image import defaults to held image loop")
+        let imageID = importedImage.id
+        store.setVideoScale(2.5, cueID: imageID, in: listID)
+        store.setVideoPosition(x: -0.2, y: 0.3, cueID: imageID, in: listID)
+        store.setVideoAspectLock(false, cueID: imageID, in: listID)
+        store.setVideoDimensions(width: 1.8, height: 0.7, cueID: imageID, in: listID)
+        let transformed = store.show.cue(imageID)!.video!
+        require(transformed.isValid && transformed.scale == 2.5 && transformed.widthScale == 1.8 && transformed.heightScale == 0.7, "inspector transform edits support independent size beyond 100 percent")
+        let transformPackage = try ShowProjectPackage.create(store.show, requestedDocumentURL: root.appendingPathComponent("Transforms-" + UUID().uuidString + ".scshow"))
+        let decoded = try ShowProjectPackage.resolve(ShowCodec.decode(contentsOf: transformPackage.documentURL), documentURL: transformPackage.documentURL)
+        require(decoded.cue(imageID)?.video?.scale == 2.5 && decoded.cue(imageID)?.video?.offsetY == 0.3 && decoded.cue(imageID)?.video?.heightScale == 0.7, "transform persists in portable saved project")
+        store.setVideoAspectLock(true, cueID: imageID, in: listID)
+        store.setVideoDimensions(height: 1.2, cueID: imageID, in: listID)
+        require(store.show.cue(imageID)?.video?.widthScale == 1.2 && store.show.cue(imageID)?.video?.heightScale == 1.2, "aspect lock links both dimension controls")
+        store.resetVideoTransform(imageID, in: listID)
+        let reset = store.show.cue(imageID)!.video!
+        require(reset.scale == 1 && reset.offsetX == 0 && reset.offsetY == 0 && reset.widthScale == 1 && reset.heightScale == 1 && reset.keepsAspectRatio, "reset restores centered original proportions")
         engine.stopAll()
         liveVideo.hideOutput()
         print("ALL VIDEO/IMAGE/AUDIO/PROJECTION CHECKS PASSED")

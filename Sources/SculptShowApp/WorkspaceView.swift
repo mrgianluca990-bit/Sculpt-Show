@@ -800,17 +800,7 @@ struct WorkspaceView: View {
                                 Button("Show Video") { playback.video.showVideoOutput() }
                                 Button("Screens…") { openWindow(id: "sculpt-screens") }
                             }
-                            Picker("Resize mode", selection: Binding(get: { store.show.cue(cue.id)?.video?.framing ?? .fit }, set: {
-                                store.setVideoFraming($0, cueID: cue.id, in: listID)
-                                if playback.video.owner == cue.id { playback.video.setFraming($0) }
-                            })) {
-                                ForEach(VideoFraming.allCases, id: \.self) { Text($0.label).tag($0) }
-                            }
-                            Text("Image size · \(Int(movie.scale * 100)) %")
-                            Slider(value: Binding(get: { store.show.cue(cue.id)?.video?.scale ?? movie.scale }, set: {
-                                store.setVideoScale($0, cueID: cue.id, in: listID)
-                                if playback.video.owner == cue.id { playback.video.setScale($0) }
-                            }), in: 0.1...1)
+                            VideoTransformEditor(cueID: cue.id, listID: listID)
                             if movie.isImage != true {
                                 Text(movie.audioPrepared != true ? "Soundtrack: preparing…" : cue.hasAudio ? "Soundtrack: ready · SHOW mixer" : "No audio track detected").font(.caption)
                                 Button("Prepare soundtrack again") { store.rebuildVideoSoundtrack(cue.id, in: listID, using: playback) }

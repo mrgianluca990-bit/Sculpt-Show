@@ -1,0 +1,55 @@
+import SwiftUI
+import SculptShowCore
+
+struct VideoTransformEditor: View {
+    @EnvironmentObject private var store: ShowStore
+    @EnvironmentObject private var playback: PlaybackEngine
+    let cueID: UUID
+    let listID: UUID
+    private var movie: CueVideo? { store.show.cue(cueID)?.video }
+    private func refresh() { if let movie { playback.video.setGeometry(movie, for: cueID) } }
+    private func row(_ name: String, value: Double, range: ClosedRange<Double>, edit: @escaping (Double) -> Void) -> some View {
+        let binding = Binding(get: { value }, set: { edit($0); refresh() })
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(name).font(.caption)
+                Spacer()
+                TextField("Percent", value: Binding(get: { binding.wrappedValue * 100 }, set: { binding.wrappedValue = $0 / 100 }), format: .number.precision(.fractionLength(0...1)))
+                    .frame(width: 70).textFieldStyle(.roundedBorder)
+                Text("%").font(.caption)
+            }
+            Slider(value: binding, in: range)
+        }
+    }
+    var body: some View {
+        if let movie {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("VIDEO TRANSFORM").font(.caption.bold())
+                Picker("Framing", selection: Binding(get: { movie.framing ?? .fit }, set: {
+                    store.setVideoFraming($0, cueID: cueID, in: listID); refresh()
+                })) { ForEach(VideoFraming.allCases, id: \.self) { Text($0.label).tag($0) } }
+                row("ZOOM", value: movie.scale, range: 0.1...4) { store.setVideoScale($0, cueID: cueID, in: listID) }
+                row("HORIZONTAL · →", value: movie.offsetX ?? 0, range: -2...2) { store.setVideoPosition(x: $0, cueID: cueID, in: listID) }
+                row("VERTICAL · ↑", value: movie.offsetY ?? 0, range: -2...2) { store.setVideoPosition(y: $0, cueID: cueID, in: listID) }
+                HStack {
+                    Button("←") { store.setVideoPosition(x: (movie.offsetX ?? 0) - 0.01, cueID: cueID, in: listID); refresh() }
+                    Button("→") { store.setVideoPosition(x: (movie.offsetX ?? 0) + 0.01, cueID: cueID, in: listID); refresh() }
+                    Button("↑") { store.setVideoPosition(y: (movie.offsetY ?? 0) + 0.01, cueID: cueID, in: listID); refresh() }
+                    Button("↓") { store.setVideoPosition(y: (movie.offsetY ?? 0) - 0.01, cueID: cueID, in: listID); refresh() }
+                    Button("Center") { store.setVideoPosition(x: 0, y: 0, cueID: cueID, in: listID); refresh() }
+                }.controlSize(.small).help("Move by 1% of the output canvas")
+                Toggle("Lock original proportions", isOn: Binding(get: { movie.keepsAspectRatio }, set: {
+                    store.setVideoAspectLock($0, cueID: cueID, in: listID); refresh()
+                }))
+                row("WIDTH", value: movie.widthScale ?? 1, range: 0.1...4) { store.setVideoDimensions(width: $0, cueID: cueID, in: listID) }
+                row("HEIGHT", value: movie.heightScale ?? 1, range: 0.1...4) { store.setVideoDimensions(height: $0, cueID: cueID, in: listID) }
+                Button("Reset transform") { store.resetVideoTransform(cueID, in: listID); refresh() }
+                HStack {
+                    Button("Bring to front") { playback.video.bringToFront(cueID) }
+                    Button("Send to back") { playback.video.sendToBack(cueID) }
+                }.controlSize(.small).disabled(!playback.video.contains(cueID))
+                Text("Multiple visual cues share the output. The last cue launched is on top; each cue keeps its own transform and audio.").font(.caption).foregroundColor(.secondary)
+            }
+        }
+    }
+}

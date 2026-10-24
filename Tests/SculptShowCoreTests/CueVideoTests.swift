@@ -28,7 +28,7 @@ final class CueVideoTests: XCTestCase {
         XCTAssertEqual(CueVideo.opacity(elapsed: 5, duration: 10, fadeIn: 0, fadeOut: 0), 1)
         XCTAssertEqual(CueVideo.opacity(elapsed: 1, duration: 2, fadeIn: 4, fadeOut: 4), 0.25)
         XCTAssertFalse(CueVideo(sourcePath: "", duration: 0).isValid)
-        XCTAssertEqual(CueVideo(sourcePath: "m", duration: 1, scale: 4).scale, 1)
+        XCTAssertEqual(CueVideo(sourcePath: "m", duration: 1, scale: 4).scale, 4)
     }
     func testPortableVideoCopySaveRenameAndVersion() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

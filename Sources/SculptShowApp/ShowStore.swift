@@ -490,7 +490,42 @@ final class ShowStore: ObservableObject {
         }
     }
     func setVideoScale(_ value: Double, cueID: UUID, in listID: UUID) {
-        editCue(cueID, list: listID) { $0.video?.scale = min(1, max(0.1, value)) }
+        editCue(cueID, list: listID) { $0.video?.scale = value.isFinite ? min(4, max(0.1, value)) : 1 }
+    }
+
+    func setVideoPosition(x: Double? = nil, y: Double? = nil, cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) {
+            if let x, x.isFinite { $0.video?.offsetX = min(2, max(-2, x)) }
+            if let y, y.isFinite { $0.video?.offsetY = min(2, max(-2, y)) }
+        }
+    }
+    func setVideoDimensions(width: Double? = nil, height: Double? = nil, cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) { cue in
+            guard var movie = cue.video else { return }
+            if let width, width.isFinite {
+                movie.widthScale = min(4, max(0.1, width))
+                if movie.keepsAspectRatio { movie.heightScale = movie.widthScale }
+            }
+            if let height, height.isFinite {
+                movie.heightScale = min(4, max(0.1, height))
+                if movie.keepsAspectRatio { movie.widthScale = movie.heightScale }
+            }
+            cue.video = movie
+        }
+    }
+    func setVideoAspectLock(_ locked: Bool, cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) { cue in
+            guard var movie = cue.video else { return }
+            movie.lockAspectRatio = locked
+            if locked { movie.heightScale = movie.widthScale ?? 1; if movie.framing == .stretch { movie.framing = .fit } }
+            cue.video = movie
+        }
+    }
+    func resetVideoTransform(_ cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) {
+            $0.video?.scale = 1; $0.video?.offsetX = 0; $0.video?.offsetY = 0
+            $0.video?.widthScale = 1; $0.video?.heightScale = 1; $0.video?.lockAspectRatio = true; $0.video?.framing = .fit
+        }
     }
 
     func rebuildVideoSoundtrack(_ cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
@@ -501,7 +536,7 @@ final class ShowStore: ObservableObject {
     }
 
     func setVideoFraming(_ value: VideoFraming, cueID: UUID, in listID: UUID) {
-        editCue(cueID, list: listID) { $0.video?.framing = value }
+        editCue(cueID, list: listID) { $0.video?.framing = value; if value == .stretch { $0.video?.lockAspectRatio = false } }
     }
     func setImageDuration(_ value: Double, cueID: UUID, in listID: UUID) {
         guard value.isFinite, show.cue(cueID)?.video?.isImage == true else { return }
