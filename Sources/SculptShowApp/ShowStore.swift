@@ -428,7 +428,7 @@ final class ShowStore: ObservableObject {
     }
 
     func importVideo(to listID: UUID) {
-        let panel = NSOpenPanel(); panel.title = "Import silent video cue"
+        let panel = NSOpenPanel(); panel.title = "Import video cue"
         panel.allowedContentTypes = [.movie]; panel.allowsMultipleSelection = false
         panel.canChooseFiles = true; panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
