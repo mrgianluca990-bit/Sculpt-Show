@@ -246,6 +246,7 @@ struct ShowWaveformOverview: View {
             if let cue = store.selectedCue, let listID = store.selectedListID {
                 HStack(spacing: 8) {
                     Image(systemName: "scope").foregroundColor(.cyan)
+                    CueRangeEditor(cue: cue, listID: listID, compact: true).id(cue.id)
                     CuePlayFromEditor(cue: cue)
                         .environmentObject(playback)
                     Spacer(minLength: 3)
@@ -277,6 +278,10 @@ struct ShowWaveformOverview: View {
         GeometryReader { geo in
             ScrollView([.horizontal, .vertical]) {
                 VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing:8) {
+                        Text("PLAYBACK IN / OUT").font(.caption2).foregroundStyle(.cyan).frame(width:135,alignment:.leading)
+                        CueRangeWaveformRail(cue:cue,listID:listID,duration:timelineDuration(cue),snap:snap)
+                    }
                     HStack(spacing: 8) {
                         Text("MARKERS · double-click to add")
                             .font(.system(size: 9, weight: .semibold, design: .monospaced))
@@ -340,6 +345,7 @@ struct ShowWaveformOverview: View {
     }
 
     private func timelineDuration(_ cue: Cue) -> Double {
+        if let video = cue.video { return max(video.duration,0.01) }
         if cue.durationMode == .fixed { return max(cue.durationSeconds, 0.01) }
         return max(0.01, cue.audioElements.compactMap { cache.envelopes[$0.sourcePath]?.duration }.max() ?? cue.durationSeconds)
     }
@@ -503,6 +509,12 @@ private struct WaveformStemLane: View {
                             .foregroundColor(failed ? .orange : .secondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                    let rangeStart = CGFloat(cue.playbackStart / duration) * geometry.size.width
+                    let rangeEnd = CGFloat((cue.playbackRange?.end ?? duration) / duration) * geometry.size.width
+                    Rectangle().fill(Color.black.opacity(0.55)).frame(width:rangeStart).allowsHitTesting(false)
+                    Rectangle().fill(Color.black.opacity(0.55)).frame(width:max(0,geometry.size.width-rangeEnd)).offset(x:rangeEnd).allowsHitTesting(false)
+                    WaveformRangeBoundary(cue:cue,listID:listID,duration:duration,width:geometry.size.width,snap:snap,start:true)
+                    WaveformRangeBoundary(cue:cue,listID:listID,duration:duration,width:geometry.size.width,snap:snap,start:false)
                     // Marker lines are draggable directly ON every waveform,
                     // not just from the common ruler. They share one marker ID.
                     ForEach(cue.markers) { marker in

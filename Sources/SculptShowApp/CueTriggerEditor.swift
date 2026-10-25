@@ -15,7 +15,7 @@ struct CueTriggerEditor: View {
     let cue: Cue
     let listID: UUID
     @State private var alias = ""
-    @State private var expanded = true
+    @State private var expanded = false
     @State private var timecode = "00:00:00:00"
     private var settings: CueTriggers { store.show.cue(cue.id)?.triggers ?? cue.triggers }
     private func update(_ change: (inout CueTriggers) -> Void) {
@@ -72,7 +72,7 @@ struct CueTriggerEditor: View {
             Text("OSC receiver must be enabled in Audio/MIDI Setup → OSC Control. Duplicate key/MIDI/OSC assignments are rejected.").font(.caption2).foregroundStyle(.secondary)
         }
         }
-        CueMessageEditor(cueID: cue.id)
+        CueMessageEditor(cueID: cue.id, listID: listID)
         }
         .onAppear { alias = settings.oscAlias; timecode = settings.timecode?.address ?? "00:00:00:00"; midi.refresh() }
         .onDisappear { if midi.learningCueID == cue.id { midi.learningCueID = nil } }

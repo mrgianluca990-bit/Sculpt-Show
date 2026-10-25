@@ -45,7 +45,7 @@ public enum NativeMarkerLoopPlanner {
                 start = markers[i - 1].positionSeconds
             }
             let end = marker.positionSeconds
-            guard end - start >= 0.4 && end - start <= 600 else { continue }
+            guard start >= cue.playbackStart, end <= (cue.playbackRange?.end ?? 86400), end - start >= 0.4 && end - start <= 600 else { continue }
             matches.append(NativeMarkerLoop(triggerMarkerID: marker.id,
                                              inSeconds: start, outSeconds: end,
                                              conditionCueID: rule.conditionCueID, conditionState: rule.conditionState, ruleID: rule.id))

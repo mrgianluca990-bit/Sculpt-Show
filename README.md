@@ -1,4 +1,13 @@
-# Sculpt Show v0.18.2 — Inspector/LTC dock + offline Normalize Audio
+# Sculpt Show v0.23.0 — Cue IN/OUT, inspector e guida italiana
+
+## Guida italiana e versione corrente
+
+SHOW 0.23.0 include la [guida utente italiana completa](docs/SCULPT_SHOW_GUIDA_UTENTE_IT.md), disponibile offline dal menu Help dell’app. La [versione HTML](docs/SCULPT_SHOW_GUIDA_UTENTE_IT.html) è consultabile/stampabile; il [rapporto sorgenti](docs/SCULPT_SHOW_VERIFICA_GUIDA_IT.json) registra gli hash del codice verificato. La guida distingue funzioni operative, MTC storico escluso, backup non implementato e collaudi hardware ancora necessari. IN/OUT comuni alla cue si digitano in General o nella waveform e si trascinano sul grafico; i parametri video si confermano con Invio.
+
+
+## Note storiche fino alla 0.18.2
+
+Le note seguenti sono conservate come storico; per comportamento e limiti correnti usare la guida 0.23.0 sopra.
 
 ## Layout
 - Inspector and its Timecode monitor share a permanent right-hand rail, outside the mixer/waveform `VSplitView`. Opening or resizing the mixer cannot cover the right rail.

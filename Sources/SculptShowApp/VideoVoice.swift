@@ -13,6 +13,8 @@ final class VideoVoice {
     private var image = false
     private var looping: Bool
     private var duration: Double
+    private let sourceStart: Double
+    private let sourceEnd: Double
     private var stopped = false
     private var isPlaying = false
     private var notBefore: TimeInterval = 0
@@ -29,8 +31,8 @@ final class VideoVoice {
     var onEnded: (() -> Void)?
     var onLoop: (() -> Void)?
     var onFailure: ((String) -> Void)?
-    init(id: UUID, geometry: CueVideo, looping: Bool) {
-        self.id = id; self.looping = looping; duration = geometry.duration
+    init(id: UUID, geometry: CueVideo, looping: Bool, sourceStart: Double = 0, sourceEnd: Double? = nil) {
+        self.id = id; self.looping = looping; self.sourceStart = sourceStart; self.sourceEnd = sourceEnd ?? geometry.duration; duration = (sourceEnd ?? geometry.duration) - sourceStart
         let queue = AVQueuePlayer(); player = queue
         layer = VideoVisualLayer(id: id, geometry: geometry, player: queue)
         player.isMuted = true; player.automaticallyWaitsToMinimizeStalling = false
@@ -74,7 +76,7 @@ final class VideoVoice {
                     let host = ready(self.duration); guard !self.stopped else { return }
                     self.startStill(at: requested, host: host); return
                 }
-                let (composition, length) = try await VideoPlayback.silentAsset(URL(fileURLWithPath: self.layer.geometry.sourcePath))
+                let (composition, length) = try await VideoPlayback.silentAsset(URL(fileURLWithPath: self.layer.geometry.sourcePath), start: self.sourceStart, end: self.sourceEnd)
                 _ = try await composition.load(.duration)
                 guard let track = try await composition.loadTracks(withMediaType: .video).first else { throw VideoPlayback.Failure("Missing video track") }
                 let size = try await track.load(.naturalSize), transform = try await track.load(.preferredTransform)

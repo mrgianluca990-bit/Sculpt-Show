@@ -545,6 +545,7 @@ final class ShowStore: ObservableObject {
     }
     func setImageDuration(_ value: Double, cueID: UUID, in listID: UUID) {
         guard value.isFinite, show.cue(cueID)?.video?.isImage == true else { return }
+        if let end = show.cue(cueID)?.playbackRange?.end, value < end { errorMessage = "Adjust OUT before shortening the image below it."; return }
         editCue(cueID, list: listID) {
             let duration = min(86400, max(0.1, value))
             $0.video?.duration = duration; $0.durationSeconds = duration
@@ -1319,6 +1320,7 @@ final class ShowStore: ObservableObject {
 
     /// An explicit container duration is independent of the attached media.
     func setCueDuration(_ id: UUID, in list: UUID, to seconds: Double) {
+        if let end = show.cue(id)?.playbackRange?.end, seconds < end { errorMessage = "Adjust OUT before shortening the cue below it."; return }
         editCue(id, list: list) {
             $0.durationSeconds = min(max(0, seconds), 86400)
             $0.durationMode = .fixed
@@ -2048,6 +2050,8 @@ final class ShowStore: ObservableObject {
         commit(updated)
     }
 
+
+    func commitCueRange(_ updated: Show) { commit(updated) }
 
     private func commit(_ updated: Show) {
         guard updated != show else { return }

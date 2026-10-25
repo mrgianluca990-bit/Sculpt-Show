@@ -6,6 +6,7 @@ struct VideoTransformEditor: View {
     @EnvironmentObject private var playback: PlaybackEngine
     let cueID: UUID
     let listID: UUID
+    @State private var expanded = false
     private var movie: CueVideo? { store.show.cue(cueID)?.video }
     private func refresh() { if let movie { playback.video.setGeometry(movie, for: cueID) } }
     private func row(_ name: String, value: Double, range: ClosedRange<Double>, edit: @escaping (Double) -> Void) -> some View {
@@ -14,8 +15,9 @@ struct VideoTransformEditor: View {
             HStack {
                 Text(name).font(.caption)
                 Spacer()
-                TextField("Percent", value: Binding(get: { binding.wrappedValue * 100 }, set: { binding.wrappedValue = $0 / 100 }), format: .number.precision(.fractionLength(0...2)))
-                    .frame(width: 70).textFieldStyle(.roundedBorder)
+                ConfirmedNumberField(value: value * 100, range: (range.lowerBound * 100)...(range.upperBound * 100), label: name) { next in
+                    edit(next / 100); refresh()
+                }.frame(width: 70, height: 24)
                 Text("%").font(.caption)
             }
             Slider(value: binding, in: range)
@@ -23,8 +25,8 @@ struct VideoTransformEditor: View {
     }
     var body: some View {
         if let movie {
+            DisclosureGroup("VIDEO TRANSFORM", isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("VIDEO TRANSFORM").font(.caption.bold())
                 Picker("Transform", selection: Binding(get: { movie.framing ?? .fit }, set: {
                     store.setVideoFraming($0, cueID: cueID, in: listID); refresh()
                 })) { ForEach(VideoFraming.allCases, id: \.self) { Text($0.label).tag($0) } }
@@ -47,6 +49,7 @@ struct VideoTransformEditor: View {
                     Button("Send to back") { playback.video.sendToBack(cueID) }
                 }.controlSize(.small).disabled(!playback.video.contains(cueID))
                 Text("Multiple visual cues share the output. The last cue launched is on top; each cue keeps its own transform and audio.").font(.caption).foregroundColor(.secondary)
+            }
             }
         }
     }

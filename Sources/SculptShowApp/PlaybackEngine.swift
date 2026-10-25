@@ -506,6 +506,7 @@ final class PlaybackEngine: ObservableObject {
               from markerOffsetSeconds: Double = 0,
               restartPaused: Bool = false) -> Bool {
         guard !projectTransitionInProgress, requestedCue.enabled else { return false }
+        if let range = requestedCue.playbackRange, !range.isValid { errorMessage = "Invalid cue IN/OUT."; return false }
         if (requestedCue.video != nil && requestedCue.video?.audioPrepared != true) || (requestedCue.hasAudio && !projectAudioReady) {
             errorMessage = "Prepare project audio before GO. Live sample-rate conversion is disabled."
             return false
@@ -577,11 +578,11 @@ final class PlaybackEngine: ObservableObject {
                 }
             }
             let length = cue.timelineLength(audioEnds: audioEnds)
-            guard length > 0.001 else {
+            guard length - cue.playbackStart >= 0.001 else {
                 errorMessage = "Cue ‘\(cue.name)’ has zero duration."
                 return false
             }
-            let position = min(max(0, requestedPosition), max(0, length - 0.001))
+            let position = min(max(cue.playbackStart, requestedPosition), max(cue.playbackStart, length - 0.001))
             let lead = try routedAudio.start(cue, from: position,
                 fade: cue.fadeInSeconds > 0 ? 0 : 1)
             // Apply list trim before the scheduled first audible frame.
@@ -592,7 +593,7 @@ final class PlaybackEngine: ObservableObject {
             activeCues[cue.id] = cue
             tracks[cue.id] = []
             elapsedAtStart[cue.id] = position
-            lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
+            lastMarkerPosition[cue.id] = position - 0.0001
             startedAt[cue.id] = ProcessInfo.processInfo.systemUptime + lead
             snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length, sampledAt: max(ProcessInfo.processInfo.systemUptime, startedAt[cue.id] ?? 0))
             updateGeneratedLTC()
@@ -632,15 +633,15 @@ final class PlaybackEngine: ObservableObject {
         }
         let ends = prepared.map { $0.start + ($0.sourceOut - $0.sourceIn) }
         let length = cue.timelineLength(audioEnds: ends)
-        guard length > 0.001 else {
+        guard length - cue.playbackStart >= 0.001 else {
             errorMessage = "Cue ‘\(cue.name)’ has zero duration. Set a container length."
             return false
         }
-        let position = min(max(0, requestedPosition), max(0, length - 0.001))
+        let position = min(max(cue.playbackStart, requestedPosition), max(cue.playbackStart, length - 0.001))
         activeCues[cue.id] = cue
         tracks[cue.id] = prepared
         elapsedAtStart[cue.id] = position
-        lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
+        lastMarkerPosition[cue.id] = position - 0.0001
         snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length, sampledAt: max(ProcessInfo.processInfo.systemUptime, startedAt[cue.id] ?? 0))
         armAudio(for: cue.id, from: position)
         onStarted?(cue.id)
@@ -656,9 +657,9 @@ final class PlaybackEngine: ObservableObject {
         activeCues[cue.id] = cue
         elapsedAtStart[cue.id] = position
         snapshots[cue.id] = Snapshot(phase: .waiting, elapsed: 0, duration: movie.duration)
-        video.start(cue, position: position) { [weak self] duration in
+        video.start(cue, position: max(cue.playbackStart, position)) { [weak self] duration in
             guard let self, self.activeCues[cue.id] != nil, self.video.contains(cue.id) else { return nil }
-            let p = min(max(0, position), max(0, duration - 0.001))
+            let p = min(max(cue.playbackStart, position), max(cue.playbackStart, duration - 0.001))
             let host = self.startVideoAudio(cue, position: p, duration: duration)
             if self.activeCues[cue.id] != nil { self.onStarted?(cue.id) }
             return host
@@ -667,19 +668,20 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func visualLevel(_ cue: Cue, elapsed: Double, duration: Double) -> Double {
-        CueVideo.opacity(elapsed: elapsed, duration: duration,
+        if cue.playbackRange != nil { return cue.playbackEnvelope(at: elapsed, end: duration) }
+        return CueVideo.opacity(elapsed: elapsed, duration: duration,
             fadeIn: videoHasLooped.contains(cue.id) ? 0 : cue.fadeInSeconds,
             fadeOut: cue.loop ? 0 : cue.fadeOutSeconds)
     }
     private func repeatVisual(_ id: UUID) {
         guard let cue = activeCues[id], let state = snapshots[id], state.phase == .playing else { return }
         videoHasLooped.insert(id)
-        let audioPosition = routedCues.contains(id) ? cueElapsed(id) : 0
-        let position = audioPosition < max(0, state.duration - 0.1) ? audioPosition : 0
+        let audioPosition = routedCues.contains(id) ? cueElapsed(id) : cue.playbackStart
+        let position = audioPosition < max(cue.playbackStart, state.duration - 0.001) ? audioPosition : cue.playbackStart
         if !routedCues.contains(id) {
             elapsedAtStart[id] = position; startedAt[id] = ProcessInfo.processInfo.systemUptime
         }
-        lastMarkerPosition[id] = -0.0001
+        lastMarkerPosition[id] = cue.playbackStart - 0.0001
         video.repeatVideo(id, at: position)
         video.setOpacity(visualLevel(cue, elapsed: position, duration: state.duration), for: id)
     }
@@ -837,8 +839,7 @@ final class PlaybackEngine: ObservableObject {
     /// audio player from the timer: that caused the multitrack misalignment.
     private func refreshAudio(for id: UUID, elapsed: Double) {
         if routedCues.contains(id), let cue = activeCues[id] {
-            let fade = max(0, cue.fadeInSeconds)
-            let fadeInFactor = cue.video != nil ? (videoFadeLevels[id].map(Float.init) ?? Float(visualLevel(cue, elapsed: elapsed, duration: snapshots[id]?.duration ?? 0))) : (fade > 0 ? Float(min(1, max(0, elapsed / fade))) : 1)
+            let fadeInFactor = cue.video != nil ? (videoFadeLevels[id].map(Float.init) ?? Float(visualLevel(cue, elapsed: elapsed, duration: snapshots[id]?.duration ?? 0))) : Float(cue.playbackEnvelope(at: elapsed, end: snapshots[id]?.duration ?? 0))
             var fadeOutFactor: Float = 1
             if let data = routedFadeStarts[id] {
                 let elapsedFade = max(0, ProcessInfo.processInfo.systemUptime - data.started)
@@ -865,8 +866,7 @@ final class PlaybackEngine: ObservableObject {
             }
             // Apply fade-in relative to each element's timeline position.
             // Do not prematurely fade an element before its scheduled offset.
-            let fade = max(0, cue.fadeInSeconds)
-            let fadeFactor = fade > 0 ? min(1, max(0, local / fade)) : 1
+            let fadeFactor = cue.playbackEnvelope(at: elapsed, end: snapshots[id]?.duration ?? 0)
             list[index].player.volume = trackGain(id, elementID: list[index].elementID) * Float(fadeFactor)
         }
         tracks[id] = list
@@ -1019,7 +1019,8 @@ final class PlaybackEngine: ObservableObject {
 
     func seek(_ id: UUID, to fraction: Double) {
         guard let state = snapshots[id] else { return }
-        seek(id, toSeconds: min(max(fraction, 0), 0.9999) * state.duration)
+        let start = activeCues[id]?.playbackStart ?? 0
+        seek(id, toSeconds: start + min(max(fraction, 0), 0.9999) * (state.duration - start))
     }
 
     /// Jump directly to a marker or timeline position, without firing skipped markers.
@@ -1027,7 +1028,8 @@ final class PlaybackEngine: ObservableObject {
     func seek(_ id: UUID, toSeconds seconds: Double) {
         guard let state = snapshots[id], state.phase != .waiting, state.phase != .fading,
               seconds.isFinite else { return }
-        let position = min(max(seconds, 0), max(0, state.duration - 0.001))
+        let start = activeCues[id]?.playbackStart ?? 0
+        let position = min(max(seconds, start), max(start, state.duration - 0.001))
         elapsedAtStart[id] = position
         lastMarkerPosition[id] = position
         snapshots[id]?.elapsed = position
@@ -1158,17 +1160,18 @@ final class PlaybackEngine: ObservableObject {
             if elapsed >= snapshot.duration {
                 if video.contains(id) && activeCues[id]?.loop == true {
                     repeatVisual(id)
-                    snapshot.elapsed = 0; stage(id, snapshot)
+                    snapshot.elapsed = activeCues[id]?.playbackStart ?? 0; stage(id, snapshot)
                     continue
                 }
                 if activeCues[id]?.video == nil && activeCues[id]?.loop == true && snapshot.phase == .playing {
                     // Preserve overshoot so the loop does not drift by
                     // a full refresh-timer interval on every repetition.
-                    let offset = min(max(0, elapsed - snapshot.duration),
-                                     max(0, snapshot.duration - 0.001))
+                    let start = activeCues[id]?.playbackStart ?? 0
+                    let offset = start + min(max(0, elapsed - snapshot.duration),
+                                     max(0, snapshot.duration - start - 0.001))
                     snapshot.elapsed = offset
                     stage(id, snapshot)
-                    lastMarkerPosition[id] = -0.0001
+                    lastMarkerPosition[id] = (activeCues[id]?.playbackStart ?? 0) - 0.0001
                     // No fixed 80ms silence is inserted before the next cycle.
                     // Truly sample-continuous loops still require pre-scheduled
                     // transitions in the render engine.

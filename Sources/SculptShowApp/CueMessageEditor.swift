@@ -5,12 +5,16 @@ struct CueMessageEditor: View {
     @EnvironmentObject private var store: ShowStore
     @EnvironmentObject private var midi: MIDIControl
     let cueID: UUID
+    let listID: UUID
+    @State private var expanded = false
     private var settings: CueTriggers { store.show.cue(cueID)?.triggers ?? CueTriggers() }
     private func update(_ body: (inout CueTriggers) -> Void) { var value = settings; body(&value); store.setCueTriggers(value, cueID: cueID, using: midi) }
     var body: some View {
-        DisclosureGroup("SEND ON CUE START · MIDI / OSC") {
+        DisclosureGroup("SENDS · MIDI / OSC / TIMECODE", isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Sent once at each new GO, including timecode/rule GO. Resume, seek and native loops do not resend. Messages run on the control queue, not sample-locked to audio.").font(.caption2).foregroundStyle(.secondary)
+                if let cue = store.show.cue(cueID) { CueTimecodeSendEditor(cue: cue, listID: listID).id(cueID) }
+                Divider()
+                Text("MIDI / OSC · Sent once at each new GO, including timecode/rule GO. Resume, seek and native loops do not resend. Messages run on the control queue, not sample-locked to audio.").font(.caption2).foregroundStyle(.secondary)
                 ForEach(settings.midiMessages ?? []) { message in
                     MIDIMessageRow(message: message) { next in update { value in
                         guard let index = value.midiMessages?.firstIndex(where: { $0.id == message.id }) else { return }; value.midiMessages?[index] = next

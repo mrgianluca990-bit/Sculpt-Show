@@ -443,6 +443,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     public var ignoreParentRules: Bool
     /// This belongs to the cue, not the files inside it.
     public var durationSeconds: Double
+    public var playbackRange: CuePlaybackRange? = nil
 
     public var isEmpty: Bool { elements.isEmpty && video == nil }
     public var hasAudio: Bool { elements.contains { $0.kind == .audio } }
@@ -498,9 +499,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
 
     /// The app uses this for the effective timeline length; source lengths are measured at playback.
     public func timelineLength(audioEnds: [Double]) -> Double {
-        if let video { return video.duration }
-        if durationMode == .fixed { return max(0, min(86400, durationSeconds)) }
-        return max(audioEnds.max() ?? 0, 0)
+        let full = sourceTimelineLength(audioEnds: audioEnds)
+        return min(full, playbackRange?.end ?? full)
     }
 
     public init(id: UUID = UUID(), name: String, mediaPath: String = "",
@@ -532,7 +532,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case triggers, video
+        case triggers, video, playbackRange
         case id, name, tint, elements, markers, durationMode, gain, fadeOutSeconds, enabled
         case fadeInSeconds, loop, followOnFinish, preWaitSeconds, rules, ignoreParentRules
         case durationSeconds
@@ -562,6 +562,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         if let contents = try c.decodeIfPresent([CueElement].self, forKey: .elements) {
             elements = contents
         }
+        playbackRange = try c.decodeIfPresent(CuePlaybackRange.self, forKey: .playbackRange)
+        if let playbackRange, !playbackRange.isValid { throw DecodingError.dataCorruptedError(forKey: .playbackRange, in: c, debugDescription: "Invalid cue IN/OUT") }
         video = try c.decodeIfPresent(CueVideo.self, forKey: .video)
         if let video, !video.isValid { throw DecodingError.dataCorruptedError(forKey: .video, in: c, debugDescription: "Invalid video settings") }
         triggers = try c.decodeIfPresent(CueTriggers.self, forKey: .triggers) ?? CueTriggers()
@@ -576,6 +578,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(playbackRange, forKey: .playbackRange)
         try c.encodeIfPresent(video, forKey: .video)
         try c.encode(triggers, forKey: .triggers)
         try c.encode(tint, forKey: .tint)

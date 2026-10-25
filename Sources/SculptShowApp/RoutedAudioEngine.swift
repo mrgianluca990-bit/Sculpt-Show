@@ -518,7 +518,8 @@ final class RoutedAudioEngine {
 
     private(set) var scheduledHostTimes: [UUID: UInt64] = [:]
 
-    func start(_ cue: Cue, from elapsed: Double, fade: Float, hostLead: Double = 0.22) throws -> Double {
+    func start(_ cue: Cue, from requestedPosition: Double, fade: Float, hostLead: Double = 0.22) throws -> Double {
+        let elapsed = max(cue.playbackStart, requestedPosition)
         stopTestTone()
         guard isReady, let matrix, let device = selectedDevice else { throw RoutingError.engineNotReady }
         if cue.hasAudio && monitor.enabled && !monitor.isAvailable(deviceUID: device.uid, channels: device.channels) {
@@ -591,7 +592,7 @@ final class RoutedAudioEngine {
         let wholeCue = !cue.hasTimecode && !hasMarkerReturn && !files.isEmpty && cueLength > 0
         let candidate = NativeMarkerLoopPlanner.plan(for: cue)
         var conditional: ConditionalLoopRealtime?
-        let streamPlan = wholeCue ? NativeMarkerLoop(triggerMarkerID: nil, inSeconds: 0, outSeconds: cueLength, conditionCueID: cue.id) : candidate
+        let streamPlan = wholeCue ? NativeMarkerLoop(triggerMarkerID: nil, inSeconds: cue.playbackStart, outSeconds: cueLength, conditionCueID: cue.id) : candidate
         if let plan = streamPlan, let conditionID = plan.conditionCueID, elapsed < plan.outSeconds {
             let pcm = try files.map { stem, _ -> PreparedConditionalPCM in
                 let prepared = try preparedConditionalFiles[stem.sourcePath] ?? PreparedConditionalPCM(path: stem.sourcePath, sampleRate: Int(sampleRate))

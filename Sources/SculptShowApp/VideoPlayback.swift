@@ -12,7 +12,7 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
     var owner: UUID? { activeIDs.last }
     var preparing: Bool { !preparingIDs.isEmpty }
     var player: AVQueuePlayer { owner.flatMap { voices[$0]?.player } ?? idlePlayer }
-    var elapsed: Double { owner.flatMap { voices[$0]?.elapsed } ?? 0 }
+    var elapsed: Double { owner.map { elapsed(for:$0) } ?? 0 }
     var opacity: Double { owner.flatMap { voices[$0]?.layer.opacityValue } ?? 0 }
     @Published private(set) var availableScreens = NSScreen.screens
     @Published private(set) var projectionEnabled = UserDefaults.standard.bool(forKey: "sculpt.show.projectionEnabled")
@@ -22,6 +22,7 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var localPreviewVisible = false
     private let presentsOutput: Bool
     private let idlePlayer = AVQueuePlayer()
+    private var sourceStarts: [UUID: Double] = [:]
     private var voices: [UUID: VideoVoice] = [:]
     private var window: NSWindow?
     private var previewWindow: NSWindow?
@@ -51,7 +52,7 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
     func contains(_ id: UUID) -> Bool { voices[id] != nil }
     func canStart(_ id: UUID) -> Bool { voices[id] != nil || voices.count < VideoCompositionPolicy.maximumCues }
     func player(for id: UUID) -> AVQueuePlayer? { voices[id]?.player }
-    func elapsed(for id: UUID) -> Double { voices[id]?.elapsed ?? 0 }
+    func elapsed(for id: UUID) -> Double { (voices[id]?.elapsed ?? 0) + (sourceStarts[id] ?? 0) }
     func opacity(for id: UUID) -> Double { voices[id]?.layer.opacityValue ?? 0 }
     func queueDepth(for id: UUID) -> Int { voices[id]?.player.items().count ?? 0 }
     func loopCount(for id: UUID) -> Int { voices[id]?.loopCount ?? 0 }
@@ -60,35 +61,40 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
     func start(_ cue: Cue, position: Double, ready: @escaping (Double) -> UInt64?) {
         guard let movie = cue.video, canStart(cue.id) else { onFailure?(cue.id, "Maximum simultaneous visual cues reached."); return }
         stop(cue.id)
-        let voice = VideoVoice(id: cue.id, geometry: movie, looping: cue.loop)
+        let start = cue.playbackStart
+        let end = min(movie.duration, cue.playbackRange?.end ?? movie.duration)
+        guard end - start >= 0.001 else { onFailure?(cue.id, "Invalid video IN/OUT."); return }
+        sourceStarts[cue.id] = start
+        let voice = VideoVoice(id: cue.id, geometry: movie, looping: cue.loop, sourceStart: start, sourceEnd: end)
         voices[cue.id] = voice; activeIDs.append(cue.id); preparingIDs.insert(cue.id)
         surface?.setLayers(activeIDs.compactMap { voices[$0]?.layer })
         voice.onEnded = { [weak self] in self?.onEnded?(cue.id) }
         voice.onLoop = { [weak self] in self?.onLoop?(cue.id) }
         voice.onFailure = { [weak self] message in self?.onFailure?(cue.id, message) }
-        voice.start(position: position) { [weak self, weak voice] duration in
+        voice.start(position: max(0, position - start)) { [weak self, weak voice] duration in
             guard let self, let voice, self.voices[cue.id] === voice else { return nil }
             do { try self.prepareOutputForPlayback() }
             catch { self.onFailure?(cue.id, error.localizedDescription); return nil }
             self.preparingIDs.remove(cue.id)
             self.surface?.needsLayout = true
-            return ready(duration)
+            return ready(duration + start)
         }
     }
     func stop(_ id: UUID) {
         voices.removeValue(forKey: id)?.stop()
+        sourceStarts.removeValue(forKey: id)
         preparingIDs.remove(id); activeIDs.removeAll { $0 == id }
         surface?.setLayers(activeIDs.compactMap { voices[$0]?.layer })
     }
     func stop() { for id in activeIDs { stop(id) } }
     func pause(_ id: UUID) { voices[id]?.pause() }
-    func reposition(_ id: UUID, position: Double, playing: Bool, ready: @escaping () -> UInt64?) { voices[id]?.reposition(position, playing: playing, ready: ready) }
-    func repeatVideo(_ id: UUID, at position: Double) { voices[id]?.repeatStill(at: position) }
-    func align(_ id: UUID, to position: Double) { voices[id]?.align(to: position) }
+    func reposition(_ id: UUID, position: Double, playing: Bool, ready: @escaping () -> UInt64?) { voices[id]?.reposition(max(0, position - (sourceStarts[id] ?? 0)), playing: playing, ready: ready) }
+    func repeatVideo(_ id: UUID, at position: Double) { voices[id]?.repeatStill(at: max(0, position - (sourceStarts[id] ?? 0))) }
+    func align(_ id: UUID, to position: Double) { voices[id]?.align(to: max(0, position - (sourceStarts[id] ?? 0))) }
     func setLoop(_ enabled: Bool, for id: UUID) { voices[id]?.setLoop(enabled) }
     func setOpacity(_ value: Double, for id: UUID) { voices[id]?.layer.setOpacity(value) }
     func setGeometry(_ value: CueVideo, for id: UUID) {
-        guard value.isValid, let voice = voices[id] else { return }
+        guard value.isValid, let voice = voices[id], voice.layer.geometry != value else { return }
         voice.layer.geometry = value; surface?.needsLayout = true; surface?.layoutSubtreeIfNeeded()
     }
     func bringToFront(_ id: UUID) { guard contains(id) else { return }; activeIDs.removeAll { $0 == id }; activeIDs.append(id); surface?.setLayers(activeIDs.compactMap { voices[$0]?.layer }) }
@@ -219,10 +225,14 @@ final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
             return image
         }.value
     }
-    static func silentAsset(_ url: URL) async throws -> (AVMutableComposition, Double) {
+    static func silentAsset(_ url: URL, start: Double = 0, end: Double? = nil) async throws -> (AVMutableComposition, Double) {
         let source = AVURLAsset(url: url)
         guard let track = try await source.loadTracks(withMediaType: .video).first else { throw Failure("The file has no playable video track.") }
-        let range = try await track.load(.timeRange)
+        let original = try await track.load(.timeRange)
+        let full = CMTimeGetSeconds(original.duration)
+        let finish = min(full, end ?? full)
+        guard start >= 0, finish - start >= 0.001 else { throw Failure("Invalid video source IN/OUT.") }
+        let range = CMTimeRange(start: original.start + CMTime(seconds: start, preferredTimescale: 60000), duration: CMTime(seconds: finish - start, preferredTimescale: 60000))
         let duration = CMTimeGetSeconds(range.duration)
         guard duration.isFinite, duration > 0.001, duration <= 86400 else { throw Failure("Video must have a finite duration of less than 24 hours.") }
         let composition = AVMutableComposition()

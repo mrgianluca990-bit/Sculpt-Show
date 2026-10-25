@@ -115,6 +115,9 @@ struct SculptShowApp: App {
                 Button("Save Version") { showStore.saveVersion() }
                     .keyboardShortcut("s", modifiers: [.command, .option])
             }
+            CommandGroup(replacing: .help) {
+                Button("Guida utente italiana di SCULPT SHOW") { openWindow(id:"sculpt-user-guide") }
+            }
             CommandMenu("Screens") {
                 Button("Show Video") { playback.video.showVideoOutput() }
                 Button("Screens Setup…") { openWindow(id: "sculpt-screens") }
@@ -158,6 +161,9 @@ struct SculptShowApp: App {
                     .keyboardShortcut(".", modifiers: .command)
             }
         }
+        Window("Guida utente italiana · SCULPT SHOW", id:"sculpt-user-guide") {
+            UserGuideView().preferredColorScheme(.dark)
+        }.defaultSize(width:950,height:740)
         Window("Screens", id: "sculpt-screens") {
             VideoOutputSettings(video: playback.video).preferredColorScheme(.dark)
         }.windowResizability(.contentSize)

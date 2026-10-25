@@ -68,6 +68,15 @@ public enum ShowPreflight {
         }
         let monitorOutputs = show.monitor.reservedOutputs(deviceUID: deviceUID, channels: outputChannels)
         for cue in cues {
+            if let range = cue.playbackRange {
+                let full = cue.sourceTimelineLength(audioEnds: cue.audioElements.compactMap { media[$0.sourcePath]?.duration })
+                if !range.isValid || range.end > full + 0.00001 {
+                    add(.blocking,"cue-range",cue,nil,"Cue IN/OUT is outside the available full timeline. Reset or edit the range before GO.")
+                }
+                for marker in cue.markers where marker.positionSeconds < range.start || marker.positionSeconds > range.end {
+                    add(.warning,"marker-outside-range",cue,nil,"Marker \(marker.name) is outside the selected cue IN/OUT.")
+                }
+            }
             if cue.hasAudio && show.monitor.enabled && !show.monitor.isAvailable(deviceUID: deviceUID, channels: outputChannels) {
                 add(.blocking, "monitor-unavailable", cue, nil, ShowMonitorSettings.Failure.unavailable.localizedDescription)
             }

@@ -157,7 +157,6 @@ struct WorkspaceView: View {
     @AppStorage("SculptShow.RightPanel.v1") private var rightPanel = "Inspector"
     @State private var inspectorResizeStart: Double?
     @State private var expandedInspectorSections: Set<String> = []
-    @State private var inspectorTab = "GENERAL"
     @State private var keyboardMonitor: Any?
 
     var body: some View {
@@ -291,7 +290,8 @@ struct WorkspaceView: View {
                 store.handleRuleEvent(.stopping, source: id, using: playback)
             }
         }
-        .onChange(of: store.documentURL) { _ in timecodeReader.triggersArmed = false }
+        .onChange(of: store.selectedCueID) { _ in expandedInspectorSections.removeAll() }
+        .onChange(of: store.documentURL) { _ in timecodeReader.triggersArmed = false; expandedInspectorSections.removeAll() }
         .onChange(of: store.isLoadingProject) { loading in if loading { timecodeReader.triggersArmed = false } }
         .onChange(of: store.show) { next in
             playback.applyCueListTrims(next)
@@ -782,24 +782,8 @@ struct WorkspaceView: View {
                                   fontWeight: .medium) { newName in
                         store.renameCue(cue.id, in: listID, to: newName)
                     }
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 5) {
-                            ForEach(["GENERAL", "MARKER", "STEMS LTC", "RULES & ACTIONS"], id: \.self) { tab in
-                                Button(tab) { inspectorTab = tab }
-                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    .padding(.horizontal, 9)
-                                    .padding(.vertical, 8)
-                                    .foregroundStyle(inspectorTab == tab ? Color.white : Skin.soft)
-                                    .background(inspectorTab == tab ? Color(red: 0.22, green: 0.29, blue: 0.38) : Skin.raised,
-                                                in: RoundedRectangle(cornerRadius: 5))
-                                    .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                    Group {
-                        if inspectorTab == "GENERAL" {
+                    inspectorSection("GENERAL") {
                             VStack(alignment: .leading, spacing: 12) {
-                        CueTriggerEditor(cue: cue, listID: listID).id(cue.id)
                         if let movie = cue.video {
                             Text(movie.isImage == true ? "IMAGE" : "VIDEO").font(.headline)
                             VideoPreview(video: playback.video).frame(height: 130)
@@ -816,6 +800,8 @@ struct WorkspaceView: View {
                             }
                             Text("One screen: video window · second screen: fullscreen").font(.caption)
                         }
+                        Divider()
+                        CueRangeEditor(cue: cue, listID: listID).id(cue.id)
                         Divider()
                         HStack {
                             Button { store.duplicateCue(cue.id, in: listID) } label: {
@@ -873,9 +859,9 @@ struct WorkspaceView: View {
                             if movie.isImage == true {
                                 HStack {
                                     Text("IMAGE DURATION (s)")
-                                    TextField("Seconds", value: Binding(get: { store.show.cue(cue.id)?.video?.duration ?? movie.duration }, set: {
+                                    ConfirmedNumberField(value: store.show.cue(cue.id)?.video?.duration ?? movie.duration, range: 0.1...86400, decimals: 3, label: "Image duration in seconds") {
                                         store.setImageDuration($0, cueID: cue.id, in: listID)
-                                    }), format: .number).frame(width: 80).disabled(playback.snapshots[cue.id] != nil)
+                                    }.frame(width: 80, height: 24).disabled(playback.snapshots[cue.id] != nil)
                                 }
                             } else { Text("MOVIE DURATION · \(movie.duration, specifier: "%.2f") s").font(.caption) }
                         } else {
@@ -934,12 +920,18 @@ struct WorkspaceView: View {
                         ))
                         .toggleStyle(.switch)
                             }
-                        } else if inspectorTab == "MARKER" {
+                    }
+                    inspectorSection("MARKER") {
                         CueMarkersEditor(cue: cue, listID: listID,
                                          selectedMarkerID: $selectedMarkerID)
-                        } else if inspectorTab == "STEMS LTC" {
+                    }
+                    inspectorSection("TRIGGER") {
+                        CueTriggerEditor(cue: cue, listID: listID).id(cue.id)
+                    }
+                    inspectorSection("STEMS") {
                         CueContentsEditor(cue: cue, listID: listID)
-                        } else {
+                    }
+                    inspectorSection("RULES & ACTIONS") {
                         if let active = playback.snapshots[cue.id] {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(active.phase == .waiting ? "START IN" : "REMAINING")
@@ -973,7 +965,6 @@ struct WorkspaceView: View {
                                 }
                             }
                             }
-                        }
                     }
 
                 } else {
