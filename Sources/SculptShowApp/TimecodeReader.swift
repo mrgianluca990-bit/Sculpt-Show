@@ -23,9 +23,25 @@ final class LTCInputReader: ObservableObject {
     @Published var channel = 1
     @Published var rate: LTCFrameRate = .fps25
     @Published private(set) var running = false
-    @Published private(set) var locked = false
-    @Published private(set) var received = "--:--:--:--"
+    let signal = LTCSignalDisplay()
+    private(set) var locked = false { didSet { if locked != oldValue { signal.locked = locked } } }
+    private(set) var received = "--:--:--:--" { didSet { if received != oldValue { signal.received = received } } }
     @Published var errorMessage: String?
+
+    @Published var triggersArmed = false { didSet { scheduler.reset() } }
+    @Published private(set) var lastTrigger = "No timecode cue fired"
+    var showProvider: (() -> Show?)?
+    var onCue: ((UUID) -> Void)?
+    private var scheduler = TimecodeCueScheduler()
+
+    func accept(_ address: LTCTimecode, at stamp: Double = ProcessInfo.processInfo.systemUptime) {
+        received = address.display; locked = true; lastValid = Date()
+        guard triggersArmed, let show = showProvider?() else { return }
+        for id in scheduler.consume(address, at: stamp, in: show) {
+            lastTrigger = "\(show.cue(id)?.name ?? "Cue") · \(address.display)"
+            onCue?(id)
+        }
+    }
 
     private var engine: AVAudioEngine?
     private var decoder: OpaquePointer?
@@ -42,7 +58,7 @@ final class LTCInputReader: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 if let last = self.lastValid, Date().timeIntervalSince(last) > 0.7 {
-                    self.locked = false
+                    self.locked = false; self.scheduler.reset()
                 }
             }
         }
@@ -95,6 +111,7 @@ final class LTCInputReader: ObservableObject {
     func start() {
         guard !running else { return }
         errorMessage = nil
+        scheduler.reset()
         guard let device = devices.first(where: { $0.id == pickedID }),
               (1...device.channels).contains(channel) else {
             errorMessage = "Choose a connected Core Audio INPUT and channel first."
@@ -158,11 +175,9 @@ final class LTCInputReader: ObservableObject {
                                        UInt32(ptr.count), &address)
         }
         if decoded != 0 {
-            received = String(format: "%02d:%02d:%02d%@%02d", address.hours,
-                address.minutes, address.seconds, address.drop_frame != 0 ? ";" : ":",
-                address.frames)
-            locked = true
-            lastValid = Date()
+            let text = String(format: "%02d:%02d:%02d%@%02d", address.hours,
+                address.minutes, address.seconds, address.drop_frame != 0 ? ";" : ":", address.frames)
+            if let timecode = LTCTimecode(text: text, rate: rate) { accept(timecode) }
         }
     }
 
@@ -175,6 +190,8 @@ final class LTCInputReader: ObservableObject {
         if let decoder { sculpt_ltc_decoder_destroy(decoder) }
         decoder = nil
         running = false
+        triggersArmed = false
+        scheduler.reset()
         locked = false
         lastValid = nil
     }
@@ -191,48 +208,14 @@ struct TimecodeReaderView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Label("SMPTE LTC MONITOR", systemImage: "clock")
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(red: 0.93, green: 0.70, blue: 0.38))
+                    .foregroundColor(SculptTheme.gold)
                 Divider()
-                HStack {
-                    Text("GENERATED · LTC AUDIO OUT")
-                    Spacer()
-                    Text(playback.generatedLTC?.holding == true ? "HOLD" :
-                         playback.generatedLTC?.active == true ? "RUN" : "STOP")
-                        .foregroundColor(playback.generatedLTC?.holding == true ? .orange : .secondary)
-                    Circle().fill(playback.generatedLTC?.active == true ? Color.green :
-                                  playback.generatedLTC?.holding == true ? .orange : .gray)
-                        .frame(width: 8, height: 8)
-                }
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                Text(playback.generatedLTC?.timecode ?? "--:--:--:--")
-                    .font(.system(size: 31, weight: .medium, design: .monospaced))
-                    .monospacedDigit()
-                    .minimumScaleFactor(0.6)
-                    .lineLimit(1)
-                    .foregroundColor(playback.generatedLTC?.active == true ? .green :
-                                     playback.generatedLTC?.holding == true ? .orange : .secondary)
-                if let state = playback.generatedLTC {
-                    Text("\(state.cueName) · OUT \(state.output) · \(state.rate)")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
+                GeneratedLTCDisplay(clock:playback.displayClock)
                 Divider()
-                HStack {
-                    Text("RECEIVED · LTC AUDIO IN")
-                    Spacer()
-                    Circle().fill(reader.locked ? Color.green : Color.orange)
-                        .frame(width: 8, height: 8)
-                }
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                Text(reader.received)
-                    .font(.system(size: 31, weight: .medium, design: .monospaced))
-                    .monospacedDigit()
-                    .minimumScaleFactor(0.6)
-                    .lineLimit(1)
-                    .foregroundColor(reader.locked ? .green : .secondary)
-                Text(reader.locked ? "LTC LOCKED" : "WAITING FOR LTC")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundColor(reader.locked ? .green : .orange)
+                ReceivedLTCDisplay(signal:reader.signal)
+                Toggle("ARM CUE TIMECODE TRIGGERS", isOn: $reader.triggersArmed)
+                Text("LTC input → cue GO at the address set in General. Forward crossings only; no continuous chase. Stop input disarms triggers.").font(.caption2).foregroundStyle(.secondary)
+                Text(reader.lastTrigger).font(.caption2)
                 HStack(spacing: 5) {
                     Picker("INPUT", selection: $reader.pickedID) {
                         Text("Select device").tag(AudioDeviceID(0))
@@ -262,7 +245,7 @@ struct TimecodeReaderView: View {
                         if reader.running { reader.stop() } else { reader.start() }
                     }
                     .controlSize(.small)
-                    .disabled(!playback.snapshots.isEmpty)
+                    .disabled(!reader.running && !playback.snapshots.isEmpty)
                     .help("Configure LTC INPUT before playing cues; changing capture devices during a show is locked for safety")
                     Button { reader.refreshDevices() } label: {
                         Image(systemName: "arrow.clockwise")
@@ -273,7 +256,7 @@ struct TimecodeReaderView: View {
                     Spacer()
                 }
                 if let error = reader.errorMessage {
-                    Text(error).font(.caption2).foregroundColor(.orange)
+                    Text(error).font(.caption2).foregroundColor(SculptTheme.gold)
                 }
                 Text("To verify LTC, patch the dedicated LTC OUT to a Core Audio input or loopback. " +
                      "The receiver decodes actual biphase-mark PCM. Use matching frame rates. " +
@@ -286,5 +269,66 @@ struct TimecodeReaderView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct GeneratedLTCDisplay: View {
+    @ObservedObject var clock: PlaybackDisplayClock
+    var body: some View {
+        VStack(alignment:.leading,spacing:12) {
+                HStack {
+                    Text("GENERATED · LTC AUDIO OUT")
+                    Spacer()
+                    Text(clock.generatedLTC?.holding == true ? "HOLD" :
+                         clock.generatedLTC?.active == true ? "RUN" : "STOP")
+                        .foregroundColor(clock.generatedLTC?.holding == true ? .orange : .secondary)
+                    Circle().fill(clock.generatedLTC?.active == true ? Color.green :
+                                  clock.generatedLTC?.holding == true ? .orange : .gray)
+                        .frame(width: 8, height: 8)
+                }
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                Text(clock.generatedLTC?.timecode ?? "--:--:--:--")
+                    .font(.system(size: 31, weight: .medium, design: .monospaced))
+                    .monospacedDigit()
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(1)
+                    .foregroundColor(clock.generatedLTC?.active == true ? .green :
+                                     clock.generatedLTC?.holding == true ? .orange : .secondary)
+                if let state = clock.generatedLTC {
+                    Text("\(state.cueName) · OUT \(state.output) · \(state.rate)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+
+        }
+    }
+}
+
+@MainActor final class LTCSignalDisplay: ObservableObject {
+    @Published var locked = false
+    @Published var received = "--:--:--:--"
+}
+private struct ReceivedLTCDisplay: View {
+    @ObservedObject var signal: LTCSignalDisplay
+    var body: some View {
+        VStack(alignment:.leading,spacing:12) {
+                HStack {
+                    Text("RECEIVED · LTC AUDIO IN")
+                    Spacer()
+                    Circle().fill(signal.locked ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                }
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                Text(signal.received)
+                    .font(.system(size: 31, weight: .medium, design: .monospaced))
+                    .monospacedDigit()
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(1)
+                    .foregroundColor(signal.locked ? .green : .secondary)
+                Text(signal.locked ? "LTC LOCKED" : "WAITING FOR LTC")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(signal.locked ? .green : .orange)
+
+        }
     }
 }

@@ -1,5 +1,6 @@
 import AppKit
 import AVFAudio
+import AVFoundation
 import Foundation
 import SculptShowCore
 import UniformTypeIdentifiers
@@ -15,6 +16,7 @@ final class ShowStore: ObservableObject {
     /// A manual GO advances the selected cue to the next enabled row in that list.
     @Published var advanceAfterGO = true
     /// When PLAY LIST is active, map each list to its currently expected cue.
+    private var playlistOrders: [UUID: PlaylistOrder] = [:]
     @Published private(set) var playingLists: [UUID: UUID] = [:]
     private var pendingRuleTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingRuleTargets: [UUID: Set<UUID>] = [:]
@@ -71,7 +73,7 @@ final class ShowStore: ObservableObject {
     /// references. Running playback cannot be atomically rewound in this model,
     /// so document Undo is intentionally blocked during live playout.
     func undoEdit(using playback: PlaybackEngine) {
-        guard !isLoadingProject, pendingAudioImports == 0,
+        guard !isLoadingProject, !preparingSessionAudio, pendingAudioImports == 0,
               normalizingCueID == nil, normalizingListID == nil else { return }
         guard playback.snapshots.isEmpty else {
             errorMessage = "Stop playback before Undo: live audio cannot safely roll back."
@@ -86,7 +88,7 @@ final class ShowStore: ObservableObject {
     }
 
     func redoEdit(using playback: PlaybackEngine) {
-        guard !isLoadingProject, pendingAudioImports == 0,
+        guard !isLoadingProject, !preparingSessionAudio, pendingAudioImports == 0,
               normalizingCueID == nil, normalizingListID == nil else { return }
         guard playback.snapshots.isEmpty else {
             errorMessage = "Stop playback before Redo: live audio cannot safely roll back."
@@ -105,6 +107,238 @@ final class ShowStore: ObservableObject {
     /// The previous Show stays visible until every existing stem has been scanned.
     @Published private(set) var isLoadingProject = false
     private var showOpenGeneration = UUID()
+    var projectIdentity: UUID { showOpenGeneration }
+
+    @Published private(set) var preparingSessionAudio = false
+    @Published private(set) var sessionAudioStatus = ""
+    private var lastAudioPreparationKey: String?
+    private var preparationRequested = false
+    private var appliedDAWReceipts: [UUID: URL] = [:]
+
+    private func preparationKey(_ model: Show) -> String {
+        let paths = model.cueLists.flatMap { $0.cues.flatMap { $0.audioElements.map { "\($0.id):\($0.sourcePath):\($0.originalSourcePath ?? "")" } } }.sorted()
+        let loops = model.cueLists.flatMap(\.cues).filter {
+            NativeMarkerLoopPlanner.plan(for: $0)?.conditionCueID != nil
+        }.map { $0.id.uuidString }.sorted()
+        let videos = model.cueLists.flatMap(\.cues).compactMap { $0.video.map { "\($0.sourcePath):\($0.audioPrepared == true)" } }.sorted()
+        return videos.joined(separator: "|") + "\(model.sampleRate)|" + paths.joined(separator: "|") + loops.joined(separator: "|")
+    }
+
+    @discardableResult
+    func applyOutputPatch(_ patch: ShowOutputPatch, expected: ShowOutputPatch,
+                          deviceUID: String, projectIdentity: UUID, using playback: PlaybackEngine) -> Bool {
+        guard playback.snapshots.isEmpty, !isLoadingProject, !preparingSessionAudio,
+              pendingAudioImports == 0, deviceUID == playback.routingDeviceUID, !deviceUID.isEmpty else {
+            errorMessage = "Stop all cues, finish media preparation and select a connected interface before applying the patch."
+            return false
+        }
+        guard show.outputPatch == expected, showOpenGeneration == projectIdentity else {
+            errorMessage = "The project patch changed while this draft was open. Reload the patch before applying."
+            return false
+        }
+        do { try patch.validate() } catch { errorMessage = error.localizedDescription; return false }
+        var updated = show
+        updated.outputPatch = patch
+        playback.setOutputPatch(patch)
+        commit(updated)
+        return true
+    }
+
+    @discardableResult
+    func configureMonitor(_ settings: ShowMonitorSettings, using playback: PlaybackEngine) -> Bool {
+        guard playback.snapshots.isEmpty, !isLoadingProject, !preparingSessionAudio, pendingAudioImports == 0 else {
+            errorMessage = "Stop all cues and finish media preparation before configuring Monitor outputs."; return false
+        }
+        do { try settings.validate() } catch { errorMessage = error.localizedDescription; return false }
+        guard !settings.enabled || settings.isAvailable(deviceUID: playback.routingDeviceUID, channels: playback.routingOutputCount) else {
+            errorMessage = ShowMonitorSettings.Failure.unavailable.localizedDescription; return false
+        }
+        var updated = show
+        updated.monitor = settings
+        // Automatic routing consumes only the remaining program pool, in stem order.
+        if updated.outputPatch.isAutomatic(on: playback.routingDeviceUID) {
+            let count = playback.routingOutputCount - settings.reservedOutputs(deviceUID: playback.routingDeviceUID, channels: playback.routingOutputCount).count
+            for list in show.cueLists {
+                for cue in list.cues {
+                    updated.updateCue(cue.id, in: list.id) { item in
+                        let indices = item.elements.indices.filter { item.elements[$0].kind == .audio }
+                        let widths = indices.map { ShowWaveformCache.shared.channels(at: item.elements[$0].sourcePath) ??
+                            (try? AVAudioFile(forReading: URL(fileURLWithPath: item.elements[$0].sourcePath))).map { Int($0.processingFormat.channelCount) } ?? 2 }
+                        let routes = AudioRoutePlan.automaticOutputs(channelCounts: widths, deviceChannels: max(1, count))
+                        for (index, route) in zip(indices, routes) { item.elements[index].outputStartChannel = route }
+                    }
+                }
+            }
+        }
+        playback.setMonitor(settings)
+        commit(updated)
+        return true
+    }
+
+    func setMonitorMix(gain: Double? = nil, pan: Double? = nil, muted: Bool? = nil,
+                       excludeFromMuteAll: Bool? = nil, using playback: PlaybackEngine) {
+        var updated = show
+        if let gain, gain.isFinite { updated.monitor.gain = min(1, max(0, gain)) }
+        if let pan, pan.isFinite { updated.monitor.pan = min(1, max(-1, pan)) }
+        if let muted { updated.monitor.muted = muted }
+        if let excludeFromMuteAll { updated.monitor.excludeFromMuteAll = excludeFromMuteAll }
+        playback.setMonitor(updated.monitor)
+        commit(updated)
+    }
+
+    func setStemMixer(_ elementID: UUID, cueID: UUID, listID: UUID, pan: Double? = nil,
+                      sendToMonitor: Bool? = nil, using playback: PlaybackEngine) {
+        editCue(cueID, list: listID) { cue in
+            guard let index = cue.elements.firstIndex(where: { $0.id == elementID && $0.kind == .audio }) else { return }
+            if let pan, pan.isFinite { cue.elements[index].pan = min(1, max(-1, pan)) }
+            if let sendToMonitor { cue.elements[index].sendToMonitor = sendToMonitor }
+        }
+        playback.setElementMix(elementID, for: cueID, pan: pan, sendToMonitor: sendToMonitor)
+    }
+
+    func changeSessionSampleRate(_ rate: Int, using playback: PlaybackEngine) {
+        guard Show.supportedSampleRates.contains(rate), playback.snapshots.isEmpty,
+              !preparingSessionAudio, !isLoadingProject, pendingAudioImports == 0 else {
+            errorMessage = "Stop all cues and finish media preparation before changing sample rate."
+            return
+        }
+        guard show.sampleRate != rate else { return }
+        var updated = show
+        updated.sampleRate = rate
+        playback.projectAudioReady = false
+        commit(updated)
+        requestSessionAudioPreparation(using: playback)
+    }
+
+    func requestSessionAudioPreparation(using playback: PlaybackEngine, force: Bool = false) {
+        playback.knowProject(show)
+        let key = preparationKey(show)
+        guard force || key != lastAudioPreparationKey else { return }
+        if preparingSessionAudio { preparationRequested = true; playback.projectAudioReady = false; return }
+        guard !isLoadingProject, !preparingSessionAudio, pendingAudioImports == 0,
+              normalizingCueID == nil, normalizingListID == nil else { return }
+        lastAudioPreparationKey = key
+        preparingSessionAudio = true
+        playback.projectAudioReady = false
+        sessionAudioStatus = "Checking project sample rate…"
+        let generation = showOpenGeneration
+        Task { @MainActor in
+            defer {
+                preparingSessionAudio = false
+                if preparationRequested {
+                    preparationRequested = false
+                    requestSessionAudioPreparation(using: playback)
+                }
+            }
+            do {
+                guard await playback.configureProjectSampleRate(show.sampleRate) else {
+                    throw SessionAudioPreparation.Failure.invalid(playback.errorMessage ?? "Audio device is not ready")
+                }
+                for list in show.cueLists {
+                    for cue in list.cues where cue.video?.audioPrepared != true && cue.video != nil && cue.video?.isImage != true {
+                        guard let movie = cue.video else { continue }
+                        sessionAudioStatus = "Preparing video soundtrack…"
+                        let directory = (documentURL?.deletingLastPathComponent() ?? FileManager.default.temporaryDirectory.appendingPathComponent("Sculpt Video Imports")).appendingPathComponent("Audio Files/Video")
+                        let audio = try await VideoSoundtrack.prepare(source: URL(fileURLWithPath: movie.sourcePath), directory: directory, sampleRate: show.sampleRate)
+                        if let audio {
+                            let failed = await ShowWaveformCache.shared.prepare(paths: [audio.path])
+                            guard failed.isEmpty else { throw VideoPlayback.Failure("Video audio waveform verification failed") }
+                        }
+                        guard generation == showOpenGeneration, show.cue(cue.id)?.video == movie else { preparationRequested = true; return }
+                        var updated = show
+                        updated.updateCue(cue.id, in: list.id) { current in
+                            if let audio {
+                                if let index = current.elements.firstIndex(where: { $0.kind == .audio }) {
+                                    current.elements[index].sourcePath = audio.path
+                                    current.elements[index].originalSourcePath = nil
+                                } else {
+                                    var element = CueElement.audio(audio); element.name = current.name + " · Audio"; current.elements.append(element)
+                                }
+                            } else { current.elements.removeAll { $0.kind == .audio } }
+                            current.video?.audioPrepared = true
+                        }
+                        // A repair preserves the existing stem's route and mixer settings.
+                        if !cue.hasAudio { assignAutomaticOutputs(to: &updated, cueID: cue.id, listID: list.id) }
+                        show = updated; dirty = true
+                    }
+                }
+                let inspected = show
+                let needsConversion = try await Task.detached(priority: .userInitiated) {
+                    try inspected.cueLists.flatMap(\.cues).flatMap(\.audioElements).contains {
+                        let file = try AVAudioFile(forReading: URL(fileURLWithPath: $0.sourcePath))
+                        return abs(file.processingFormat.sampleRate - Double(inspected.sampleRate)) > 0.5
+                    }
+                }.value
+                if needsConversion {
+                    if documentURL == nil || documentURL.map({ !ShowProjectPackage.isPackaged($0) }) == true { saveAs() }
+                    guard let documentURL, ShowProjectPackage.isPackaged(documentURL) else {
+                        throw SessionAudioPreparation.Failure.invalid("Save a portable Show project to create converted copies. GO remains blocked.")
+                    }
+                    let before = show
+                    let root = documentURL.deletingLastPathComponent()
+                    sessionAudioStatus = "Converting copies to \(show.sampleRate) Hz…"
+                    let converted = try await Task.detached(priority: .userInitiated) {
+                        try SessionAudioPreparation.preparing(before, projectRoot: root)
+                    }.value
+                    guard generation == showOpenGeneration, preparationKey(show) == preparationKey(before) else {
+                        preparationRequested = true
+                        return
+                    }
+                    if converted != show {
+                        // Media preparation belongs to the import/rate-change
+                        // operation, not an extra user-visible Undo action.
+                        var merged = show
+                        for list in converted.cueLists {
+                            for cue in list.cues {
+                                merged.updateCue(cue.id, in: list.id) { current in
+                                    for index in current.elements.indices {
+                                        if let prepared = cue.elements.first(where: { $0.id == current.elements[index].id }) {
+                                            current.elements[index].sourcePath = prepared.sourcePath
+                                            current.elements[index].originalSourcePath = prepared.originalSourcePath
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        show = merged
+                        dirty = true
+                        refreshDAWReceipts(from: before, to: merged)
+                    }
+                    let paths = show.cueLists.flatMap(\.cues).flatMap { $0.audioElements.map(\.sourcePath) }
+                    let unreadable = await ShowWaveformCache.shared.prepare(paths: paths)
+                    guard unreadable.isEmpty else { throw SessionAudioPreparation.Failure.invalid("Converted media waveform verification failed") }
+                }
+                sessionAudioStatus = "Preparing conditional-loop audio…"
+                let preparedModel = show
+                try await playback.prepareConditionalAudio(preparedModel)
+                guard generation == showOpenGeneration, preparationKey(show) == preparationKey(preparedModel) else {
+                    preparationRequested = true
+                    return
+                }
+                lastAudioPreparationKey = preparationKey(show)
+                playback.projectAudioReady = true
+                sessionAudioStatus = "Ready · \(show.sampleRate) Hz · live SRC disabled"
+            } catch {
+                sessionAudioStatus = "Audio not ready · live SRC disabled"
+                errorMessage = "Project audio preparation: " + error.localizedDescription
+            }
+        }
+    }
+
+    private func refreshDAWReceipts(from previous: Show, to prepared: Show) {
+        for (id, url) in appliedDAWReceipts {
+            guard let old = previous.cue(id), let new = prepared.cue(id),
+                  let bytes = try? Data(contentsOf: url),
+                  var record = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+                  let snapshot = record["originCue"],
+                  let snapshotData = try? JSONSerialization.data(withJSONObject: snapshot),
+                  let cue = try? JSONDecoder().decode(Cue.self, from: snapshotData), cue == old else { continue }
+            do {
+                record["originCue"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(new))
+                try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]).write(to: url, options: .atomic)
+            } catch { errorMessage = "Prepared audio, but could not update DAW receipt: " + error.localizedDescription }
+        }
+    }
 
     init() {
         selectedListID = show.cueLists.first?.id
@@ -181,6 +415,141 @@ final class ShowStore: ObservableObject {
         var updated = show
         updated.cueLists[index].trimDB = max(-60, min(6, decibels))
         commit(updated)
+    }
+
+    /// Reads the connected interface when an import/publication is applied.
+    var audioOutputCount: () -> Int = { 2 }
+    var onSavedMediaMoved: (([String: String]) -> Void)?
+
+    private func assignAutomaticOutputs(to show: inout Show, cueID: UUID, listID: UUID) {
+        show.updateCue(cueID, in: listID) { cue in
+            let indices = cue.elements.indices.filter { cue.elements[$0].kind == .audio }
+            let widths = indices.map { index in
+                ShowWaveformCache.shared.channels(at: cue.elements[index].sourcePath) ??
+                    (try? AVAudioFile(forReading: URL(fileURLWithPath: cue.elements[index].sourcePath)))
+                        .map { Int($0.processingFormat.channelCount) } ?? 2
+            }
+            let outputs = AudioRoutePlan.automaticOutputs(channelCounts: widths,
+                deviceChannels: max(1, audioOutputCount()))
+            for (index, output) in zip(indices, outputs) { cue.elements[index].outputStartChannel = output }
+        }
+    }
+
+    func importVideo(to listID: UUID) {
+        let panel = NSOpenPanel(); panel.title = "Import video or image cue"
+        panel.allowedContentTypes = [.movie, .image]; panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true; panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addVideo(url, to: listID)
+    }
+    func addVideo(_ url: URL, to listID: UUID) {
+        guard pendingAudioImports == 0, !isLoadingProject else { return }
+        let generation = showOpenGeneration
+        pendingAudioImports += 1; audioImportProgress = "Video"
+        Task {
+            defer { pendingAudioImports -= 1; audioImportProgress = "" }
+            do {
+                let image = UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+                let duration: Double
+                if image { _ = try await VideoPlayback.loadStillImage(url); duration = 10 }
+                else { (_, duration) = try await VideoPlayback.silentAsset(url) }
+                guard generation == showOpenGeneration, show.cueLists.contains(where: { $0.id == listID }) else { return }
+                let directory: URL
+                if let documentURL, ShowProjectPackage.isPackaged(documentURL) {
+                    directory = documentURL.deletingLastPathComponent().appendingPathComponent("Video Files")
+                } else {
+                    directory = FileManager.default.temporaryDirectory.appendingPathComponent("Sculpt Video Imports")
+                }
+                let copy = directory.appendingPathComponent(UUID().uuidString + "-" + url.lastPathComponent)
+                try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(at: url, to: copy)
+                }.value
+                guard generation == showOpenGeneration else { try? FileManager.default.removeItem(at: copy); return }
+                // Publish the cue only after its soundtrack is decoded and verified.
+                // Import completion must never expose a silent, half-prepared movie.
+                let audioDirectory = (documentURL?.deletingLastPathComponent() ?? directory).appendingPathComponent("Audio Files/Video")
+                let audio = image ? nil : try await VideoSoundtrack.prepare(source: copy, directory: audioDirectory, sampleRate: show.sampleRate)
+                if let audio {
+                    let failed = await ShowWaveformCache.shared.prepare(paths: [audio.path])
+                    guard failed.isEmpty else { throw VideoPlayback.Failure("Cannot verify video soundtrack") }
+                }
+                guard generation == showOpenGeneration else { return }
+                var updated = show
+                guard let li = updated.cueLists.firstIndex(where: { $0.id == listID }) else { return }
+                var cue = Cue(name: url.deletingPathExtension().lastPathComponent, fadeOutSeconds: 1, fadeInSeconds: 1, durationSeconds: duration)
+                cue.video = CueVideo(sourcePath: copy.path, duration: duration)
+                cue.video?.isImage = image
+                cue.video?.audioPrepared = true
+                if image { cue.loop = true }
+                if let audio { var stem = CueElement.audio(audio); stem.name = cue.name + " · Audio"; cue.elements.append(stem) }
+                updated.cueLists[li].cues.append(cue)
+                assignAutomaticOutputs(to: &updated, cueID: cue.id, listID: listID)
+                commit(updated); select(cue.id, in: listID)
+            } catch { errorMessage = "Video import failed: \(error.localizedDescription)" }
+        }
+    }
+    func setVideoScale(_ value: Double, cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) { $0.video?.scale = value.isFinite ? min(4, max(0.1, value)) : 1 }
+    }
+
+    func setVideoPosition(x: Double? = nil, y: Double? = nil, cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) {
+            if let x, x.isFinite { $0.video?.offsetX = min(2, max(-2, x)) }
+            if let y, y.isFinite { $0.video?.offsetY = min(2, max(-2, y)) }
+        }
+    }
+    func setVideoDimensions(width: Double? = nil, height: Double? = nil, cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) { cue in
+            guard var movie = cue.video else { return }
+            if let width, width.isFinite {
+                movie.widthScale = min(4, max(0.1, width))
+                if movie.keepsAspectRatio { movie.heightScale = movie.widthScale }
+            }
+            if let height, height.isFinite {
+                movie.heightScale = min(4, max(0.1, height))
+                if movie.keepsAspectRatio { movie.widthScale = movie.heightScale }
+            }
+            cue.video = movie
+        }
+    }
+    func setVideoAspectLock(_ locked: Bool, cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) { cue in
+            guard var movie = cue.video else { return }
+            movie.lockAspectRatio = locked
+            if locked { movie.heightScale = movie.widthScale ?? 1; if movie.framing == .stretch { movie.framing = .fit } }
+            cue.video = movie
+        }
+    }
+    func resetVideoTransform(_ cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) {
+            $0.video?.scale = 1; $0.video?.offsetX = 0; $0.video?.offsetY = 0
+            $0.video?.widthScale = 1; $0.video?.heightScale = 1; $0.video?.lockAspectRatio = true; $0.video?.framing = .fit
+        }
+    }
+
+    func rebuildVideoSoundtrack(_ cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        guard playback.snapshots.isEmpty, !preparingSessionAudio, pendingAudioImports == 0,
+              let movie = show.cue(cueID)?.video, movie.isImage != true else { return }
+        editCue(cueID, list: listID) { $0.video?.audioPrepared = nil }
+        requestSessionAudioPreparation(using: playback, force: true)
+    }
+
+    func setVideoFraming(_ value: VideoFraming, cueID: UUID, in listID: UUID) {
+        editCue(cueID, list: listID) { cue in
+            guard var movie = cue.video else { return }
+            movie.framing = value; movie.lockAspectRatio = value == .fit
+            if value == .fit { movie.heightScale = movie.widthScale ?? 1 }
+            cue.video = movie
+        }
+    }
+    func setImageDuration(_ value: Double, cueID: UUID, in listID: UUID) {
+        guard value.isFinite, show.cue(cueID)?.video?.isImage == true else { return }
+        if let end = show.cue(cueID)?.playbackRange?.end, value < end { errorMessage = "Adjust OUT before shortening the image below it."; return }
+        editCue(cueID, list: listID) {
+            let duration = min(86400, max(0.1, value))
+            $0.video?.duration = duration; $0.durationSeconds = duration
+        }
     }
 
     func importAudio(to listID: UUID) {
@@ -274,6 +643,7 @@ final class ShowStore: ObservableObject {
                 cue.durationSeconds = min(86400, max(0.1, session.duration))
                 cue.markers = session.markers.map { CueMarker(name: $0.name, positionSeconds: $0.seconds) }
                 updated.cueLists[i].cues.append(cue)
+                assignAutomaticOutputs(to: &updated, cueID: cue.id, listID: listID)
                 commit(updated)
                 select(cue.id, in: listID)
                 dawBridgeMessage = "DAW session imported: \(session.stems.count) stems, \(session.markers.count) markers."
@@ -309,6 +679,7 @@ final class ShowStore: ObservableObject {
 
     func attachAudioURLs(_ urls: [URL], to cueID: UUID, in listID: UUID,
                          using playback: PlaybackEngine) {
+        guard show.cue(cueID)?.video == nil else { errorMessage = "Use a separate audio cue for the soundtrack."; return }
         let files = urls.filter(\.isFileURL)
         guard !files.isEmpty else { return }
         guard pendingAudioImports == 0 else {
@@ -333,25 +704,8 @@ final class ShowStore: ObservableObject {
             // A newly attached stem can extend the cue, even when it already
             // contains audio. Never shorten a manually configured duration.
             let previousLength = updated.cue(cueID)?.durationSeconds ?? 0
-            let previousStemIDs = Set(updated.cue(cueID)?.audioElements.map(\.id) ?? [])
             guard updated.appendAudio(files, to: cueID) else { return }
-            // Assign newly added stems to consecutive physical outputs.
-            // Preserve existing user routes, and account for stereo width.
-            updated.updateCue(cueID, in: listID) { cue in
-                let existing = cue.audioElements.filter { previousStemIDs.contains($0.id) }
-                var output = existing.reduce(1) { maximum, stem in
-                    let channels = ShowWaveformCache.shared.channels(at: stem.sourcePath) ?? 2
-                    return max(maximum, stem.outputStartChannel + channels)
-                }
-                for i in cue.elements.indices where cue.elements[i].kind == .audio &&
-                    !previousStemIDs.contains(cue.elements[i].id) {
-                    let channels = ShowWaveformCache.shared.channels(at: cue.elements[i].sourcePath) ?? 2
-                    // Hardware routing supports OUT 1…64; wrap only after capacity.
-                    if output + channels - 1 > 64 { output = 1 }
-                    cue.elements[i].outputStartChannel = output
-                    output += channels
-                }
-            }
+            assignAutomaticOutputs(to: &updated, cueID: cueID, listID: listID)
             let longest = files.compactMap { ShowWaveformCache.shared.envelopes[$0.path]?.duration }.max()
             if let longest, longest.isFinite, longest > previousLength {
                 updated.updateCue(cueID, in: listID) {
@@ -452,7 +806,8 @@ final class ShowStore: ObservableObject {
                     dawBridgeMessage = "DAW update queued until this cue stops."
                     return
                 }
-                let updated = try SculptBridgeReturn.applying(packet, to: show, destinationListID: listID)
+                var updated = try SculptBridgeReturn.applying(packet, to: show, destinationListID: listID)
+                assignAutomaticOutputs(to: &updated, cueID: m.cueID, listID: listID)
                 commit(updated)
                 select(m.cueID, in: listID)
                 pendingDAWPublications.removeAll { $0 == url }
@@ -461,7 +816,10 @@ final class ShowStore: ObservableObject {
                 var record: [String: Any] = ["status": "applied", "publicationID": packet.publicationID.uuidString,
                     "cueID": m.cueID.uuidString, "publishMode": packet.publishMode]
                 if let cue { record["originCue"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(cue)) }
-                do { try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]).write(to: receipt, options: .atomic) }
+                do {
+                    try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]).write(to: receipt, options: .atomic)
+                    appliedDAWReceipts[m.cueID] = receipt
+                }
                 catch { errorMessage = "Cue updated, but the DAW receipt could not be saved: \(error.localizedDescription)" }
                 dawBridgeMessage = "DAW publication applied: \(m.stems.count) stems, \(m.markers.count) markers. Save Show to keep it."
             } catch {
@@ -519,10 +877,13 @@ final class ShowStore: ObservableObject {
     @Published var dawBridgeMessage: String?
 
     func editCueInDAW(_ cueID: UUID, in listID: UUID) {
-        guard !dawBridgeBusy else { return }
+        guard !dawBridgeBusy, !preparingSessionAudio, !isLoadingProject, pendingAudioImports == 0 else { return }
+        // A saved project anchors every DAW edit inside its own bridge folder.
+        if documentURL == nil { saveAs() }
+        guard let projectDocument = documentURL else { return }
         do {
             let manifest = try SculptBridge.manifest(show: show, listID: listID, cueID: cueID)
-            let preparation = try SculptDAWLaunchBridge.prepare(manifest)
+            let preparation = try SculptDAWLaunchBridge.prepare(manifest, projectDocument: projectDocument)
             dawBridgeBusy = true
             dawBridgeCueID = cueID
             dawBridgeMessage = "Preparing Sculpt DAW session…"
@@ -614,6 +975,7 @@ final class ShowStore: ObservableObject {
                     for result in results {
                         if let index = cue.elements.firstIndex(where: { $0.id == result.elementID }) {
                             cue.elements[index].sourcePath = result.normalizedPath
+                            cue.elements[index].originalSourcePath = nil
                         }
                     }
                 }
@@ -707,6 +1069,7 @@ final class ShowStore: ObservableObject {
                             let id = updated.cueLists[li].cues[ci].elements[ei].id
                             if let path = newPaths[id] {
                                 updated.cueLists[li].cues[ci].elements[ei].sourcePath = path
+                                updated.cueLists[li].cues[ci].elements[ei].originalSourcePath = nil
                             }
                         }
                     }
@@ -755,6 +1118,7 @@ final class ShowStore: ObservableObject {
     }
 
     func addTimecode(to cueID: UUID, in listID: UUID, using playback: PlaybackEngine) {
+        guard show.cue(cueID)?.video == nil else { errorMessage = "Video cues cannot contain LTC elements."; return }
         // Attaching LTC is non-destructive; a running cue adopts it on next GO.
         editCue(cueID, list: listID) { cue in
             if cue.elements.contains(where: { $0.kind == .timecode }) { return }
@@ -777,6 +1141,7 @@ final class ShowStore: ObservableObject {
                 $0.id == elementID && $0.kind == .audio
             }) else { return }
             cue.elements[index].sourcePath = url.path
+            cue.elements[index].originalSourcePath = nil
         }
     }
 
@@ -821,6 +1186,7 @@ final class ShowStore: ObservableObject {
                           let matches = existing[URL(fileURLWithPath: item.sourcePath).lastPathComponent.lowercased()],
                           matches.count == 1 else { continue }
                     updated.cueLists[li].cues[ci].elements[ei].sourcePath = matches[0].path
+                    updated.cueLists[li].cues[ci].elements[ei].originalSourcePath = nil
                     replacements += 1
                 }
             }
@@ -954,6 +1320,7 @@ final class ShowStore: ObservableObject {
 
     /// An explicit container duration is independent of the attached media.
     func setCueDuration(_ id: UUID, in list: UUID, to seconds: Double) {
+        if let end = show.cue(id)?.playbackRange?.end, seconds < end { errorMessage = "Adjust OUT before shortening the cue below it."; return }
         editCue(id, list: list) {
             $0.durationSeconds = min(max(0, seconds), 86400)
             $0.durationMode = .fixed
@@ -1085,6 +1452,13 @@ final class ShowStore: ObservableObject {
         for cue in list.cues { playback.fadeOut(cue) }
     }
 
+    func moveList(_ id: UUID, before destination: UUID?) {
+        guard !isLoadingProject else { return }
+        var updated = show
+        guard updated.moveList(id, before: destination) else { return }
+        commit(updated)
+    }
+
     func moveCue(_ cueID: UUID, in list: UUID, by offset: Int) {
         var updated = show
         updated.moveCue(cueID, in: list, by: offset)
@@ -1129,13 +1503,34 @@ final class ShowStore: ObservableObject {
     }
 
     /// PLAY LIST starts from the selected cue (or first enabled cue) and continues on natural endings.
+    func setPlaylistOptions(_ id: UUID, random: Bool? = nil, repeatAll: Bool? = nil) {
+        var updated = show
+        guard let index = updated.cueLists.firstIndex(where: { $0.id == id }) else { return }
+        if let random { updated.cueLists[index].randomOrder = random }
+        if let repeatAll { updated.cueLists[index].repeatAll = repeatAll }
+        playlistOrders.removeValue(forKey: id)
+        commit(updated)
+    }
+
+    func didStartCue(_ cueID: UUID) {
+        guard let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }),
+              playingLists[list.id] != nil else { return }
+        // A manually chosen song takes over the running playlist before other
+        // songs are faded by its Starting rules.
+        playingLists[list.id] = cueID
+        playlistOrders[list.id, default: PlaylistOrder()].record(cueID)
+    }
+
     func playList(_ listID: UUID, using playback: PlaybackEngine) {
         guard !isLoadingProject else { return }
         guard playingLists[listID] == nil else { return }
-        guard let list = show.cueLists.first(where: { $0.id == listID }),
-              let cue = selectedCue(in: listID).flatMap({ $0.enabled ? $0 : nil })
-                     ?? list.cues.first(where: { $0.enabled }) else { return }
-        guard playback.play(cue) else { return }
+        guard let list = show.cueLists.first(where: { $0.id == listID }) else { return }
+        var order = PlaylistOrder()
+        let chosen = list.randomOrder ? order.next(in: list, after: nil) :
+            (selectedCue(in: listID).flatMap { $0.enabled ? $0.id : nil } ?? list.cues.first(where: { $0.enabled })?.id)
+        guard let chosen, let cue = show.cue(chosen), playback.play(cue) else { return }
+        order.record(chosen)
+        playlistOrders[listID] = order
         playingLists[listID] = cue.id
         select(cue.id, in: listID)
     }
@@ -1153,7 +1548,10 @@ final class ShowStore: ObservableObject {
         handleRuleEvent(.ending, source: cueID, using: playback)
         if let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }),
            playingLists[list.id] == cueID {
-            if let next = show.followingCue(after: cueID), playback.play(next) {
+            var order = playlistOrders[list.id] ?? PlaylistOrder()
+            let nextID = order.next(in: list, after: cueID)
+            playlistOrders[list.id] = order
+            if let nextID, let next = show.cue(nextID), playback.play(next) {
                 playingLists[list.id] = next.id
                 select(next.id, in: list.id)
             } else {
@@ -1231,6 +1629,7 @@ final class ShowStore: ObservableObject {
     }
 
     func save() {
+        guard !preparingSessionAudio else { errorMessage = "Wait for audio preparation before saving."; return }
         guard let url = documentURL else { saveAs(); return }
         if ShowProjectPackage.isPackaged(url) { write(to: url) }
         else { saveAs() } // Convert legacy, stand-alone .scshow to a self-contained project.
@@ -1239,7 +1638,7 @@ final class ShowStore: ObservableObject {
     /// Save a dated document snapshot; the working show and its main file
     /// stay active. No duplicate Audio Files folder is created.
     func saveVersion() {
-        guard !isLoadingProject, pendingAudioImports == 0,
+        guard !isLoadingProject, !preparingSessionAudio, pendingAudioImports == 0,
               normalizingCueID == nil, normalizingListID == nil else {
             errorMessage = "Finish loading/importing/normalizing before Save Version."
             return
@@ -1269,6 +1668,7 @@ final class ShowStore: ObservableObject {
             let saved = try ShowProjectPackage.create(show, requestedDocumentURL: destination)
             ProjectDocumentIcon.apply(to: saved.documentURL)
             ShowWaveformCache.shared.adoptSavedMedia(from: show, to: saved.runtimeShow)
+            remapHistoryMedia(from: show, to: saved.runtimeShow)
             show = saved.runtimeShow
             documentURL = saved.documentURL
             dirty = false
@@ -1407,8 +1807,11 @@ final class ShowStore: ObservableObject {
     }
 
     func ignoreParentRules(for scope: RuleScope) -> Bool {
-        guard case .cue(let id, _) = scope else { return false }
-        return show.cue(id)?.ignoreParentRules ?? false
+        switch scope {
+        case .cue(let id, _): return show.cue(id)?.ignoreParentRules ?? false
+        case .cueList(let id): return show.cueLists.first(where: { $0.id == id })?.ignoreParentRules ?? false
+        default: return false
+        }
     }
 
     func updateRules(_ rules: [InteractionRule], for scope: RuleScope, ignoreParent: Bool = false) {
@@ -1419,6 +1822,7 @@ final class ShowStore: ObservableObject {
         case .cueList(let id):
             guard let index = updated.cueLists.firstIndex(where: { $0.id == id }) else { return }
             updated.cueLists[index].rules = rules
+            updated.cueLists[index].ignoreParentRules = ignoreParent
         case .cue(let cueID, let listID):
             guard updated.cue(cueID) != nil else { return }
             updated.updateCue(cueID, in: listID) {
@@ -1465,7 +1869,9 @@ final class ShowStore: ObservableObject {
             }
             eventTimestamps.append(now)
             let commands = RulePlanner.markerCommands(markerID: markerID, source: cueID,
-                in: show, states: currentRuleStates(using: playback))
+                in: show, states: currentRuleStates(using: playback)).filter {
+                    $0.rule.id != playback.nativeLoopRuleID(for: cueID, markerID: markerID)
+                }
             scheduleCommands(commands, using: playback, sourceMarkerID: markerID)
         }
     }
@@ -1581,6 +1987,7 @@ final class ShowStore: ObservableObject {
             let saved = try ShowProjectPackage.save(show, documentURL: url)
             ProjectDocumentIcon.apply(to: saved.documentURL)
             ShowWaveformCache.shared.adoptSavedMedia(from: show, to: saved.runtimeShow)
+            remapHistoryMedia(from: show, to: saved.runtimeShow)
             show = saved.runtimeShow
             documentURL = saved.documentURL
             dirty = false
@@ -1589,11 +1996,69 @@ final class ShowStore: ObservableObject {
         }
     }
 
+    private func remapHistoryMedia(from old: Show, to saved: Show) {
+        var paths: [String: String] = [:]
+        for list in old.cueLists {
+            for cue in list.cues {
+                guard let next = saved.cue(cue.id) else { continue }
+                if let old = cue.video?.sourcePath, let new = next.video?.sourcePath, old != new { paths[old] = new }
+                for element in cue.audioElements {
+                    if let changed = next.audioElements.first(where: { $0.id == element.id }),
+                       changed.sourcePath != element.sourcePath {
+                        // A move within the current project includes folder swaps,
+                        // where the old pathname may now belong to another list.
+                        // Save As copies into a different root and keeps its originals.
+                        if let root = documentURL?.deletingLastPathComponent().path,
+                           element.sourcePath.hasPrefix(root + "/"),
+                           changed.sourcePath.hasPrefix(root + "/") {
+                            paths[element.sourcePath] = changed.sourcePath
+                        }
+                    }
+                }
+            }
+        }
+        func remap(_ item: HistoryItem) -> HistoryItem {
+            var model = item.show
+            for li in model.cueLists.indices {
+                for ci in model.cueLists[li].cues.indices {
+                    if let path = model.cueLists[li].cues[ci].video?.sourcePath, let next = paths[path] { model.cueLists[li].cues[ci].video?.sourcePath = next }
+                    for ei in model.cueLists[li].cues[ci].elements.indices {
+                        let path = model.cueLists[li].cues[ci].elements[ei].sourcePath
+                        if let next = paths[path] { model.cueLists[li].cues[ci].elements[ei].sourcePath = next }
+                    }
+                }
+            }
+            return HistoryItem(show: model, selectedListID: item.selectedListID, selectedCueID: item.selectedCueID)
+        }
+        undoStack = undoStack.map(remap)
+        redoStack = redoStack.map(remap)
+        if !paths.isEmpty { onSavedMediaMoved?(paths) }
+    }
+
     private func editCue(_ id: UUID, list: UUID, _ change: (inout Cue) -> Void) {
         var updated = show
         updated.updateCue(id, in: list, change)
         commit(updated)
     }
+
+    func setCueTriggers(_ triggers: CueTriggers, cueID: UUID, using midi: MIDIControl) {
+        guard let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == cueID }) }) else { return }
+        if let error = CueTriggerResolver.conflict(triggers, cueID: cueID, in: show) { errorMessage = error; return }
+        if let note = triggers.midi, midi.mappings.values.contains(note) { errorMessage = "This MIDI control is assigned to global transport. Clear that mapping in MIDI Setup first."; return }
+        var updated = show; updated.updateCue(cueID, in: list.id) { $0.triggers = triggers }
+        // Use the same Undo/save transaction as other inspector controls.
+        commit(updated)
+    }
+
+
+    func setAutomaticFade(_ cueID: UUID, in listID: UUID, incoming: Bool, enabled: Bool, using playback: PlaybackEngine) {
+        editCue(cueID,list:listID) { cue in
+            if incoming { cue.automaticFadeInEnabled = enabled } else { cue.automaticFadeOutEnabled = enabled }
+        }
+        if let cue = show.cue(cueID) { playback.setAutomaticFades(cue) }
+    }
+
+    func commitCueRange(_ updated: Show) { commit(updated) }
 
     private func commit(_ updated: Show) {
         guard updated != show else { return }

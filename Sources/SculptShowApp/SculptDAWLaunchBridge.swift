@@ -44,13 +44,13 @@ enum SculptDAWLaunchBridge {
     private static let cliPreference = "SculptBridge.DAWCLI.v2"
     private static let bundleID = "audio.sculpt.daw"
 
-    static func prepare(_ manifest: SculptBridge.Manifest) throws -> Preparation {
+    static func prepare(_ manifest: SculptBridge.Manifest, projectDocument: URL) throws -> Preparation {
         let app = try locateApplication()
         let audioInfo = try checkAudio(manifest)
         var cli = locateCLI(near: app)
         if cli == nil { cli = try chooseCLI(required: true) }
         guard cli != nil else { throw LaunchError.cliRequired }
-        let workspace = try createWorkspace(for: manifest)
+        let workspace = try createWorkspace(for: manifest, projectDocument: projectDocument)
         let session = workspace.appendingPathComponent("\(SculptBridge.safeFilename(manifest.cueName)).scdaw")
         let script = workspace.appendingPathComponent("import-into-sculpt-daw.txt")
         let json = workspace.appendingPathComponent("sculpt-cue-bridge.json")
@@ -178,10 +178,10 @@ enum SculptDAWLaunchBridge {
         return (sampleRate, channels)
     }
 
-    private static func createWorkspace(for manifest: SculptBridge.Manifest) throws -> URL {
+    private static func createWorkspace(for manifest: SculptBridge.Manifest, projectDocument: URL) throws -> URL {
         let fm = FileManager.default
-        let folder = (fm.urls(for: .musicDirectory, in: .userDomainMask).first ?? fm.homeDirectoryForCurrentUser)
-            .appendingPathComponent("Sculpt Bridge", isDirectory: true)
+        let folder = projectDocument.deletingLastPathComponent()
+            .appendingPathComponent("bridge", isDirectory: true)
         let stem = SculptBridge.safeFilename(manifest.cueName)
         let id = manifest.cueID.uuidString.prefix(8)
         // A fresh UUID prevents overwriting an earlier DAW edit of the same cue.

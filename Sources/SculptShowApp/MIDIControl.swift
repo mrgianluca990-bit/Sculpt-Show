@@ -1,6 +1,7 @@
 import CoreMIDI
 import Foundation
 import SwiftUI
+import SculptShowCore
 
 // Mappings are local operator preferences, not show-file content.
 enum LiveCommand: String, CaseIterable, Identifiable, Codable {
@@ -14,14 +15,7 @@ enum LiveCommand: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
-struct MIDITrigger: Codable, Hashable {
-    var channel: Int    // 0 to 15
-    var status: Int     // 0x90 note-on, 0xB0 CC
-    var number: Int     // 0 to 127
-    var description: String {
-        "\(status == 0x90 ? "Note" : "CC") \(number) · Ch \(channel + 1)"
-    }
-}
+typealias MIDITrigger = CueMIDITrigger
 
 @MainActor
 final class MIDIControl: ObservableObject {
@@ -33,12 +27,19 @@ final class MIDIControl: ObservableObject {
         func hash(into hasher: inout Hasher) { hasher.combine(id) }
     }
 
+    @Published private(set) var destinations: [Source] = []
+    private var outputPort: MIDIPortRef = 0
     @Published private(set) var sources: [Source] = []
     @Published private(set) var selectedID: MIDIUniqueID?
     @Published private(set) var mappings: [LiveCommand: MIDITrigger] = [:]
     @Published var learning: LiveCommand?
     @Published private(set) var lastMessage = "No MIDI input"
     @Published private(set) var errorMessage: String?
+    @Published var learningCueID: UUID?
+    var onCueLearned: ((UUID, MIDITrigger) -> Void)?
+    var isCueTriggerAssigned: ((MIDITrigger) -> Bool)?
+    private var lastCueHit: [MIDITrigger: TimeInterval] = [:]
+    var onCueTrigger: ((MIDITrigger) -> Bool)?
     var onCommand: ((LiveCommand) -> Void)?
 
     private var client: MIDIClientRef = 0
@@ -72,7 +73,28 @@ final class MIDIControl: ObservableObject {
         if portStatus != noErr { errorMessage = "CoreMIDI input failed (\(portStatus))" }
     }
 
+    func send(_ message: CueMIDIMessage) -> String? {
+        guard message.isValid else { return "Invalid MIDI output message" }
+        if outputPort == 0 { _ = MIDIOutputPortCreate(client, "Sculpt Show Cue Out" as CFString, &outputPort) }
+        guard outputPort != 0, let target = destinations.first(where: { $0.id == message.destination }) else { return "MIDI output destination is unavailable" }
+        let bytes = message.bytes
+        var list = MIDIPacketList()
+        let result: OSStatus = withUnsafeMutablePointer(to: &list) { ptr in
+            let first = MIDIPacketListInit(ptr)
+            _ = bytes.withUnsafeBufferPointer { MIDIPacketListAdd(ptr, MemoryLayout<MIDIPacketList>.size, first, 0, bytes.count, $0.baseAddress!) }
+            return MIDISend(outputPort, target.endpoint, ptr)
+        }
+        return result == noErr ? nil : "MIDI send failed (\(result))"
+    }
+
     func refresh() {
+        destinations = (0..<MIDIGetNumberOfDestinations()).compactMap { index -> Source? in
+            let endpoint = MIDIGetDestination(index); guard endpoint != 0 else { return nil }
+            var id: MIDIUniqueID = 0; MIDIObjectGetIntegerProperty(endpoint, kMIDIPropertyUniqueID, &id)
+            var name: Unmanaged<CFString>?
+            MIDIObjectGetStringProperty(endpoint, kMIDIPropertyDisplayName, &name)
+            return Source(id: id, endpoint: endpoint, name: name?.takeRetainedValue() as String? ?? "MIDI Out \(index + 1)")
+        }
         sources = (0..<MIDIGetNumberOfSources()).compactMap { index -> Source? in
             let candidate = MIDIGetSource(index)
             guard candidate != 0 else { return nil }
@@ -84,21 +106,25 @@ final class MIDIControl: ObservableObject {
                 ? nameProperty!.takeRetainedValue() as String : "MIDI Source \(index + 1)"
             return Source(id: id, endpoint: candidate, name: name)
         }
-        if let selectedID, !sources.contains(where: { $0.id == selectedID }) { disconnect() }
+        if let selectedID, !sources.contains(where: { $0.id == selectedID }) { disconnect(clearPreference: false) }
+        if selectedID == nil, let saved = UserDefaults.standard.object(forKey: "sculpt.show.midiSourceUID") as? NSNumber,
+           sources.contains(where: { $0.id == saved.int32Value }) { connect(saved.int32Value) }
     }
 
     func connect(_ id: MIDIUniqueID) {
-        disconnect()
+        disconnect(clearPreference: false)
         guard port != 0, let source = sources.first(where: { $0.id == id }) else { return }
         let result = MIDIPortConnectSource(port, source.endpoint, nil)
         guard result == noErr else { errorMessage = "Cannot connect MIDI input (\(result))"; return }
         endpoint = source.endpoint
         selectedID = id
+        UserDefaults.standard.set(id, forKey: "sculpt.show.midiSourceUID")
         errorMessage = nil
         lastMessage = "Waiting for MIDI…"
     }
 
-    func disconnect() {
+    func disconnect(clearPreference: Bool = true) {
+        if clearPreference { UserDefaults.standard.removeObject(forKey: "sculpt.show.midiSourceUID") }
         if endpoint != 0 && port != 0 { MIDIPortDisconnectSource(port, endpoint) }
         endpoint = 0
         selectedID = nil
@@ -139,7 +165,11 @@ final class MIDIControl: ObservableObject {
                 if value < 64 { ccHigh.remove(trigger); continue }
                 guard ccHigh.insert(trigger).inserted else { continue }
             }
+            if let id = learningCueID {
+                learningCueID = nil; onCueLearned?(id, trigger); continue
+            }
             if let learning {
+                if isCueTriggerAssigned?(trigger) == true { self.learning = nil; errorMessage = "MIDI control already assigned to a cue. Clear it in General first."; continue }
                 // One MIDI control can only command one action.
                 for command in LiveCommand.allCases where mappings[command] == trigger { mappings.removeValue(forKey: command) }
                 mappings[learning] = trigger
@@ -147,6 +177,9 @@ final class MIDIControl: ObservableObject {
                 persist()
                 continue
             }
+            let stamp = ProcessInfo.processInfo.systemUptime
+            if let last = lastCueHit[trigger], stamp - last < 0.16 { continue }
+            if onCueTrigger?(trigger) == true { lastCueHit[trigger] = stamp; continue }
             guard let command = LiveCommand.allCases.first(where: { mappings[$0] == trigger }) else { continue }
             let now = Date()
             if let last = lastHit[command], now.timeIntervalSince(last) < 0.16 { continue }
@@ -188,6 +221,7 @@ struct MIDIControlSettings: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button(midi.learning == command ? "Waiting…" : "Learn") {
+                        midi.learningCueID = nil
                         midi.learning = command
                     }
                     Button("Clear") { midi.clear(command) }

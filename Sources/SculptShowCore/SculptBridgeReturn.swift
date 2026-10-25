@@ -90,9 +90,12 @@ public enum SculptBridgeReturn {
         cue.name = m.cueName
         cue.durationMode = .fixed
         cue.durationSeconds = m.durationSeconds
+        let previousElements = cue.elements
         cue.elements = cue.elements.filter { $0.kind != .audio } + m.stems.map { s in
             CueElement(id: s.elementID, kind: .audio, name: s.name, sourcePath: s.sourcePath,
-                       gain: s.gain, muted: s.muted, outputStartChannel: s.outputStartChannel)
+                       gain: s.gain, muted: s.muted, outputStartChannel: s.outputStartChannel,
+                       pan: previousElements.first(where: { $0.id == s.elementID })?.pan ?? 0,
+                       sendToMonitor: previousElements.first(where: { $0.id == s.elementID })?.sendToMonitor ?? true)
         }
         cue.markers = m.markers.map { marker in
             CueMarker(id: marker.id, name: marker.name, positionSeconds: marker.seconds,

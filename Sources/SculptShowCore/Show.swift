@@ -4,22 +4,37 @@ import Foundation
 public struct Show: Codable, Equatable, Sendable {
     public static let currentVersion = 1
 
+    public static let supportedSampleRates = [44100, 48000, 88200, 96000, 176400, 192000]
+    public var monitor: ShowMonitorSettings
+    public var outputPatch: ShowOutputPatch
+    public var sampleRate: Int
     public var formatVersion: Int
     public var name: String
     public var cueLists: [CueList]
     public var rules: [InteractionRule]
 
     public init(name: String = "Untitled Show", cueLists: [CueList] = [CueList(name: "Cue List 1")]) {
+        self.monitor = ShowMonitorSettings()
+        self.outputPatch = ShowOutputPatch()
+        self.sampleRate = 48000
         self.formatVersion = Self.currentVersion
         self.name = name
         self.cueLists = cueLists
         self.rules = []
     }
 
-    private enum CodingKeys: String, CodingKey { case formatVersion, name, cueLists, rules }
+    private enum CodingKeys: String, CodingKey { case formatVersion, sampleRate, name, cueLists, rules, outputPatch, monitor }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        monitor = try c.decodeIfPresent(ShowMonitorSettings.self, forKey: .monitor) ?? ShowMonitorSettings()
+        try monitor.validate()
+        outputPatch = try c.decodeIfPresent(ShowOutputPatch.self, forKey: .outputPatch) ?? ShowOutputPatch()
+        try outputPatch.validate()
+        sampleRate = try c.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 48000
+        guard Self.supportedSampleRates.contains(sampleRate) else {
+            throw DecodingError.dataCorruptedError(forKey: .sampleRate, in: c, debugDescription: "Unsupported session sample rate")
+        }
         formatVersion = try c.decode(Int.self, forKey: .formatVersion)
         name = try c.decode(String.self, forKey: .name)
         cueLists = try c.decode([CueList].self, forKey: .cueLists)
@@ -36,6 +51,18 @@ public struct Show: Codable, Equatable, Sendable {
     public mutating func renameList(_ id: UUID, to name: String) {
         guard let index = cueLists.firstIndex(where: { $0.id == id }) else { return }
         cueLists[index].name = name
+    }
+
+    /// Reordering preserves list/cue identity and every routing/rule reference.
+    @discardableResult
+    public mutating func moveList(_ id: UUID, before destination: UUID?) -> Bool {
+        guard id != destination, let index = cueLists.firstIndex(where: { $0.id == id }),
+              destination == nil || cueLists.contains(where: { $0.id == destination }) else { return false }
+        let original = cueLists.map(\.id)
+        let list = cueLists.remove(at: index)
+        let target = destination.flatMap { target in cueLists.firstIndex(where: { $0.id == target }) } ?? cueLists.count
+        cueLists.insert(list, at: target)
+        return original != cueLists.map(\.id)
     }
 
     public mutating func removeList(_ id: UUID) {
@@ -114,6 +141,7 @@ public struct Show: Codable, Equatable, Sendable {
     public mutating func appendAudio(_ urls: [URL], to cueID: UUID) -> Bool {
         guard let li = cueLists.firstIndex(where: { $0.cues.contains(where: { $0.id == cueID }) }),
               let ci = cueLists[li].cues.firstIndex(where: { $0.id == cueID }) else { return false }
+        guard cueLists[li].cues[ci].video == nil else { return false }
         let audio = urls.filter(\.isFileURL).map(CueElement.audio)
         guard !audio.isEmpty else { return false }
         cueLists[li].cues[ci].elements.append(contentsOf: audio)
@@ -127,6 +155,10 @@ public struct Show: Codable, Equatable, Sendable {
               let cueIndex = cueLists[listIndex].cues.firstIndex(where: { $0.id == cueID }) else { return nil }
         var copy = cueLists[listIndex].cues[cueIndex]
         copy.id = UUID()
+        let outputs = copy.triggers
+        copy.triggers = CueTriggers()
+        copy.triggers.midiMessages = outputs.midiMessages
+        copy.triggers.oscMessages = outputs.oscMessages
         copy.name += " copy"
         copy.elements = copy.elements.map { element in
             var cloned = element
@@ -180,16 +212,22 @@ public struct CueList: Identifiable, Codable, Equatable, Sendable {
     public var rules: [InteractionRule]
     /// Persistent cue-list master trim in decibels. Does not modify cue faders.
     public var trimDB: Double
+    public var ignoreParentRules: Bool
+    public var randomOrder: Bool
+    public var repeatAll: Bool
 
     public init(id: UUID = UUID(), name: String, cues: [Cue] = [], trimDB: Double = 0) {
         self.id = id
         self.name = name
         self.cues = cues
         self.rules = []
+        self.ignoreParentRules = false
+        self.randomOrder = false
+        self.repeatAll = false
         self.trimDB = max(-60, min(6, trimDB))
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, cues, rules, trimDB }
+    private enum CodingKeys: String, CodingKey { case id, name, cues, rules, trimDB, randomOrder, repeatAll, ignoreParentRules }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -197,6 +235,9 @@ public struct CueList: Identifiable, Codable, Equatable, Sendable {
         name = try c.decode(String.self, forKey: .name)
         cues = try c.decode([Cue].self, forKey: .cues)
         rules = try c.decodeIfPresent([InteractionRule].self, forKey: .rules) ?? []
+        ignoreParentRules = try c.decodeIfPresent(Bool.self, forKey: .ignoreParentRules) ?? false
+        randomOrder = try c.decodeIfPresent(Bool.self, forKey: .randomOrder) ?? false
+        repeatAll = try c.decodeIfPresent(Bool.self, forKey: .repeatAll) ?? false
         trimDB = max(-60, min(6, try c.decodeIfPresent(Double.self, forKey: .trimDB) ?? 0))
     }
 }
@@ -220,6 +261,7 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     public var kind: CueElementKind
     public var name: String
     /// Absolute audio path; unused for timecode elements.
+    public var originalSourcePath: String?
     public var sourcePath: String
     /// Placement on the cue timeline (seconds).
     public var startSeconds: Double
@@ -242,6 +284,8 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
     public var muted: Bool
     /// One-based physical output channel for this audio file (mono = one output;
     /// stereo = consecutive L/R outputs). Defaults to output 1 on older shows.
+    public var pan: Double
+    public var sendToMonitor: Bool
     public var outputStartChannel: Int
 
     public init(id: UUID = UUID(), kind: CueElementKind, name: String,
@@ -250,10 +294,11 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
                 timecodeStart: String = "00:00:00:00", ltcTrim: String = "-00:00:00:00",
                 ltcLevelTrimDB: Double = 0, frameRate: Int = 25,
                 timecodeDropFrame: Bool = false, ltcOutputChannel: Int? = nil,
-                gain: Double = 1.0, muted: Bool = false, outputStartChannel: Int = 1) {
+                gain: Double = 1.0, muted: Bool = false, outputStartChannel: Int = 1, pan: Double = 0, sendToMonitor: Bool = true) {
         self.id = id
         self.kind = kind
         self.name = name
+        self.originalSourcePath = nil
         self.sourcePath = sourcePath
         self.startSeconds = max(0, startSeconds)
         self.inSeconds = max(0, inSeconds)
@@ -266,14 +311,16 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
         self.ltcOutputChannel = ltcOutputChannel.flatMap { (1...64).contains($0) ? $0 : nil }
         self.gain = gain.isFinite ? min(max(gain, 0), 1) : 1
         self.muted = muted
+        self.pan = pan.isFinite ? min(1, max(-1, pan)) : 0
+        self.sendToMonitor = sendToMonitor
         self.outputStartChannel = min(64, max(1, outputStartChannel))
     }
 
     // Version 0.8.1 and older .scshow files lack gain/muted fields.
     // Decode these two settings with safe defaults so old projects still open.
     private enum CodingKeys: String, CodingKey {
-        case id, kind, name, sourcePath, startSeconds, inSeconds, outSeconds
-        case timecodeStart, ltcTrim, ltcLevelTrimDB, frameRate, timecodeDropFrame, ltcOutputChannel, gain, muted, outputStartChannel
+        case id, kind, name, sourcePath, originalSourcePath, startSeconds, inSeconds, outSeconds
+        case timecodeStart, ltcTrim, ltcLevelTrimDB, frameRate, timecodeDropFrame, ltcOutputChannel, gain, muted, outputStartChannel, pan, sendToMonitor
     }
 
     public init(from decoder: Decoder) throws {
@@ -294,8 +341,11 @@ public struct CueElement: Identifiable, Codable, Equatable, Sendable {
             ltcOutputChannel: try c.decodeIfPresent(Int.self, forKey: .ltcOutputChannel),
             gain: try c.decodeIfPresent(Double.self, forKey: .gain) ?? 1,
             muted: try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false,
-            outputStartChannel: try c.decodeIfPresent(Int.self, forKey: .outputStartChannel) ?? 1
+            outputStartChannel: try c.decodeIfPresent(Int.self, forKey: .outputStartChannel) ?? 1,
+            pan: try c.decodeIfPresent(Double.self, forKey: .pan) ?? 0,
+            sendToMonitor: try c.decodeIfPresent(Bool.self, forKey: .sendToMonitor) ?? true
         )
+        originalSourcePath = try c.decodeIfPresent(String.self, forKey: .originalSourcePath)
     }
 
     public static func audio(_ url: URL) -> CueElement {
@@ -370,6 +420,8 @@ public enum CueTint: String, CaseIterable, Codable, Sendable {
 }
 
 public struct Cue: Identifiable, Codable, Equatable, Sendable {
+    public var video: CueVideo? = nil
+    public var triggers = CueTriggers()
     public var id: UUID
     public var name: String
     public var tint: CueTint
@@ -391,8 +443,11 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     public var ignoreParentRules: Bool
     /// This belongs to the cue, not the files inside it.
     public var durationSeconds: Double
+    public var playbackRange: CuePlaybackRange? = nil
+    public var automaticFadeInEnabled: Bool? = nil
+    public var automaticFadeOutEnabled: Bool? = nil
 
-    public var isEmpty: Bool { elements.isEmpty }
+    public var isEmpty: Bool { elements.isEmpty && video == nil }
     public var hasAudio: Bool { elements.contains { $0.kind == .audio } }
     public var audioElements: [CueElement] { elements.filter { $0.kind == .audio } }
 
@@ -417,7 +472,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         set {
             if let index = elements.firstIndex(where: { $0.kind == .audio }) {
                 if newValue.isEmpty { elements.remove(at: index) }
-                else { elements[index].sourcePath = newValue }
+                else { elements[index].sourcePath = newValue; elements[index].originalSourcePath = nil }
             } else if !newValue.isEmpty {
                 elements.append(CueElement.audio(URL(fileURLWithPath: newValue)))
             }
@@ -446,8 +501,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
 
     /// The app uses this for the effective timeline length; source lengths are measured at playback.
     public func timelineLength(audioEnds: [Double]) -> Double {
-        if durationMode == .fixed { return max(0, min(86400, durationSeconds)) }
-        return max(audioEnds.max() ?? 0, 0)
+        let full = sourceTimelineLength(audioEnds: audioEnds)
+        return min(full, playbackRange?.end ?? full)
     }
 
     public init(id: UUID = UUID(), name: String, mediaPath: String = "",
@@ -479,6 +534,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case triggers, video, playbackRange, automaticFadeInEnabled, automaticFadeOutEnabled
         case id, name, tint, elements, markers, durationMode, gain, fadeOutSeconds, enabled
         case fadeInSeconds, loop, followOnFinish, preWaitSeconds, rules, ignoreParentRules
         case durationSeconds
@@ -508,6 +564,14 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         if let contents = try c.decodeIfPresent([CueElement].self, forKey: .elements) {
             elements = contents
         }
+        automaticFadeInEnabled = try c.decodeIfPresent(Bool.self, forKey: .automaticFadeInEnabled)
+        automaticFadeOutEnabled = try c.decodeIfPresent(Bool.self, forKey: .automaticFadeOutEnabled)
+        playbackRange = try c.decodeIfPresent(CuePlaybackRange.self, forKey: .playbackRange)
+        if let playbackRange, !playbackRange.isValid { throw DecodingError.dataCorruptedError(forKey: .playbackRange, in: c, debugDescription: "Invalid cue IN/OUT") }
+        video = try c.decodeIfPresent(CueVideo.self, forKey: .video)
+        if let video, !video.isValid { throw DecodingError.dataCorruptedError(forKey: .video, in: c, debugDescription: "Invalid video settings") }
+        triggers = try c.decodeIfPresent(CueTriggers.self, forKey: .triggers) ?? CueTriggers()
+        if let error = triggers.validationError { throw DecodingError.dataCorruptedError(forKey: .triggers, in: c, debugDescription: error) }
         tint = try c.decodeIfPresent(CueTint.self, forKey: .tint) ?? .none
         markers = try c.decodeIfPresent([CueMarker].self, forKey: .markers) ?? []
         rules = try c.decodeIfPresent([InteractionRule].self, forKey: .rules) ?? []
@@ -518,6 +582,11 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(automaticFadeInEnabled, forKey: .automaticFadeInEnabled)
+        try c.encodeIfPresent(automaticFadeOutEnabled, forKey: .automaticFadeOutEnabled)
+        try c.encodeIfPresent(playbackRange, forKey: .playbackRange)
+        try c.encodeIfPresent(video, forKey: .video)
+        try c.encode(triggers, forKey: .triggers)
         try c.encode(tint, forKey: .tint)
         try c.encode(elements, forKey: .elements)
         try c.encode(markers, forKey: .markers)

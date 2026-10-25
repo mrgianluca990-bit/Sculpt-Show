@@ -6,6 +6,8 @@ final class SculptBridgeReturnTests: XCTestCase {
     private func fixture(mode: String = "updateCue") throws -> (Show, URL, Data) {
         var show = Show(name: "Live")
         var cue = Cue(name: "Music", mediaPath: "/old.wav")
+        cue.elements[0].pan = -0.4
+        cue.elements[0].sendToMonitor = false
         cue.elements.append(.timecode())
         cue.markers = [CueMarker(name: "Verse", positionSeconds: 1)]
         cue.loop = true
@@ -36,6 +38,8 @@ final class SculptBridgeReturnTests: XCTestCase {
         XCTAssertEqual(cue.audioElements[0].id, show.cueLists[0].cues[0].audioElements[0].id)
         XCTAssertEqual(cue.audioElements[0].outputStartChannel, 64)
         XCTAssertTrue(cue.audioElements[0].muted)
+        XCTAssertEqual(cue.audioElements[0].pan, -0.4)
+        XCTAssertFalse(cue.audioElements[0].sendToMonitor)
         XCTAssertTrue(cue.loop)
         XCTAssertTrue(cue.hasTimecode)
         XCTAssertEqual(cue.durationSeconds, 3)

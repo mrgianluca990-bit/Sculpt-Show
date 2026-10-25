@@ -10,6 +10,9 @@ import SculptShowCore
 /// planned AVAudioEngine-based show engine remains necessary.
 @MainActor
 final class PlaybackEngine: ObservableObject {
+    let video: VideoPlayback
+    private var videoHasLooped: Set<UUID> = []
+    private var videoFadeLevels: [UUID: Double] = [:]
     enum Phase: String {
         case waiting = "WAITING"
         case playing = "PLAYING"
@@ -17,10 +20,14 @@ final class PlaybackEngine: ObservableObject {
         case fading = "FADING"
     }
 
-    struct Snapshot {
+    struct Snapshot: Equatable {
         var phase: Phase
         var elapsed: TimeInterval
         var duration: TimeInterval
+        var sampledAt = ProcessInfo.processInfo.systemUptime
+        func presentedElapsed(at now: TimeInterval) -> Double {
+            min(duration, elapsed + (phase == .playing || phase == .fading ? min(0.1, max(0, now - sampledAt)) : 0))
+        }
         var fraction: Double { duration > 0 ? min(max(elapsed / duration, 0), 1) : 0 }
         var remaining: TimeInterval { max(duration - elapsed, 0) }
     }
@@ -37,7 +44,62 @@ final class PlaybackEngine: ObservableObject {
 
     /// File loading replaces the workspace atomically; no transport can start in between.
     var projectTransitionInProgress = false
-    @Published private(set) var snapshots: [UUID: Snapshot] = [:]
+    let displayClock = PlaybackDisplayClock()
+    private(set) var snapshots: [UUID: Snapshot] = [:] {
+        didSet {
+            syncConditionPhases()
+            displayClock.snapshots = snapshots
+            // The workspace needs lifecycle/layout changes, not 20Hz elapsed ticks.
+            if oldValue.count != snapshots.count || snapshots.contains(where: { id, state in
+                oldValue[id]?.phase != state.phase || oldValue[id]?.duration != state.duration
+            }) { objectWillChange.send() }
+        }
+    }
+    @Published private(set) var projectSampleRate = 48000
+    @Published private(set) var deviceSampleRate: Double = 0
+    var projectAudioReady = false
+
+    private var lastConditionPhases: [UUID: Int32] = [:]
+    private func syncConditionPhases() {
+        var phases: [UUID: Int32] = [:]
+        for (id, state) in snapshots {
+            switch state.phase {
+            case .playing, .fading: phases[id] = 1
+            case .paused: phases[id] = 2
+            case .waiting: phases[id] = 3
+            }
+        }
+        guard phases != lastConditionPhases else { return }
+        lastConditionPhases = phases
+        routedAudio.conditionPhases(phases)
+    }
+    func knowProject(_ show: Show) {
+        setOutputPatch(show.outputPatch)
+        setMonitor(show.monitor)
+        let ids = Set(show.cueLists.flatMap(\.cues).flatMap(\.audioElements).map(\.id))
+        let solos = inputSoloIDs.intersection(ids)
+        if solos != inputSoloIDs { inputSoloIDs = solos; routedAudio.soloedInputs = solos; refreshInputMixes() }
+        routedAudio.setKnownCueIDs(Set(show.cueLists.flatMap { $0.cues.map(\.id) }))
+        syncConditionPhases()
+    }
+    func prepareConditionalAudio(_ show: Show) async throws {
+        let cache = routedAudio.preparedConditionalFiles
+        let prepared = try await Task.detached(priority: .userInitiated) {
+            try PreparedConditionalPCM.prepare(show: show, cached: cache)
+        }.value
+        routedAudio.preparedConditionalFiles = prepared
+    }
+    func configureProjectSampleRate(_ rate: Int) async -> Bool {
+        guard snapshots.isEmpty else {
+            if projectSampleRate == rate { return true }
+            errorMessage = "Stop all cues before changing the project sample rate."
+            return false
+        }
+        projectSampleRate = rate
+        if routingEnabled && abs(deviceSampleRate - Double(rate)) < 0.5 { return true }
+        await configureRouting(deviceID: routingDeviceID ?? RoutedAudioEngine.defaultOutputID())
+        return routingEnabled && abs(deviceSampleRate - Double(rate)) < 0.5
+    }
     /// Non-destructive audition cursor for each cue. GLOBAL GO ignores it.
     /// Kept only in memory: the .scshow show format and Rules are unchanged.
     @Published private(set) var cuePlayCursors: [UUID: Double] = [:]
@@ -51,7 +113,12 @@ final class PlaybackEngine: ObservableObject {
         let holding: Bool
     }
     private var heldLTC: (owner: UUID, value: GeneratedLTC)?
-    @Published private(set) var generatedLTC: GeneratedLTC?
+    private(set) var generatedLTC: GeneratedLTC? {
+        didSet {
+            displayClock.generatedLTC = generatedLTC
+            if oldValue?.output != generatedLTC?.output || oldValue?.active != generatedLTC?.active || oldValue?.holding != generatedLTC?.holding || oldValue?.cueName != generatedLTC?.cueName { objectWillChange.send() }
+        }
+    }
 
     private func updateGeneratedLTC() {
         guard let owner = routedAudio.ltcOwner,
@@ -101,12 +168,14 @@ final class PlaybackEngine: ObservableObject {
     var onNaturalFinish: ((UUID) -> Void)?
     var onStarted: ((UUID) -> Void)?
     var onStopped: ((UUID) -> Void)?
+    var onPlaybackFailed: ((UUID) -> Void)?
     /// Emits markers when the running playhead crosses them, in chronological order.
     var onMarkersReached: ((UUID, [UUID]) -> Void)?
 
     private var tracks: [UUID: [AudioTrack]] = [:]
     private var activeCues: [UUID: Cue] = [:]
     /// Last observed timeline position per cue. Reset on seek, restart and new GO.
+    private var nativeMarkerEvents: [UUID: NativeMarkerEventCursor] = [:]
     private var lastMarkerPosition: [UUID: Double] = [:]
     private var startedAt: [UUID: TimeInterval] = [:]
     private var elapsedAtStart: [UUID: Double] = [:]
@@ -200,6 +269,63 @@ final class PlaybackEngine: ObservableObject {
         lastMeterUIUpdate = now
         meterMonitor.observe(peaks: peaks, rms: rms)
     }
+    @Published private(set) var monitor = ShowMonitorSettings()
+    @Published private(set) var inputSoloIDs: Set<UUID> = []
+    var activeInputCueIDs: Set<UUID> { Set(activeCues.keys) }
+    var monitorOutputs: Set<Int> { monitor.reservedOutputs(deviceUID: routingDeviceUID, channels: routingOutputCount) }
+    var routingVoiceLimit: Int { routedAudio.activeVoiceLimit }
+    var programOutputCount: Int { max(0, routingOutputCount - monitorOutputs.count) }
+    func setMonitor(_ settings: ShowMonitorSettings) {
+        guard settings != monitor else { return }
+        let routingChanged = settings.enabled != monitor.enabled || settings.deviceUID != monitor.deviceUID ||
+            settings.leftOutput != monitor.leftOutput || settings.rightOutput != monitor.rightOutput
+        guard !routingChanged || snapshots.isEmpty else { errorMessage = "Stop all cues before configuring Monitor outputs."; return }
+        if routingChanged { stopTestTone() }
+        monitor = settings; routedAudio.monitor = settings
+        updateMonitorOutputControls()
+        refreshInputMixes()
+    }
+    private func updateMonitorOutputControls() {
+        guard routingEnabled else { return }
+        var next = outputControls
+        next.setSoloExempt(monitorOutputs)
+        next.setAllMuted(next.allMuted, excluding: monitor.excludeFromMuteAll ? monitorOutputs : [])
+        applyOutputControls(next)
+    }
+    func toggleMuteAllOutputs() {
+        var next = outputControls
+        next.setAllMuted(!next.allMuted, excluding: monitor.excludeFromMuteAll ? monitorOutputs : [])
+        applyOutputControls(next)
+    }
+    func toggleInputSolo(_ id: UUID) {
+        if !inputSoloIDs.insert(id).inserted { inputSoloIDs.remove(id) }
+        routedAudio.soloedInputs = inputSoloIDs; refreshInputMixes()
+    }
+    func clearInputSolos() { inputSoloIDs.removeAll(); routedAudio.soloedInputs = []; refreshInputMixes() }
+    private func refreshInputMixes() {
+        for id in Array(activeCues.keys) { refreshAudio(for: id, elapsed: cueElapsed(id)) }
+    }
+    var routingDeviceUID: String { routedAudio.selectedDevice?.uid ?? "" }
+    @Published private(set) var outputPatch = ShowOutputPatch()
+    func setOutputPatch(_ patch: ShowOutputPatch) {
+        guard patch != outputPatch else { return }
+        guard snapshots.isEmpty else {
+            errorMessage = "Stop all cues before changing the output patch."
+            return
+        }
+        stopTestTone()
+        routedAudio.outputPatch = patch
+        outputPatch = patch
+    }
+    func outputRouteLabel(first: Int, channels: Int) -> String {
+        let names = (first..<(first + channels)).map { outputPatch.name($0) }.joined(separator: " / ")
+        do {
+            let points = try outputPatch.crosspoints(firstOutput: first, sourceChannels: channels,
+                deviceUID: routingDeviceUID, deviceChannels: routingOutputCount, excluding: monitorOutputs)
+            if points.isEmpty { return names + " · Monitor only" }
+            return names + " → " + points.map { String($0.deviceChannel + 1) }.joined(separator: "/")
+        } catch { return names + " · UNAVAILABLE" }
+    }
     var routingOutputCount: Int { routedAudio.selectedDevice?.channels ?? 0 }
 
     /// Output-level Mute/Solo goes directly to the MatrixMixer output gain.
@@ -275,7 +401,7 @@ final class PlaybackEngine: ObservableObject {
             return
         }
         guard !configuringRouting else { return }
-        if routingEnabled, routingDeviceID == deviceID { return }
+        if routingEnabled, routingDeviceID == deviceID, abs(deviceSampleRate - Double(projectSampleRate)) < 0.5 { return }
         guard snapshots.isEmpty else {
             errorMessage = "Cannot change audio interface while cues are active. The current audio keeps playing; stop the show before changing hardware."
             return
@@ -293,17 +419,27 @@ final class PlaybackEngine: ObservableObject {
         routingDeviceID = nil
         outputControls = OutputMuteSoloState(channelCount: 0)
         meterMonitor.configure(channels: 0)
+        routedAudio.onSampleRateInvalidated = { [weak self] rate in
+            guard let self else { return }
+            self.stopAll()
+            self.projectAudioReady = false
+            self.routingEnabled = false
+            self.deviceSampleRate = rate
+            self.errorMessage = "Audio device sample rate changed. Playback stopped to prevent live SRC. Prepare / Verify Audio in Audio/MIDI Setup."
+        }
         routedAudio.onMeterSample = { [weak self] peaks, rms in
             self?.updateMeterLevels(peaks: peaks, rms: rms)
         }
         do {
-            try await routedAudio.configure(device: device)
+            try await routedAudio.configure(device: device, requestedRate: projectSampleRate)
             let allAudible = OutputMuteSoloState(channelCount: device.channels)
             try routedAudio.applyOutputControls(allAudible)
             outputControls = allAudible
             meterMonitor.configure(channels: device.channels)
+            deviceSampleRate = routedAudio.actualSampleRate
             routingEnabled = true
             routingDeviceID = device.id
+            updateMonitorOutputControls()
             if !device.uid.isEmpty {
                 UserDefaults.standard.set(device.uid, forKey: preferredOutputUIDKey)
             }
@@ -325,11 +461,8 @@ final class PlaybackEngine: ObservableObject {
         do {
             let file = try AVAudioFile(forReading: URL(fileURLWithPath: sourcePath))
             let sourceChannels = Int(file.processingFormat.channelCount)
-            guard AudioRoutePlan.crosspoints(firstOutput: firstOutput,
-                sourceChannels: sourceChannels, deviceChannels: routingOutputCount) != nil else {
-                errorMessage = "OUT \(firstOutput) is not valid for this \(sourceChannels)-channel file on a \(routingOutputCount)-channel device."
-                return false
-            }
+            _ = try outputPatch.crosspoints(firstOutput: firstOutput, sourceChannels: sourceChannels,
+                deviceUID: routingDeviceUID, deviceChannels: routingOutputCount, excluding: monitorOutputs)
             try routedAudio.changeOutput(cueID: cueID, elementID: elementID,
                                          firstOutput: firstOutput, sourceChannels: sourceChannels)
             if var cue = activeCues[cueID],
@@ -350,10 +483,22 @@ final class PlaybackEngine: ObservableObject {
         min(0.65, max(0.18, Double(count) * 0.012))
     }
 
-    init() {
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+    init(videoPlayback: VideoPlayback? = nil) {
+        video = videoPlayback ?? VideoPlayback()
+        video.onEnded = { [weak self] id in
+            if self?.snapshots[id]?.phase == .fading { self?.stop(id, notifyRules: false) }
+            else if self?.activeCues[id]?.loop == true { self?.repeatVisual(id) }
+            else { self?.finishNaturally(id) }
+        }
+        video.onLoop = { [weak self] id in self?.videoHasLooped.insert(id) }
+        video.onFailure = { [weak self] id, message in
+            self?.stop(id, notifyRules: false); self?.onPlaybackFailed?(id); self?.errorMessage = message
+        }
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
     }
 
     func mediaDuration(for cue: Cue) -> Double? {
@@ -374,6 +519,11 @@ final class PlaybackEngine: ObservableObject {
               from markerOffsetSeconds: Double = 0,
               restartPaused: Bool = false) -> Bool {
         guard !projectTransitionInProgress, requestedCue.enabled else { return false }
+        if let range = requestedCue.playbackRange, !range.isValid { errorMessage = "Invalid cue IN/OUT."; return false }
+        if (requestedCue.video != nil && requestedCue.video?.audioPrepared != true) || (requestedCue.hasAudio && !projectAudioReady) {
+            errorMessage = "Prepare project audio before GO. Live sample-rate conversion is disabled."
+            return false
+        }
         // A forgotten diagnostic tone can never continue into a live GO.
         stopTestTone()
         // Show mode always requires an active Core Audio route for audio cues.
@@ -383,7 +533,7 @@ final class PlaybackEngine: ObservableObject {
             return false
         }
         var cue = requestedCue
-        if let overrideFadeInSeconds { cue.fadeInSeconds = max(0, min(600, overrideFadeInSeconds)) }
+        if let overrideFadeInSeconds { cue.fadeInSeconds = max(0, min(600, overrideFadeInSeconds)); cue.automaticFadeInEnabled = overrideFadeInSeconds > 0 }
         guard pendingTokens[cue.id] == nil else { return false }
         if let snapshot = snapshots[cue.id] {
             if snapshot.phase == .paused {
@@ -428,7 +578,8 @@ final class PlaybackEngine: ObservableObject {
 
     /// Hardware-mapped cue: playback occurs in one AVAudioEngine with one host clock.
     /// Failure is visible and does not fall back to stereo outputs 1/2.
-    private func playRouted(_ cue: Cue, from requestedPosition: Double = 0) -> Bool {
+    private func playRouted(_ original: Cue, from requestedPosition: Double = 0) -> Bool {
+        let cue = original
         do {
             var audioEnds: [Double] = []
             for element in cue.alignedAudioElements {
@@ -440,28 +591,29 @@ final class PlaybackEngine: ObservableObject {
                 }
             }
             let length = cue.timelineLength(audioEnds: audioEnds)
-            guard length > 0.001 else {
+            guard length - cue.playbackStart >= 0.001 else {
                 errorMessage = "Cue ‘\(cue.name)’ has zero duration."
                 return false
             }
-            let position = min(max(0, requestedPosition), max(0, length - 0.001))
+            let position = min(max(cue.playbackStart, requestedPosition), max(cue.playbackStart, length - 0.001))
             let lead = try routedAudio.start(cue, from: position,
-                fade: cue.fadeInSeconds > 0 ? 0 : 1)
+                fade: Float(cue.playbackEnvelope(at:position,end:length)))
             // Apply list trim before the scheduled first audible frame.
-            routedAudio.updateMix(cue,
-                fadeFactor: cue.fadeInSeconds > 0 ? 0 : 1,
+            try routedAudio.updateMix(cue,
+                fadeFactor: Float(cue.playbackEnvelope(at:position,end:length)),
                 dimFactor: (dimFactors[cue.id] ?? 1) * trimFactor(cue.id))
             routedCues.insert(cue.id)
             activeCues[cue.id] = cue
             tracks[cue.id] = []
             elapsedAtStart[cue.id] = position
-            lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
+            lastMarkerPosition[cue.id] = position - 0.0001
             startedAt[cue.id] = ProcessInfo.processInfo.systemUptime + lead
-            snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length)
+            snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length, sampledAt: max(ProcessInfo.processInfo.systemUptime, startedAt[cue.id] ?? 0))
             updateGeneratedLTC()
             onStarted?(cue.id)
             return true
         } catch {
+            routedAudio.stop(cue.id)
             errorMessage = "Routed playback failed for ‘\(cue.name)’: \(error.localizedDescription)"
             return false
         }
@@ -469,6 +621,7 @@ final class PlaybackEngine: ObservableObject {
 
     @discardableResult
     private func playImmediately(_ cue: Cue, from requestedPosition: Double = 0) -> Bool {
+        if cue.video != nil { return playVideo(cue, from: requestedPosition) }
         if routingEnabled && (cue.hasAudio || cue.hasTimecode) { return playRouted(cue, from: requestedPosition) }
         var prepared: [AudioTrack] = []
         do {
@@ -482,7 +635,7 @@ final class PlaybackEngine: ObservableObject {
                 // Its effective OUT is the earlier of source end or cue end.
                 player.numberOfLoops = 0 // The *container*, not each file, controls looping.
                 player.currentTime = 0
-                player.volume = cue.fadeInSeconds > 0 || element.muted ? 0 : Float(cue.gain * element.gain)
+                player.volume = cue.automaticFadeInDuration > 0 || element.muted ? 0 : Float(cue.gain * element.gain)
                 player.prepareToPlay()
                 prepared.append(AudioTrack(elementID: element.id, player: player,
                     start: 0, sourceIn: 0, sourceOut: player.duration))
@@ -493,22 +646,89 @@ final class PlaybackEngine: ObservableObject {
         }
         let ends = prepared.map { $0.start + ($0.sourceOut - $0.sourceIn) }
         let length = cue.timelineLength(audioEnds: ends)
-        guard length > 0.001 else {
+        guard length - cue.playbackStart >= 0.001 else {
             errorMessage = "Cue ‘\(cue.name)’ has zero duration. Set a container length."
             return false
         }
-        let position = min(max(0, requestedPosition), max(0, length - 0.001))
+        let position = min(max(cue.playbackStart, requestedPosition), max(cue.playbackStart, length - 0.001))
         activeCues[cue.id] = cue
         tracks[cue.id] = prepared
         elapsedAtStart[cue.id] = position
-        lastMarkerPosition[cue.id] = position > 0 ? position : -0.0001
-        snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length)
+        lastMarkerPosition[cue.id] = position - 0.0001
+        snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: length, sampledAt: max(ProcessInfo.processInfo.systemUptime, startedAt[cue.id] ?? 0))
         armAudio(for: cue.id, from: position)
         onStarted?(cue.id)
         return true
     }
 
+    private func playVideo(_ cue: Cue, from position: Double) -> Bool {
+        guard let movie = cue.video, movie.isValid, !cue.hasTimecode, cue.audioElements.count <= 1,
+              FileManager.default.isReadableFile(atPath: movie.sourcePath) else {
+            errorMessage = "Video is missing, invalid or its soundtrack is not ready."; return false
+        }
+        guard video.canStart(cue.id) else { errorMessage = "Maximum \(VideoCompositionPolicy.maximumCues) simultaneous visual cues."; return false }
+        activeCues[cue.id] = cue
+        elapsedAtStart[cue.id] = position
+        snapshots[cue.id] = Snapshot(phase: .waiting, elapsed: 0, duration: movie.duration)
+        video.start(cue, position: max(cue.playbackStart, position)) { [weak self] duration in
+            guard let self, self.activeCues[cue.id] != nil, self.video.contains(cue.id) else { return nil }
+            let p = min(max(cue.playbackStart, position), max(cue.playbackStart, duration - 0.001))
+            let host = self.startVideoAudio(cue, position: p, duration: duration)
+            if self.activeCues[cue.id] != nil { self.onStarted?(cue.id) }
+            return host
+        }
+        return true
+    }
+
+    private func visualLevel(_ cue: Cue, elapsed: Double, duration: Double) -> Double {
+        return cue.playbackEnvelope(at: elapsed, end: duration)
+    }
+    private func repeatVisual(_ id: UUID) {
+        guard let cue = activeCues[id], let state = snapshots[id], state.phase == .playing else { return }
+        videoHasLooped.insert(id)
+        let audioPosition = routedCues.contains(id) ? cueElapsed(id) : cue.playbackStart
+        let position = audioPosition < max(cue.playbackStart, state.duration - 0.001) ? audioPosition : cue.playbackStart
+        if !routedCues.contains(id) {
+            elapsedAtStart[id] = position; startedAt[id] = ProcessInfo.processInfo.systemUptime
+        }
+        lastMarkerPosition[id] = cue.playbackStart - 0.0001
+        video.repeatVideo(id, at: position)
+        video.setOpacity(visualLevel(cue, elapsed: position, duration: state.duration), for: id)
+    }
+
+    private func startVideoAudio(_ cue: Cue, position: Double, duration: Double) -> UInt64? {
+        do {
+            var lead: Double = 0
+            if cue.hasAudio {
+                let soundtrack = cue
+                lead = try routedAudio.start(soundtrack, from: position, fade: Float(visualLevel(cue, elapsed: position, duration: duration)))
+                routedCues.insert(cue.id); tracks[cue.id] = []
+                try routedAudio.updateMix(cue, fadeFactor: Float(visualLevel(cue, elapsed: position, duration: duration)), dimFactor: trimFactor(cue.id))
+            }
+            elapsedAtStart[cue.id] = position
+            startedAt[cue.id] = ProcessInfo.processInfo.systemUptime + lead
+            snapshots[cue.id] = Snapshot(phase: .playing, elapsed: position, duration: duration, sampledAt: startedAt[cue.id]!)
+            return routedAudio.scheduledHostTimes[cue.id]
+        } catch {
+            stop(cue.id, notifyRules: false); onPlaybackFailed?(cue.id)
+            errorMessage = "Video soundtrack playback failed: \(error.localizedDescription)"; return nil
+        }
+    }
+    private func repositionVideo(_ id: UUID, position: Double, playing: Bool) {
+        guard let cue = activeCues[id], let state = snapshots[id] else { return }
+        if routedCues.contains(id) { routedAudio.stop(id) }
+        snapshots[id]?.phase = .waiting
+        video.reposition(id, position: position, playing: playing) { [weak self] in
+            guard let self, self.activeCues[id] != nil else { return nil }
+            if playing { return self.startVideoAudio(cue, position: position, duration: state.duration) }
+            self.snapshots[id] = Snapshot(phase: .paused, elapsed: position, duration: state.duration)
+            return nil
+        }
+    }
+
     private func cueElapsed(_ id: UUID) -> Double {
+        if let position = routedAudio.conditionalPosition(for: id) { return position }
+        if video.contains(id) && !routedCues.contains(id) { return video.elapsed(for: id) }
         let base = elapsedAtStart[id] ?? 0
         let linear = max(0, base + (startedAt[id].map { max(0, ProcessInfo.processInfo.systemUptime - $0) } ?? 0))
         if let loop = routedAudio.nativeLoop(for: id), linear >= loop.outSeconds {
@@ -531,11 +751,13 @@ final class PlaybackEngine: ObservableObject {
 
     /// Change an individual element live, without stopping or re-scheduling any player.
     func setElementMix(_ elementID: UUID, for cueID: UUID,
-                       gain: Double? = nil, muted: Bool? = nil) {
+                       gain: Double? = nil, muted: Bool? = nil, pan: Double? = nil, sendToMonitor: Bool? = nil) {
         guard var cue = activeCues[cueID],
               let index = cue.elements.firstIndex(where: { $0.id == elementID && $0.kind == .audio }) else { return }
         if let gain { cue.elements[index].gain = gain.isFinite ? min(max(gain, 0), 1) : 1 }
         if let muted { cue.elements[index].muted = muted }
+        if let pan { cue.elements[index].pan = min(1, max(-1, pan)) }
+        if let sendToMonitor { cue.elements[index].sendToMonitor = sendToMonitor }
         activeCues[cueID] = cue
         if snapshots[cueID]?.phase == .playing {
             refreshAudio(for: cueID, elapsed: cueElapsed(cueID))
@@ -546,10 +768,11 @@ final class PlaybackEngine: ObservableObject {
     /// All audio stems share the same scheduled start (device clock).
     /// Never start individual stems from the UI refresh timer.
     private func armAudio(for id: UUID, from elapsed: Double, leadOverride: Double? = nil) {
+        defer { if snapshots[id] != nil { snapshots[id]?.sampledAt = max(ProcessInfo.processInfo.systemUptime, startedAt[id] ?? 0) } }
         if routedCues.contains(id), let cue = activeCues[id] {
             do {
                 let lead = try routedAudio.jump(cue, from: elapsed,
-                    fade: cue.fadeInSeconds > 0 ? 0 : 1,
+                    fade: Float(cue.playbackEnvelope(at:elapsed,end:snapshots[id]?.duration ?? 0)),
                     hostLead: leadOverride ?? 0.22)
                 elapsedAtStart[id] = elapsed
                 startedAt[id] = ProcessInfo.processInfo.systemUptime + lead
@@ -562,6 +785,7 @@ final class PlaybackEngine: ObservableObject {
         guard var list = tracks[id], let cue = activeCues[id] else { return }
         // Empty containers keep their existing immediate timeline behavior.
         guard !list.isEmpty else {
+            routedAudio.setSilentCueTimeline(id, duration: max(0, (snapshots[id]?.duration ?? 0) - elapsed), loops: cue.loop)
             elapsedAtStart[id] = elapsed
             startedAt[id] = ProcessInfo.processInfo.systemUptime
             return
@@ -591,7 +815,7 @@ final class PlaybackEngine: ObservableObject {
                 continue
             }
             track.player.currentTime = instruction.positionInFile
-            track.player.volume = cue.fadeInSeconds > 0 ? 0 : trackGain(id, elementID: track.elementID)
+            track.player.volume = Float(cue.playbackEnvelope(at:elapsed,end:snapshots[id]?.duration ?? 0)) * trackGain(id, elementID:track.elementID)
             if track.player.prepareToPlay() {
                 instructions.append((index, instruction))
             } else {
@@ -625,15 +849,19 @@ final class PlaybackEngine: ObservableObject {
     /// audio player from the timer: that caused the multitrack misalignment.
     private func refreshAudio(for id: UUID, elapsed: Double) {
         if routedCues.contains(id), let cue = activeCues[id] {
-            let fade = max(0, cue.fadeInSeconds)
-            let fadeInFactor = fade > 0 ? Float(min(1, max(0, elapsed / fade))) : 1
+            let fadeInFactor = cue.video != nil ? (videoFadeLevels[id].map(Float.init) ?? Float(visualLevel(cue, elapsed: elapsed, duration: snapshots[id]?.duration ?? 0))) : Float(cue.playbackEnvelope(at: elapsed, end: snapshots[id]?.duration ?? 0))
             var fadeOutFactor: Float = 1
             if let data = routedFadeStarts[id] {
                 let elapsedFade = max(0, ProcessInfo.processInfo.systemUptime - data.started)
                 fadeOutFactor = Float(max(0, 1 - elapsedFade / max(0.001, data.seconds)))
             }
-            routedAudio.updateMix(cue, fadeFactor: fadeInFactor * fadeOutFactor,
-                                  dimFactor: (dimFactors[id] ?? 1) * trimFactor(id))
+            do {
+                try routedAudio.updateMix(cue, fadeFactor: fadeInFactor * fadeOutFactor,
+                    dimFactor: (dimFactors[id] ?? 1) * trimFactor(id))
+            } catch {
+                stop(id, notifyRules: false); onPlaybackFailed?(id)
+                errorMessage = "Cannot update mixer: \(error.localizedDescription)"
+            }
             return
         }
         guard var list = tracks[id], let cue = activeCues[id] else { return }
@@ -648,8 +876,7 @@ final class PlaybackEngine: ObservableObject {
             }
             // Apply fade-in relative to each element's timeline position.
             // Do not prematurely fade an element before its scheduled offset.
-            let fade = max(0, cue.fadeInSeconds)
-            let fadeFactor = fade > 0 ? min(1, max(0, local / fade)) : 1
+            let fadeFactor = cue.playbackEnvelope(at: elapsed, end: snapshots[id]?.duration ?? 0)
             list[index].player.volume = trackGain(id, elementID: list[index].elementID) * Float(fadeFactor)
         }
         tracks[id] = list
@@ -657,6 +884,7 @@ final class PlaybackEngine: ObservableObject {
 
     private func resume(_ id: UUID) {
         guard snapshots[id]?.phase == .paused else { return }
+        if video.contains(id) { repositionVideo(id, position: elapsedAtStart[id] ?? 0, playing: true); return }
         let position = elapsedAtStart[id] ?? 0
         snapshots[id]?.phase = .playing
         if heldLTC?.owner == id { heldLTC = nil }
@@ -693,6 +921,7 @@ final class PlaybackEngine: ObservableObject {
     func pause(_ id: UUID) {
         guard snapshots[id]?.phase == .playing else { return }
         let elapsed = cueElapsed(id)
+        if video.contains(id) { video.pause(id) }
         elapsedAtStart[id] = elapsed
         startedAt.removeValue(forKey: id)
         // Preserve the SMPTE position, but silence the physical LTC signal.
@@ -708,14 +937,18 @@ final class PlaybackEngine: ObservableObject {
 
     func stop(_ id: UUID, notifyRules: Bool = true) {
         let previous = snapshots[id]
+        if video.contains(id) { video.stop(id) }
         pendingTokens.removeValue(forKey: id)
         pendingDeadlines.removeValue(forKey: id)
         fadeTokens.removeValue(forKey: id)
+        videoFadeLevels.removeValue(forKey: id)
+        videoHasLooped.remove(id)
         routedFadeStarts.removeValue(forKey: id)
         if routedCues.remove(id) != nil { routedAudio.stop(id) }
         for track in tracks[id] ?? [] { track.player.stop() }
         tracks.removeValue(forKey: id)
         activeCues.removeValue(forKey: id)
+        nativeMarkerEvents.removeValue(forKey: id)
         lastMarkerPosition.removeValue(forKey: id)
         startedAt.removeValue(forKey: id)
         elapsedAtStart.removeValue(forKey: id)
@@ -731,12 +964,14 @@ final class PlaybackEngine: ObservableObject {
         if state.phase == .waiting { stop(cue.id); return }
         guard state.phase != .fading else { return }
         let seconds = overrideSeconds.map { max(0, min($0, 600)) } ?? cue.fadeOutSeconds
-        guard seconds > 0, !(tracks[cue.id] ?? []).isEmpty || routedCues.contains(cue.id) else { stop(cue.id); return }
+        guard seconds > 0, !(tracks[cue.id] ?? []).isEmpty || routedCues.contains(cue.id) || video.contains(cue.id) else { stop(cue.id); return }
         let token = UUID()
+        if video.contains(cue.id) { videoFadeLevels[cue.id] = video.opacity(for: cue.id) }
+        routedAudio.extendCueTimeline(cue.id, duration: seconds)
         fadeTokens[cue.id] = token
         snapshots[cue.id]?.phase = .fading
         onStopped?(cue.id)
-        if routedCues.contains(cue.id) {
+        if routedCues.contains(cue.id) || video.contains(cue.id) {
             routedFadeStarts[cue.id] = (ProcessInfo.processInfo.systemUptime, seconds)
         }
         for track in tracks[cue.id] ?? [] where track.started {
@@ -777,9 +1012,25 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
+    /// Moving a project media folder must not invalidate subsequent seek/resume.
+    /// Existing player nodes, file handles and loop queues remain untouched.
+    func remapSavedMedia(_ paths: [String: String]) {
+        for id in Array(activeCues.keys) {
+            guard var cue = activeCues[id] else { continue }
+            for index in cue.elements.indices {
+                if let next = paths[cue.elements[index].sourcePath] {
+                    cue.elements[index].sourcePath = next
+                }
+            }
+            if let path = cue.video?.sourcePath, let next = paths[path] { cue.video?.sourcePath = next }
+            activeCues[id] = cue
+        }
+    }
+
     func seek(_ id: UUID, to fraction: Double) {
         guard let state = snapshots[id] else { return }
-        seek(id, toSeconds: min(max(fraction, 0), 0.9999) * state.duration)
+        let start = activeCues[id]?.playbackStart ?? 0
+        seek(id, toSeconds: start + min(max(fraction, 0), 0.9999) * (state.duration - start))
     }
 
     /// Jump directly to a marker or timeline position, without firing skipped markers.
@@ -787,10 +1038,16 @@ final class PlaybackEngine: ObservableObject {
     func seek(_ id: UUID, toSeconds seconds: Double) {
         guard let state = snapshots[id], state.phase != .waiting, state.phase != .fading,
               seconds.isFinite else { return }
-        let position = min(max(seconds, 0), max(0, state.duration - 0.001))
+        let start = activeCues[id]?.playbackStart ?? 0
+        let position = min(max(seconds, start), max(start, state.duration - 0.001))
         elapsedAtStart[id] = position
         lastMarkerPosition[id] = position
         snapshots[id]?.elapsed = position
+        if video.contains(id) {
+            repositionVideo(id, position: position, playing: state.phase == .playing)
+            if let cue = activeCues[id] { video.setOpacity(visualLevel(cue, elapsed: position, duration: state.duration), for: id) }
+            return
+        }
         if state.phase == .playing {
             // Every stem must be armed BEFORE the same future hardware
             // timestamp. Zero lead creates drift at 48-64 active voices.
@@ -807,6 +1064,11 @@ final class PlaybackEngine: ObservableObject {
         updateGeneratedLTC()
     }
 
+    func nativeLoopRuleID(for id: UUID, markerID: UUID) -> UUID? {
+        guard let loop = routedAudio.nativeLoop(for: id), loop.triggerMarkerID == markerID else { return nil }
+        return loop.ruleID
+    }
+
     private func emitCrossedMarkers(_ id: UUID, at elapsed: Double, duration: Double) {
         guard let cue = activeCues[id], !cue.markers.isEmpty else { return }
         let previous = lastMarkerPosition[id] ?? elapsed
@@ -816,7 +1078,17 @@ final class PlaybackEngine: ObservableObject {
                                             to: min(elapsed, duration), duration: duration)
             .filter { $0.id != native?.triggerMarkerID }
         lastMarkerPosition[id] = min(elapsed, duration)
-        if !reached.isEmpty { onMarkersReached?(id, reached.map(\.id)) }
+        var markerIDs = reached.map(\.id)
+        let linear = max(0, (elapsedAtStart[id] ?? 0) +
+            (startedAt[id].map { max(0, ProcessInfo.processInfo.systemUptime - $0) } ?? 0))
+        if let markerID = native?.triggerMarkerID,
+           let progress = routedAudio.nativeLoopProgress(for: id, linear: linear) {
+            var cursor = nativeMarkerEvents[id] ?? NativeMarkerEventCursor()
+            let crossings = cursor.consume(token: progress.token, count: progress.count)
+            nativeMarkerEvents[id] = cursor
+            markerIDs += Array(repeating: markerID, count: crossings)
+        }
+        if !markerIDs.isEmpty { onMarkersReached?(id, markerIDs) }
     }
 
     /// Allow live editing of cue markers without rebuilding the audio graph.
@@ -827,13 +1099,18 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
+    func setAutomaticFades(_ cue: Cue) {
+        guard activeCues[cue.id] != nil else { return }
+        activeCues[cue.id]?.automaticFadeInEnabled = cue.automaticFadeInEnabled
+        activeCues[cue.id]?.automaticFadeOutEnabled = cue.automaticFadeOutEnabled
+        refreshAudio(for:cue.id,elapsed:cueElapsed(cue.id))
+    }
+
     func setLoop(_ enabled: Bool, for id: UUID) {
         guard activeCues[id]?.loop != enabled else { return }
-        let position = cueElapsed(id)
         activeCues[id]?.loop = enabled
-        if routedCues.contains(id), snapshots[id]?.phase == .playing {
-            armAudio(for: id, from: position)
-        }
+        video.setLoop(enabled, for: id)
+        routedAudio.setWholeCueLoop(enabled, for: id)
     }
 
     func stopAll() {
@@ -851,33 +1128,67 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func refresh() {
+        var updates: [UUID: (Snapshot, TimeInterval?, UUID?)] = [:]
+        func stage(_ id: UUID, _ state: Snapshot) {
+            var timed = state; timed.sampledAt = max(ProcessInfo.processInfo.systemUptime, startedAt[id] ?? 0)
+            updates[id] = (timed, startedAt[id], pendingTokens[id])
+        }
+        defer {
+            var next = snapshots
+            for (id, entry) in updates where next[id]?.phase == entry.0.phase &&
+                startedAt[id] == entry.1 && pendingTokens[id] == entry.2 { next[id] = entry.0 }
+            if next != snapshots { snapshots = next }
+            updateGeneratedLTC()
+        }
+        for (id, failure) in video.playbackErrors {
+            stop(id, notifyRules: false); onPlaybackFailed?(id); errorMessage = failure
+        }
+        if let id = routedAudio.failedConditionalCue() {
+            stop(id, notifyRules: false)
+            onPlaybackFailed?(id)
+            errorMessage = "Audio stopped: the disk could not supply prepared PCM in time. Other cues are unchanged. Verify the drive and prepare audio again."
+        }
         for (id, deadline) in pendingDeadlines {
             guard var state = snapshots[id], state.phase == .waiting else { continue }
             state.elapsed = min(max(state.duration - (deadline - ProcessInfo.processInfo.systemUptime), 0), state.duration)
-            snapshots[id] = state
+            stage(id, state)
         }
         for id in Array(activeCues.keys) {
             guard var snapshot = snapshots[id], snapshot.phase == .playing || snapshot.phase == .fading else { continue }
             let elapsed = cueElapsed(id)
+            if activeCues[id]?.video != nil, activeCues[id]?.loop == true, elapsed + snapshot.duration / 2 < snapshot.elapsed {
+                videoHasLooped.insert(id)
+            }
             // Fade-outs may intentionally extend past the cue's nominal length.
             // Keep updating routed gain until the fade task stops the voice.
             if snapshot.phase == .fading {
                 snapshot.elapsed = min(snapshot.duration, elapsed)
-                snapshots[id] = snapshot
+                stage(id, snapshot)
+                if video.contains(id), let fade = routedFadeStarts[id] {
+                    video.setOpacity(videoFadeLevels[id, default: 1] * max(0, 1 - (ProcessInfo.processInfo.systemUptime - fade.0) / max(0.001, fade.1)), for: id)
+                }
                 if routedCues.contains(id) { refreshAudio(for: id, elapsed: elapsed) }
                 continue
             }
             // Catch markers crossed since the previous UI tick, including near END.
+            let anchor = startedAt[id]
             emitCrossedMarkers(id, at: elapsed, duration: snapshot.duration)
+            guard startedAt[id] == anchor, snapshots[id]?.phase == snapshot.phase else { continue }
             if elapsed >= snapshot.duration {
-                if activeCues[id]?.loop == true && snapshot.phase == .playing {
+                if video.contains(id) && activeCues[id]?.loop == true {
+                    repeatVisual(id)
+                    snapshot.elapsed = activeCues[id]?.playbackStart ?? 0; stage(id, snapshot)
+                    continue
+                }
+                if activeCues[id]?.video == nil && activeCues[id]?.loop == true && snapshot.phase == .playing {
                     // Preserve overshoot so the loop does not drift by
                     // a full refresh-timer interval on every repetition.
-                    let offset = min(max(0, elapsed - snapshot.duration),
-                                     max(0, snapshot.duration - 0.001))
+                    let start = activeCues[id]?.playbackStart ?? 0
+                    let offset = start + min(max(0, elapsed - snapshot.duration),
+                                     max(0, snapshot.duration - start - 0.001))
                     snapshot.elapsed = offset
-                    snapshots[id] = snapshot
-                    lastMarkerPosition[id] = -0.0001
+                    stage(id, snapshot)
+                    lastMarkerPosition[id] = (activeCues[id]?.playbackStart ?? 0) - 0.0001
                     // No fixed 80ms silence is inserted before the next cycle.
                     // Truly sample-continuous loops still require pre-scheduled
                     // transitions in the render engine.
@@ -887,10 +1198,13 @@ final class PlaybackEngine: ObservableObject {
                 }
                 continue
             }
+            if video.contains(id), let cue = activeCues[id] {
+                if routedCues.contains(id) { video.align(id, to: elapsed) }
+                video.setOpacity(visualLevel(cue, elapsed: elapsed, duration: snapshot.duration), for: id)
+            }
             snapshot.elapsed = elapsed
-            snapshots[id] = snapshot
+            stage(id, snapshot)
             if snapshot.phase == .playing || routedCues.contains(id) { refreshAudio(for: id, elapsed: elapsed) }
         }
-        updateGeneratedLTC()
     }
 }

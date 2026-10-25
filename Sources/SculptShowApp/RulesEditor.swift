@@ -44,9 +44,41 @@ struct RulesEditor: View {
         }
     }
 
+    private var inheritanceStatus: String {
+        switch scope {
+        case .show:
+            return "Enabled Show rules apply to every cue unless its list or the cue opts out."
+        case .cueList:
+            if !ignoreParents && store.show.rules.contains(where: \.enabled) {
+                return "Show rules are added to this list's and each cue's rules. Check Ignore Show rules to omit the Show additions."
+            }
+            return "This list's enabled rules are added to the rules of every non-exempt cue."
+        case .cue(_, let listID):
+            if ignoreParents { return "Only this cue's rules will apply, even if its parent levels have rules." }
+            if let list = store.show.cueLists.first(where: { $0.id == listID }) {
+                if !list.ignoreParentRules && store.show.rules.contains(where: \.enabled) {
+                    return "Show and Cue List rules are added to this cue's own rules."
+                }
+                if list.rules.contains(where: \.enabled) {
+                    return "Cue List rules are added to this cue's own rules."
+                }
+            }
+            return "No parent level has enabled rules; this cue uses its own rules."
+        case .marker: return ""
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             topBar
+            if !isMarkerRule {
+                Text("Rules add together: Show + Cue List + Cue. Each rule keeps its own event and condition; parent rules do not cancel cue rules.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 18)
+                Text(inheritanceStatus)
+                    .font(.caption).foregroundStyle(SculptTheme.gold)
+                    .padding(.horizontal, 18).padding(.bottom, 10)
+            }
             Divider()
             HStack(alignment: .top, spacing: 0) {
                 ruleList
@@ -69,7 +101,7 @@ struct RulesEditor: View {
     private var topBar: some View {
         HStack {
             Image(systemName: "arrow.triangle.branch")
-                .foregroundStyle(.orange)
+                .foregroundStyle(SculptTheme.gold)
             VStack(alignment: .leading, spacing: 3) {
                 Text(isMarkerRule ? "MARKER INTERACTION RULES" : "INTERACTION RULES").font(.headline)
                 Text(scopeName).font(.caption).foregroundStyle(.secondary)
@@ -103,7 +135,7 @@ struct RulesEditor: View {
                             }
                             .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(selectedID == rule.id ? Color.orange.opacity(0.19) : Color.gray.opacity(0.12),
+                            .background(selectedID == rule.id ? Color.orange.opacity(0.19) : SculptTheme.raised,
                                         in: RoundedRectangle(cornerRadius: 7))
                         }
                         .buttonStyle(.plain)
@@ -148,6 +180,11 @@ struct RulesEditor: View {
                     ForEach(RuleTarget.allCases, id: \.self) { item in Text(item.rawValue).tag(item) }
                 }
                 targetPicker
+                Toggle("Exclude this cue", isOn: Binding(
+                    get: { draft.excludeSource ?? false },
+                    set: { draft.excludeSource = $0 }))
+                Text("For a playlist crossfade: Starting → Fade Out → Cue List, with Exclude this cue enabled.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if draft.action == .dim { dimPicker }
                 if draft.action == .fade { fadePicker }
                 if draft.action == .fire {
@@ -171,8 +208,15 @@ struct RulesEditor: View {
             }
             if case .cue = scope {
                 Section("INHERITANCE") {
-                    Toggle("Ignore Show and Cue List rules", isOn: $ignoreParents)
-                    Text("When enabled, only this cue's rules are evaluated.")
+                    Toggle("Use only this cue's rules (ignore Show and Cue List)", isOn: $ignoreParents)
+                    Text("When checked, only this cue's rules run. Otherwise inherited Show and Cue List rules run in addition to this cue's rules.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if case .cueList = scope {
+                Section("INHERITANCE") {
+                    Toggle("Ignore Show rules for this Cue List", isOn: $ignoreParents)
+                    Text("When checked, Show rules are excluded; Cue List and cue rules still add together. Individual cues can opt out separately.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

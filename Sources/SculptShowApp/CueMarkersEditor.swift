@@ -53,7 +53,7 @@ struct CueMarkersEditor: View {
                         } label: {
                             HStack(spacing: 5) {
                                 Text("M\(numbered.offset + 1)").font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(SculptTheme.gold)
                                     .frame(width: 28, alignment: .leading)
                                 Text(numbered.element.name).lineLimit(1)
                                 Spacer(minLength: 0)
@@ -110,7 +110,7 @@ struct CueMarkersEditor: View {
                 }
                 if invalidTime {
                     Text("Use HH:MM:SS:MMM within the cue duration.")
-                        .foregroundStyle(.orange).font(.caption)
+                        .foregroundStyle(SculptTheme.gold).font(.caption)
                 }
                 HStack {
                     Button { editingMarker = selected } label: {

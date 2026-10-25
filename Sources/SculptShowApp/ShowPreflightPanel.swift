@@ -35,7 +35,7 @@ struct ShowPreflightPanel: View {
                 if result.ready && result.warningCount == 0 {
                     Label("No issues detected in the checked media and routing assignments.",
                           systemImage: "checkmark.circle.fill")
-                        .foregroundColor(.green)
+                        .foregroundColor(SculptTheme.green)
                 }
                 if let relinkedMessage { Text(relinkedMessage).foregroundColor(.secondary) }
                 Divider()
@@ -97,9 +97,20 @@ struct ShowPreflightPanel: View {
             metadata[path] = PreflightAudioInfo(channelCount: Int(audio.processingFormat.channelCount),
                                                 duration: duration, sampleRate: rate)
         }
-        result = ShowPreflight.check(store.show,
+        let audioReport = ShowPreflight.check(store.show,
                                       outputChannels: playback.routingEnabled ? playback.routingOutputCount : 0,
-                                      media: metadata)
+                                      media: metadata, deviceUID: playback.routingDeviceUID)
+        var issues = audioReport.issues
+        for cue in store.show.cueLists.flatMap(\.cues) {
+            guard let video = cue.video else { continue }
+            if !FileManager.default.isReadableFile(atPath: video.sourcePath) {
+                issues.append(PreflightIssue(severity: .blocking, code: "video-missing", cueID: cue.id, cueName: cue.name, mediaPath: video.sourcePath, message: "Video file is missing or unreadable. Re-import the movie as a new video cue."))
+            }
+            if cue.hasTimecode || cue.audioElements.count > 1 || !video.isValid {
+                issues.append(PreflightIssue(severity: .blocking, code: "video-invalid", cueID: cue.id, cueName: cue.name, mediaPath: video.sourcePath, message: "Invalid video cue: one movie with its prepared soundtrack and no LTC elements is supported."))
+            }
+        }
+        result = ShowPreflightReport(checkedCues: audioReport.checkedCues, checkedAudioFiles: audioReport.checkedAudioFiles, issues: issues)
     }
 
     private func chooseFolder() {

@@ -24,7 +24,8 @@ public enum RuleTarget: String, CaseIterable, Codable, Sendable {
     case itself = "Itself"
     case specificCue = "Specific Cue"
     case cueList = "Cue List"
-    case allCues = "All Cues"
+    case allCues = "All Cues" // Legacy decoding only.
+    public static let allCases: [RuleTarget] = [.nextCue, .previousCue, .itself, .specificCue, .cueList]
 }
 
 public enum RuleCueState: String, CaseIterable, Codable, Sendable {
@@ -43,6 +44,7 @@ public struct InteractionRule: Identifiable, Codable, Equatable, Sendable {
     /// Cue UUID for specificCue, list UUID for cueList; otherwise unused.
     public var targetID: UUID?
     public var delaySeconds: Double
+    public var excludeSource: Bool?
     public var conditionCueID: UUID?
     public var conditionState: RuleCueState
     public var dimDecibels: Double
@@ -57,7 +59,8 @@ public struct InteractionRule: Identifiable, Codable, Equatable, Sendable {
                 target: RuleTarget = .nextCue, targetID: UUID? = nil,
                 delaySeconds: Double = 0, conditionCueID: UUID? = nil,
                 conditionState: RuleCueState = .playing, dimDecibels: Double = -12,
-                fadeSeconds: Double? = nil, fireFadeInSeconds: Double? = nil, fireAtMarkerID: UUID? = nil) {
+                fadeSeconds: Double? = nil, fireFadeInSeconds: Double? = nil, fireAtMarkerID: UUID? = nil, excludeSource: Bool = false) {
+        self.excludeSource = excludeSource
         self.id = id
         self.enabled = enabled
         self.event = event
@@ -103,7 +106,9 @@ public enum RulePlanner {
         guard let list = show.cueLists.first(where: { $0.cues.contains(where: { $0.id == sourceID }) }),
               let cue = list.cues.first(where: { $0.id == sourceID }) else { return [] }
         if cue.ignoreParentRules { return cue.rules }
-        return show.rules + list.rules + cue.rules
+        // Parent rules are inherited additions, never replacements for local
+        // rules. Each rule independently checks its event and condition.
+        return (list.ignoreParentRules ? [] : show.rules) + list.rules + cue.rules
     }
 
     public static func commands(for event: RuleEvent, source sourceID: UUID,
@@ -117,8 +122,9 @@ public enum RulePlanner {
                       (states[conditionID] ?? .stopped) == rule.conditionState else { return nil }
             }
             let ids = resolve(rule.target, id: rule.targetID, source: sourceID, list: list, show: show, action: rule.action)
-            guard !ids.isEmpty else { return nil }
-            return RuleCommand(rule: rule, sourceCueID: sourceID, targets: ids)
+            let targets = rule.excludeSource == true ? ids.filter { $0 != sourceID } : ids
+            guard !targets.isEmpty else { return nil }
+            return RuleCommand(rule: rule, sourceCueID: sourceID, targets: targets)
         }
     }
 
@@ -137,7 +143,8 @@ public enum RulePlanner {
             }
             let ids = resolve(rule.target, id: rule.targetID, source: sourceID,
                               list: list, show: show, action: rule.action)
-            return ids.isEmpty ? nil : RuleCommand(rule: rule, sourceCueID: sourceID, targets: ids)
+            let targets = rule.excludeSource == true ? ids.filter { $0 != sourceID } : ids
+            return targets.isEmpty ? nil : RuleCommand(rule: rule, sourceCueID: sourceID, targets: targets)
         }
     }
 

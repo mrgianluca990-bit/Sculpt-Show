@@ -1,5 +1,5 @@
 import Foundation
-import AVFAudio
+@preconcurrency import AVFAudio
 import AudioToolbox
 import CoreAudio
 import Accelerate
@@ -46,16 +46,31 @@ final class RoutedAudioEngine {
     private struct Voice {
         let node: AVAudioPlayerNode
         let gainNode: AVAudioMixerNode
+        let loopSource: AVAudioSourceNode
+        let loopSlot: LoopVoiceSlot
         var owner: UUID?
         var elementID: UUID?
         var file: AVAudioFile?
         var fileChannels = 2
+        var mix: CueElement?
+        var matrixGains: [MonitorMixPlan.Gain] = []
         var firstOutput = 1
     }
 
     static let maximumVoices = 64
-    private var activeVoiceLimit = 64
+    private(set) var activeVoiceLimit = 64
     private var engine: AVAudioEngine?
+    private var configurationObserver: NSObjectProtocol?
+    var onSampleRateInvalidated: ((Double) -> Void)?
+    private func hardwareSampleRate() -> Double {
+        guard let device = selectedDevice else { return 0 }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var rate: Double = 0
+        var size = UInt32(MemoryLayout<Double>.size)
+        guard AudioObjectGetPropertyData(device.id, &address, 0, nil, &size, &rate) == noErr else { return 0 }
+        return rate
+    }
     private var matrix: AVAudioUnit?
     private var voices: [Voice] = []
     /// Cache open AVAudioFile descriptors by stem identity to avoid 64 file
@@ -67,7 +82,8 @@ final class RoutedAudioEngine {
         let modified = attributes[.modificationDate] as? Date
         let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
         if let entry = fileCache[stem.id], entry.path == stem.sourcePath,
-           entry.modified == modified, entry.size == size { return entry.file }
+           entry.modified == modified, entry.size == size,
+           abs(entry.file.processingFormat.sampleRate - sampleRate) < 0.5 { return entry.file }
         // Keep prepared descriptors bounded. Active voices retain their own files,
         // so evicting an idle cache entry never interrupts playback or loop queues.
         if fileCache.count >= Self.maximumVoices {
@@ -75,46 +91,81 @@ final class RoutedAudioEngine {
             fileCache = fileCache.filter { activeElements.contains($0.key) }
         }
         let opened = try AVAudioFile(forReading: URL(fileURLWithPath: stem.sourcePath))
+        guard abs(opened.processingFormat.sampleRate - sampleRate) < 0.5 else {
+            throw SessionAudioPreparation.Failure.invalid("Prepare project audio before GO: \(stem.name) has a different sample rate. Live SRC is disabled.")
+        }
         fileCache[stem.id] = (stem.sourcePath, modified, size, opened)
         return opened
     }
+    var outputPatch = ShowOutputPatch()
+    private var wholeCueLoops: Set<UUID> = []
+    var monitor = ShowMonitorSettings()
+    var soloedInputs: Set<UUID> = []
     private(set) var selectedDevice: OutputDevice?
     private var cueToVoices: [UUID: [Int]] = [:]
 
-    struct NativeMarkerLoop: Equatable {
-        let triggerMarkerID: UUID?
-        let inSeconds: Double
-        let outSeconds: Double
-    }
     private struct ActiveMarkerLoop {
         let plan: NativeMarkerLoop
         let token: UUID
+        let buffers: [AVAudioPCMBuffer]
     }
     private var activeMarkerLoops: [UUID: ActiveMarkerLoop] = [:]
+    private var conditionalLoops: [UUID: ConditionalLoopRealtime] = [:]
+    private var retiredLoops: [ConditionalLoopRealtime] = []
+    var preparedConditionalFiles: [String: PreparedConditionalPCM] = [:]
+    private var signals: [UUID: CueRealtimeSignal] = [:]
+    private var knownCueIDs: Set<UUID> = []
+    var actualSampleRate: Double { sampleRate }
 
-    /// Only unambiguous zero-delay self-loop rules are rendered ahead of time.
-    /// Other Rules keep the existing event engine for full compatibility.
-    private static func markerLoop(in cue: Cue) -> NativeMarkerLoop? {
-        guard !cue.hasTimecode else { return nil }
-        let markers = cue.sortedMarkers
-        var matches: [NativeMarkerLoop] = []
-        for (i, marker) in markers.enumerated() where i > 0 {
-            let rules = marker.rules.filter(\.enabled)
-            guard rules.count == 1, let rule = rules.first,
-                  rule.action == .fire,
-                  (rule.target == .itself || (rule.target == .specificCue && rule.targetID == cue.id)),
-                  rule.delaySeconds == 0, rule.conditionCueID == nil,
-                  rule.fireAtMarkerID == nil else { continue }
-            let start = markers[i - 1].positionSeconds
-            let end = marker.positionSeconds
-            guard end - start >= 0.4 && end - start <= 600 else { continue }
-            matches.append(NativeMarkerLoop(triggerMarkerID: marker.id,
-                                             inSeconds: start, outSeconds: end))
+    func setKnownCueIDs(_ ids: Set<UUID>) {
+        knownCueIDs = ids
+        for (id, signal) in signals { sculpt_signal_exists(signal.pointer, ids.contains(id)) }
+    }
+    private func signal(for id: UUID) throws -> CueRealtimeSignal {
+        if let existing = signals[id] { return existing }
+        let created = try CueRealtimeSignal()
+        sculpt_signal_exists(created.pointer, knownCueIDs.contains(id))
+        signals[id] = created
+        return created
+    }
+    func conditionPhases(_ phases: [UUID: Int32]) {
+        for id in knownCueIDs {
+            if let signal = try? signal(for: id) { sculpt_signal_phase(signal.pointer, phases[id] ?? 0) }
         }
-        return matches.count == 1 ? matches[0] : nil
+        retiredLoops.removeAll { $0.quiescent }
+    }
+    func setSilentCueTimeline(_ id: UUID, duration: Double, loops: Bool) {
+        guard let signal = try? signal(for: id) else { return }
+        let start = AudioConvertHostTimeToNanos(AudioGetCurrentHostTime())
+        let end = loops ? UInt64.max : start + UInt64(max(0, duration) * 1e9)
+        sculpt_signal_set(signal.pointer, 1, start, end)
+    }
+    func extendCueTimeline(_ id: UUID, duration: Double) {
+        guard let signal = signals[id] else { return }
+        sculpt_signal_end(signal.pointer,
+            AudioConvertHostTimeToNanos(AudioGetCurrentHostTime()) + UInt64(max(0, duration) * 1e9))
+    }
+    func failedConditionalCue() -> UUID? {
+        conditionalLoops.first(where: { sculpt_loop_failure($0.value.pointer) != 0 })?.key
     }
 
+    func conditionalPosition(for id: UUID) -> Double? {
+        guard let loop = conditionalLoops[id] else { return nil }
+        return sculpt_loop_position_at(loop.pointer, AudioConvertHostTimeToNanos(AudioGetCurrentHostTime()))
+    }
+
+
     func nativeLoop(for cueID: UUID) -> NativeMarkerLoop? { activeMarkerLoops[cueID]?.plan }
+
+    func nativeLoopProgress(for id: UUID, linear: Double) -> (token: UUID, count: UInt64)? {
+        guard let state = activeMarkerLoops[id], state.plan.triggerMarkerID != nil else { return nil }
+        if let loop = conditionalLoops[id] {
+            return (state.token, sculpt_loop_boundary_count(loop.pointer))
+        }
+        let length = state.plan.outSeconds - state.plan.inSeconds
+        let count = linear < state.plan.outSeconds ? 0 : floor((linear - state.plan.outSeconds) / length) + 1
+        return (state.token, UInt64(max(0, count)))
+    }
 
     /// The callback is fired AFTER playback of one queued segment, leaving
     /// three segments already queued. It never restarts a node or its routing.
@@ -163,7 +214,9 @@ final class RoutedAudioEngine {
         return id
     }
 
-    var isReady: Bool { engine?.isRunning == true && selectedDevice != nil }
+    var isReady: Bool {
+        engine?.isRunning == true && selectedDevice != nil && abs(hardwareSampleRate() - sampleRate) < 0.5
+    }
 
     /// Enumerate actual Core Audio output devices (not MIDI ports or input-only devices).
     static func availableOutputs() -> [OutputDevice] {
@@ -210,10 +263,29 @@ final class RoutedAudioEngine {
     }
 
     /// Changing hardware graph while audio is running is intentionally disallowed.
-    func configure(device: OutputDevice) async throws {
+    func configure(device: OutputDevice, requestedRate: Int) async throws {
         guard cueToVoices.isEmpty else { throw RoutingError.cannotConfigure("active cues", -1) }
         teardown()
         guard device.channels > 0, device.channels <= 64 else { throw RoutingError.noDeviceOutput }
+        var rateAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var hardwareRate = Double(requestedRate)
+        var rateSize = UInt32(MemoryLayout<Double>.size)
+        var actualRate: Double = 0
+        let gotRate = AudioObjectGetPropertyData(device.id, &rateAddress, 0, nil, &rateSize, &actualRate)
+        if gotRate != noErr || abs(actualRate - hardwareRate) > 0.5 {
+            let status = AudioObjectSetPropertyData(device.id, &rateAddress, 0, nil, rateSize, &hardwareRate)
+            guard status == noErr else { throw RoutingError.cannotConfigure("device does not accept project sample rate", status) }
+            for _ in 0..<40 {
+                try await Task.sleep(nanoseconds: 50_000_000)
+                rateSize = UInt32(MemoryLayout<Double>.size)
+                _ = AudioObjectGetPropertyData(device.id, &rateAddress, 0, nil, &rateSize, &actualRate)
+                if abs(actualRate - hardwareRate) < 0.5 { break }
+            }
+        }
+        guard abs(actualRate - hardwareRate) < 0.5 else {
+            throw SessionAudioPreparation.Failure.invalid("Device sample rate does not match the project. Live SRC is disabled.")
+        }
         let desc = AudioComponentDescription(componentType: kAudioUnitType_Mixer,
             componentSubType: kAudioUnitSubType_MatrixMixer,
             componentManufacturer: kAudioUnitManufacturer_Apple,
@@ -245,7 +317,10 @@ final class RoutedAudioEngine {
         guard status == noErr else { throw RoutingError.cannotConfigure("matrix output", status) }
         graph.attach(mixerUnit)
         let current = graph.outputNode.outputFormat(forBus: 0)
-        let rate = current.sampleRate > 0 ? current.sampleRate : 48000
+        let rate = current.sampleRate
+        guard abs(rate - Double(requestedRate)) < 0.5 else {
+            throw SessionAudioPreparation.Failure.invalid("Core Audio output format differs from the project sample rate")
+        }
         guard let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Unknown | UInt32(device.channels)),
               let stereo = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2) else {
             throw RoutingError.noDeviceOutput
@@ -263,10 +338,19 @@ final class RoutedAudioEngine {
             let gain = AVAudioMixerNode()
             graph.attach(player)
             graph.attach(gain)
-            graph.connect(player, to: gain, format: nil)
+            // A nil format leaves player nodes at their 44.1 kHz default even
+            // on a 48 kHz device. Pin the player clock to the matrix clock.
+            graph.connect(player, to: gain, fromBus: 0, toBus: 0, format: stereo)
+            let slot = try LoopVoiceSlot(index: index)
+            let loopSource = AVAudioSourceNode(format: stereo) { _, timestamp, frames, data in
+                slot.render(timestamp: timestamp, frames: frames, data: data)
+                return noErr
+            }
+            graph.attach(loopSource)
+            graph.connect(loopSource, to: gain, fromBus: 0, toBus: 1, format: stereo)
             graph.connect(gain, to: mixerUnit, fromBus: 0, toBus: index, format: stereo)
             gain.outputVolume = 0
-            newVoices.append(Voice(node: player, gainNode: gain))
+            newVoices.append(Voice(node: player, gainNode: gain, loopSource: loopSource, loopSlot: slot))
         }
         guard let realtime = LTCRealtimeState() else { throw RoutingError.engineNotReady }
         let ltcNode = AVAudioSourceNode(format: stereo) { isSilence, timestamp, frameCount, data in
@@ -343,6 +427,14 @@ final class RoutedAudioEngine {
         testToneOutput = nil
         testToneVoice = nil
         selectedDevice = device
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: graph, queue: .main) { [weak self, weak graph] _ in
+                Task { @MainActor in
+                    guard let self, let graph, self.engine === graph else { return }
+                    let rate = self.hardwareSampleRate()
+                    if abs(rate - self.sampleRate) > 0.5 { self.onSampleRateInvalidated?(rate) }
+                }
+            }
     }
 
     /// Apply audible/inaudible states at the physical MatrixMixer output scope.
@@ -372,7 +464,7 @@ final class RoutedAudioEngine {
             throw RoutingError.engineNotReady
         }
         stopTestTone()
-        try route(index: index, fileChannels: 1, firstOutput: channel, on: matrix)
+        try route(index: index, fileChannels: 1, firstOutput: channel, on: matrix, physical: true)
         voices[index].gainNode.outputVolume = 1
         voices[index].node.scheduleBuffer(testBuffer, at: nil, options: .loops, completionHandler: nil)
         voices[index].node.play()
@@ -403,6 +495,9 @@ final class RoutedAudioEngine {
     }
 
     func teardown() {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
+        for id in Array(conditionalLoops.keys) { stop(id) }
         stopLTC()
         // Disconnect the tap before destroying its host graph.
         if let matrix { matrix.removeTap(onBus: 0) }
@@ -421,9 +516,15 @@ final class RoutedAudioEngine {
         selectedDevice = nil
     }
 
-    func start(_ cue: Cue, from elapsed: Double, fade: Float, hostLead: Double = 0.22) throws -> Double {
+    private(set) var scheduledHostTimes: [UUID: UInt64] = [:]
+
+    func start(_ cue: Cue, from requestedPosition: Double, fade: Float, hostLead: Double = 0.22) throws -> Double {
+        let elapsed = max(cue.playbackStart, requestedPosition)
         stopTestTone()
         guard isReady, let matrix, let device = selectedDevice else { throw RoutingError.engineNotReady }
+        if cue.hasAudio && monitor.enabled && !monitor.isAvailable(deviceUID: device.uid, channels: device.channels) {
+            throw ShowMonitorSettings.Failure.unavailable
+        }
         // Validate LTC BEFORE changing any running cue, to prevent live
         // output collisions and accidental SMPTE audio on an audio stem.
         let timecodes = cue.elements.filter { $0.kind == .timecode && !$0.muted }
@@ -436,6 +537,9 @@ final class RoutedAudioEngine {
                   (1...device.channels).contains(channel) else {
                 throw RoutingError.ltcConflict("Configure a dedicated LTC OUT on ‘\(cue.name)’ before GO.")
             }
+            guard !monitor.reservedOutputs(deviceUID: device.uid, channels: device.channels).contains(channel) else {
+                throw RoutingError.ltcConflict("OUT \(channel) is reserved for Monitor.")
+            }
             let rate = LTCFrameRate(fps: timecode.frameRate, drop: timecode.timecodeDropFrame)
             guard LTCTimecode(text: timecode.timecodeStart, rate: rate) != nil,
                   LTCFrameTrim(text: timecode.ltcTrim, rate: rate) != nil else {
@@ -445,7 +549,7 @@ final class RoutedAudioEngine {
                 throw RoutingError.ltcConflict("LTC is already being generated by another cue. Stop it before starting a second LTC cue.")
             }
             for voice in voices where voice.owner != nil && voice.owner != cue.id {
-                if voice.firstOutput == channel || (voice.fileChannels == 2 && voice.firstOutput + 1 == channel) {
+                if try mappedOutputs(first: voice.firstOutput, channels: voice.fileChannels).contains(where: { $0.deviceChannel + 1 == channel }) {
                     throw RoutingError.ltcConflict("LTC OUT \(channel) is already carrying an active audio stem.")
                 }
             }
@@ -453,7 +557,7 @@ final class RoutedAudioEngine {
         if let output = ltcOutput, ltcOwner != cue.id {
             for stem in cue.alignedAudioElements {
                 let f = try preparedFile(for: stem)
-                if stem.outputStartChannel == output || (f.processingFormat.channelCount == 2 && stem.outputStartChannel + 1 == output) {
+                if try mappedOutputs(first: stem.outputStartChannel, channels: Int(f.processingFormat.channelCount)).contains(where: { $0.deviceChannel + 1 == output }) {
                     throw RoutingError.ltcConflict("OUT \(output) is reserved for active LTC. Choose another audio output.")
                 }
             }
@@ -463,13 +567,9 @@ final class RoutedAudioEngine {
             let f = try preparedFile(for: stem)
             let count = Int(f.processingFormat.channelCount)
             guard count == 1 || count == 2 else { throw RoutingError.unsupportedSource(stem.name, count) }
-            guard AudioRoutePlan.crosspoints(firstOutput: stem.outputStartChannel,
-                 sourceChannels: count, deviceChannels: device.channels) != nil else {
-                throw RoutingError.invalidChannel(stem.name, stem.outputStartChannel)
-            }
+            let points = try mappedOutputs(first: stem.outputStartChannel, channels: count)
             if let tcChannel = timecode?.ltcOutputChannel,
-               (stem.outputStartChannel == tcChannel ||
-                (count == 2 && stem.outputStartChannel + 1 == tcChannel)) {
+               points.contains(where: { $0.deviceChannel + 1 == tcChannel }) {
                 throw RoutingError.ltcConflict("LTC OUT \(tcChannel) overlaps with a stem in ‘\(cue.name)’.")
             }
             files.append((stem, f))
@@ -477,7 +577,7 @@ final class RoutedAudioEngine {
         let available = voices.filter { $0.owner == nil || $0.owner == cue.id }.count
         guard available >= files.count else { throw RoutingError.noVoices(files.count) }
         // All file/routing/capacity checks passed; now release the previous instance.
-        stop(cue.id)
+        stop(cue.id, updateSignal: false)
         let free = voices.indices.filter { voices[$0].owner == nil }
         let assigned = Array(free.prefix(files.count))
         // Native file segment queues require one identical render sample rate
@@ -486,17 +586,62 @@ final class RoutedAudioEngine {
         let cueLength = cue.timelineLength(audioEnds: files.map {
             Double($0.1.length) / $0.1.processingFormat.sampleRate
         })
-        let candidate = Self.markerLoop(in: cue) ??
-            (cue.loop && !cue.hasTimecode && cueLength >= 0.4 && cueLength <= 600
-                ? NativeMarkerLoop(triggerMarkerID: nil, inSeconds: 0, outSeconds: cueLength) : nil)
-        let nativePlan = candidate.flatMap { plan -> NativeMarkerLoop? in
-            files.allSatisfy { _, file in
-                abs(file.processingFormat.sampleRate - sampleRate) < 0.5 &&
-                Double(file.length) / file.processingFormat.sampleRate >= plan.outSeconds
-            } && elapsed < plan.outSeconds ? plan : nil
+        let hasMarkerReturn = cue.markers.contains { marker in marker.rules.contains {
+            $0.enabled && $0.action == .fire && ($0.target == .itself || ($0.target == .specificCue && $0.targetID == cue.id))
+        } }
+        let wholeCue = !cue.hasTimecode && !hasMarkerReturn && !files.isEmpty && cueLength > 0
+        let candidate = NativeMarkerLoopPlanner.plan(for: cue)
+        var conditional: ConditionalLoopRealtime?
+        let streamPlan = wholeCue ? NativeMarkerLoop(triggerMarkerID: nil, inSeconds: cue.playbackStart, outSeconds: cueLength, conditionCueID: cue.id) : candidate
+        if let plan = streamPlan, let conditionID = plan.conditionCueID, elapsed < plan.outSeconds {
+            let pcm = try files.map { stem, _ -> PreparedConditionalPCM in
+                let prepared = try preparedConditionalFiles[stem.sourcePath] ?? PreparedConditionalPCM(path: stem.sourcePath, sampleRate: Int(sampleRate))
+                guard
+                      prepared.matches(path: stem.sourcePath, sampleRate: Int(sampleRate)) else {
+                    throw SessionAudioPreparation.Failure.invalid("Prepare conditional-loop media before GO")
+                }
+                return prepared
+            }
+            let loop = try ConditionalLoopRealtime(plan: plan, sampleRate: sampleRate, end: cueLength,
+                files: pcm, from: elapsed, indices: assigned, slots: assigned.map { voices[$0].loopSlot },
+                condition: signal(for: conditionID), own: signal(for: cue.id))
+            conditional = loop
+            conditionalLoops[cue.id] = loop
+            activeMarkerLoops[cue.id] = ActiveMarkerLoop(plan: plan, token: UUID(), buffers: [])
+        }
+        // Short loops repeat inside the audio renderer, with no main-queue
+        // replenishment that another cue's preparation could delay.
+        var loopBuffers: [AVAudioPCMBuffer] = []
+        let nativePlan = (wholeCue ? nil : candidate).flatMap { plan -> NativeMarkerLoop? in
+            guard plan.conditionCueID == nil else { return nil }
+            guard files.allSatisfy({ abs($0.1.processingFormat.sampleRate - sampleRate) < 0.5 }),
+                  elapsed < plan.outSeconds else { return nil }
+            let occupied = activeMarkerLoops.values.flatMap(\.buffers).reduce(0) {
+                $0 + Int($1.frameLength) * Int($1.format.channelCount) * 4
+            }
+            let bytes = files.reduce(0.0) { total, entry in
+                total + (plan.outSeconds - plan.inSeconds) * sampleRate *
+                    2 * 4
+            }
+            if bytes <= Double(max(0, 128 * 1024 * 1024 - occupied)),
+               files.allSatisfy({ Double($0.1.length) / $0.1.processingFormat.sampleRate >= plan.outSeconds }),
+               assigned.allSatisfy({ abs(voices[$0].node.outputFormat(forBus: 0).sampleRate - sampleRate) < 0.5 }) {
+                do {
+                    loopBuffers = try files.enumerated().map { number, entry in
+                        try NativeLoopBuffer.prepare(file: entry.1, start: plan.inSeconds, end: plan.outSeconds,
+                            outputChannels: voices[assigned[number]].node.outputFormat(forBus: 0).channelCount)
+                    }
+                    return plan
+                } catch { loopBuffers = [] }
+            }
+            // Long loops retain bounded file queues; four long cycles provide
+            // a large replenishment window without allocating minutes of PCM.
+            return files.allSatisfy {
+                Double($0.1.length) / $0.1.processingFormat.sampleRate >= plan.outSeconds
+            } ? plan : nil
         }
         if let nativePlan {
-            activeMarkerLoops[cue.id] = ActiveMarkerLoop(plan: nativePlan, token: UUID())
+            activeMarkerLoops[cue.id] = ActiveMarkerLoop(plan: nativePlan, token: UUID(), buffers: loopBuffers)
         }
         // Mark all occupied before scheduling. If a step throws, stop() releases all.
         cueToVoices[cue.id] = assigned
@@ -515,26 +660,51 @@ final class RoutedAudioEngine {
                 let offsetFrames = AudioFramePlan.position(seconds: elapsed, sampleRate: sampleRate, fileLength: entry.1.length)
                 let cueEndFrame = AVAudioFramePosition(min(Double(entry.1.length), (cueLength * sampleRate).rounded()))
                 let remaining = max(0, cueEndFrame - offsetFrames)
-                if let plan = nativePlan, let state = activeMarkerLoops[cue.id] {
-                    let stopFrame = AVAudioFramePosition((plan.outSeconds * sampleRate).rounded())
+                if conditional != nil {
+                    // This voice is rendered by its preconnected source node.
+                } else if let plan = nativePlan, let state = activeMarkerLoops[cue.id] {
+                    let stopFrame = min(entry.1.length,
+                        AVAudioFramePosition((plan.outSeconds * sampleRate).rounded()))
                     if stopFrame > offsetFrames {
                         voices[index].node.scheduleSegment(entry.1, startingFrame: offsetFrames,
                             frameCount: AVAudioFrameCount(stopFrame - offsetFrames), at: nil, completionHandler: nil)
                     }
                     // Prefill four future cycles before audio begins. Replenish
                     // each from playback callbacks without stopping the player.
-                    for _ in 0..<4 {
-                        appendLoopSegment(cueID: cue.id, voice: index, token: state.token)
+                    if state.buffers.indices.contains(number) {
+                        voices[index].node.scheduleBuffer(state.buffers[number], at: nil,
+                            options: .loops, completionHandler: nil)
+                    } else {
+                        for _ in 0..<4 {
+                            appendLoopSegment(cueID: cue.id, voice: index, token: state.token)
+                        }
                     }
                 } else if remaining > 0 {
                     voices[index].node.scheduleSegment(entry.1, startingFrame: offsetFrames,
                         frameCount: AVAudioFrameCount(min(Int64(UInt32.max), remaining)), at: nil, completionHandler: nil)
                 }
-                voices[index].gainNode.outputVolume = fade * Float(cue.gain * entry.0.gain) * (entry.0.muted ? 0 : 1)
+                try applyVoiceRouting(index: index, element: entry.0)
+                voices[index].gainNode.outputVolume = fade * Float(cue.gain * entry.0.gain) *
+                    ((entry.0.muted || (!soloedInputs.isEmpty && !soloedInputs.contains(entry.0.id))) ? 0 : 1)
             }
             let synchronizedLead = hostLead <= 0.01 ? hostLead :
                 max(hostLead, files.count >= 48 ? 0.45 : (files.count >= 24 ? 0.32 : hostLead))
             let deadline = AudioGetCurrentHostTime() + AVAudioTime.hostTime(forSeconds: synchronizedLead)
+            scheduledHostTimes[cue.id] = deadline
+            if let conditional {
+                sculpt_loop_arm(conditional.pointer, AudioConvertHostTimeToNanos(deadline),
+                    Int64((elapsed * sampleRate).rounded()))
+                if wholeCue {
+                    wholeCueLoops.insert(cue.id)
+                    sculpt_loop_set_repeat(conditional.pointer, cue.loop)
+                }
+                for index in assigned { sculpt_loop_slot_bind(voices[index].loopSlot.pointer, conditional.pointer) }
+            } else {
+                let own = try signal(for: cue.id)
+                let end: UInt64 = nativePlan != nil ? UInt64.max :
+                    AudioConvertHostTimeToNanos(deadline) + UInt64(max(0, cueLength - elapsed) * 1e9)
+                sculpt_signal_set(own.pointer, 1, AudioConvertHostTimeToNanos(deadline), end)
+            }
             if let timecode {
                 try startLTC(timecode, owner: cue.id, hostDeadline: deadline,
                              from: elapsed, duration: cue.timelineLength(audioEnds: files.map {
@@ -544,7 +714,7 @@ final class RoutedAudioEngine {
             for index in assigned {
                 guard let f = voices[index].file else { continue }
                 let offsetFrames = AudioFramePlan.position(seconds: elapsed, sampleRate: f.processingFormat.sampleRate, fileLength: f.length)
-                if offsetFrames < f.length {
+                if conditional == nil && offsetFrames < f.length {
                     voices[index].node.play(at: AVAudioTime(hostTime: deadline))
                 }
             }
@@ -591,9 +761,10 @@ final class RoutedAudioEngine {
                     at: nil, completionHandler: nil)
             }
             voices[index].gainNode.outputVolume = fade * Float(cue.gain * stems[order].gain)
-                * (stems[order].muted ? 0 : 1)
+                * ((stems[order].muted || (!soloedInputs.isEmpty && !soloedInputs.contains(stems[order].id))) ? 0 : 1)
         }
         let deadline = AudioGetCurrentHostTime() + AVAudioTime.hostTime(forSeconds: lead)
+        scheduledHostTimes[cue.id] = deadline
         if let timecode = cue.elements.first(where: { $0.kind == .timecode && !$0.muted }) {
             try startLTC(timecode, owner: cue.id, hostDeadline: deadline,
                 from: elapsed, duration: cue.timelineLength(audioEnds: assigned.compactMap {
@@ -657,7 +828,14 @@ final class RoutedAudioEngine {
         ltcOutput = nil
     }
 
-    private func route(index: Int, fileChannels: Int, firstOutput: Int, on matrix: AVAudioUnit) throws {
+    private func mappedOutputs(first: Int, channels: Int) throws -> [AudioRoutePlan.Crosspoint] {
+        guard let device = selectedDevice else { throw RoutingError.engineNotReady }
+        return try outputPatch.crosspoints(firstOutput: first, sourceChannels: channels,
+            deviceUID: device.uid, deviceChannels: device.channels,
+            excluding: monitor.reservedOutputs(deviceUID: device.uid, channels: device.channels))
+    }
+
+    private func route(index: Int, fileChannels: Int, firstOutput: Int, on matrix: AVAudioUnit, physical: Bool = false) throws {
         let au = matrix.audioUnit
         let inputStart = index * 2
         guard let outputs = selectedDevice?.channels else { throw RoutingError.engineNotReady }
@@ -668,8 +846,13 @@ final class RoutedAudioEngine {
                   kAudioUnitScope_Global, (UInt32(input) << 16) | UInt32(output), 0, 0), "clear stem")
             }
         }
-        guard let mappings = AudioRoutePlan.crosspoints(firstOutput: firstOutput,
-              sourceChannels: fileChannels, deviceChannels: outputs) else { throw RoutingError.invalidChannel("Audio", firstOutput) }
+        let mappings: [AudioRoutePlan.Crosspoint]
+        if physical {
+            guard let points = AudioRoutePlan.crosspoints(firstOutput: firstOutput,
+                sourceChannels: fileChannels, deviceChannels: outputs) else { throw RoutingError.invalidChannel("Audio", firstOutput) }
+            mappings = points
+        } else { mappings = try mappedOutputs(first: firstOutput, channels: fileChannels) }
+        voices[index].matrixGains = mappings.map { .init(source: $0.sourceChannel, output: $0.deviceChannel, value: 1) }
         for map in mappings {
             let input = inputStart + map.sourceChannel
             try require(AudioUnitSetParameter(au, kMatrixMixerParam_Volume,
@@ -681,50 +864,68 @@ final class RoutedAudioEngine {
     /// A paused cue has no allocated voices, but will honor the stored route on resume.
     func changeOutput(cueID: UUID, elementID: UUID, firstOutput: Int,
                       sourceChannels: Int) throws {
-        guard let device = selectedDevice, let matrix else { throw RoutingError.engineNotReady }
-        if let output = ltcOutput,
-           (firstOutput == output || (sourceChannels == 2 && firstOutput + 1 == output)) {
+        guard selectedDevice != nil, matrix != nil else { throw RoutingError.engineNotReady }
+        let next = try mappedOutputs(first: firstOutput, channels: sourceChannels)
+        if let output = ltcOutput, next.contains(where: { $0.deviceChannel + 1 == output }) {
             throw RoutingError.ltcConflict("OUT \(output) is reserved for active LTC.")
         }
-        guard AudioRoutePlan.crosspoints(firstOutput: firstOutput,
-            sourceChannels: sourceChannels, deviceChannels: device.channels) != nil else {
-            throw RoutingError.invalidChannel("Audio", firstOutput)
-        }
         guard let index = (cueToVoices[cueID] ?? []).first(where: { voices[$0].elementID == elementID }) else {
-            // The caller may be paused and has no scheduled voice to patch.
-            return
+            return // Paused/stopped cue: next GO uses the stored route.
         }
-        guard let previous = AudioRoutePlan.crosspoints(firstOutput: voices[index].firstOutput,
-            sourceChannels: voices[index].fileChannels, deviceChannels: device.channels),
-              let next = AudioRoutePlan.crosspoints(firstOutput: firstOutput,
-            sourceChannels: voices[index].fileChannels, deviceChannels: device.channels) else {
-            throw RoutingError.invalidChannel("Audio", firstOutput)
-        }
-        // Only modify changed crosspoints; do not clear unrelated channels or
-        // stop the player. This is a live patch, not an engine reconfigure.
-        let start = index * 2
-        for old in previous where !next.contains(old) {
-            let key = (UInt32(start + old.sourceChannel) << 16) | UInt32(old.deviceChannel)
-            try require(AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
-                kAudioUnitScope_Global, key, 0, 0), "live route disconnect")
-        }
-        for newPoint in next where !previous.contains(newPoint) {
-            let key = (UInt32(start + newPoint.sourceChannel) << 16) | UInt32(newPoint.deviceChannel)
-            try require(AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
-                kAudioUnitScope_Global, key, 1, 0), "live route connect")
-        }
+        // Include monitor weights in the next diff, never accidentally erase its send.
+        let previous = voices[index].firstOutput
         voices[index].firstOutput = firstOutput
+        do {
+            if var mix = voices[index].mix { mix.outputStartChannel = firstOutput; try applyVoiceRouting(index: index, element: mix) }
+        } catch { voices[index].firstOutput = previous; throw error }
     }
 
-    func updateMix(_ cue: Cue, fadeFactor: Float, dimFactor: Float) {
+    private func applyVoiceRouting(index: Int, element: CueElement) throws {
+        guard let matrix else { throw RoutingError.engineNotReady }
+        let program = try mappedOutputs(first: voices[index].firstOutput, channels: voices[index].fileChannels)
+        let next = MonitorMixPlan.gains(channels: voices[index].fileChannels, program: program,
+            pan: element.pan, send: element.sendToMonitor, monitor: monitor)
+        let old = voices[index].matrixGains
+        voices[index].mix = element
+        guard next != old else { return }
+        for prior in old where !next.contains(where: { $0.source == prior.source && $0.output == prior.output }) {
+            let key = (UInt32(index * 2 + prior.source) << 16) | UInt32(prior.output)
+            try require(AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
+                kAudioUnitScope_Global, key, 0, 0), "disconnect mix route")
+        }
+        for point in next where !old.contains(point) {
+            let key = (UInt32(index * 2 + point.source) << 16) | UInt32(point.output)
+            try require(AudioUnitSetParameter(matrix.audioUnit, kMatrixMixerParam_Volume,
+                kAudioUnitScope_Global, key, point.value, 0), "apply program/Monitor mix")
+        }
+        voices[index].matrixGains = next
+    }
+
+    func setWholeCueLoop(_ enabled: Bool, for id: UUID) {
+        guard wholeCueLoops.contains(id), let loop = conditionalLoops[id] else { return }
+        sculpt_loop_set_repeat(loop.pointer, enabled)
+    }
+
+    func updateMix(_ cue: Cue, fadeFactor: Float, dimFactor: Float) throws {
         for index in cueToVoices[cue.id] ?? [] {
             guard let elementID = voices[index].elementID,
                   let element = cue.elements.first(where: { $0.id == elementID }) else { continue }
-            voices[index].gainNode.outputVolume = AudioGainPlan.linear(cue: cue.gain, element: element.gain, fade: fadeFactor, trim: dimFactor, muted: element.muted)
+            try applyVoiceRouting(index: index, element: element)
+            let gain = AudioGainPlan.linear(cue: cue.gain, element: element.gain,
+                fade: fadeFactor, trim: dimFactor, muted: element.muted || (!soloedInputs.isEmpty && !soloedInputs.contains(elementID)))
+            if voices[index].gainNode.outputVolume != gain { voices[index].gainNode.outputVolume = gain }
         }
     }
 
-    func stop(_ cueID: UUID) {
+    func stop(_ cueID: UUID, updateSignal: Bool = true) {
+        scheduledHostTimes.removeValue(forKey: cueID)
+        if updateSignal, let signal = signals[cueID] { sculpt_signal_phase(signal.pointer, 0) }
+        wholeCueLoops.remove(cueID)
+        if let loop = conditionalLoops.removeValue(forKey: cueID) {
+            loop.unbind()
+            retiredLoops.append(loop)
+        }
+        retiredLoops.removeAll { $0.quiescent }
         activeMarkerLoops.removeValue(forKey: cueID)
         if ltcOwner == cueID { stopLTC() }
         guard let assigned = cueToVoices.removeValue(forKey: cueID) else { return }

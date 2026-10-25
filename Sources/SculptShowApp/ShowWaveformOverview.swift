@@ -194,7 +194,7 @@ struct ShowWaveformOverview: View {
             HStack(spacing: 9) {
                 Label("CUE WAVEFORMS", systemImage: "waveform")
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(red: 0.93, green: 0.70, blue: 0.38))
+                    .foregroundColor(SculptTheme.gold)
                 if let cue = store.selectedCue {
                     Text(cue.name).lineLimit(1).foregroundStyle(.secondary)
                         .font(.system(size: 11, design: .monospaced))
@@ -222,6 +222,16 @@ struct ShowWaveformOverview: View {
                 .controlSize(.small)
                 .disabled(store.isLoadingProject || store.pendingAudioImports > 0)
                 .help("Import a Sculpt DAW .scraft project as a NEW cue with aligned stems and markers")
+                Button {
+                    guard let listID = store.selectedListID, let cueID = store.selectedCueID else { return }
+                    store.editCueInDAW(cueID, in: listID)
+                } label: {
+                    Label("EDIT IN DAW", systemImage: "waveform.path.ecg.rectangle")
+                }
+                .controlSize(.small)
+                .disabled(store.selectedCue?.hasAudio != true || store.dawBridgeBusy ||
+                          store.isLoadingProject || store.pendingAudioImports > 0)
+                .help("Open the selected cue as an editable Sculpt DAW session")
                 Button("FIT") { zoom = 1 }.controlSize(.small).help("Zoom to full cue")
                 Slider(value: $zoom, in: 1...64, step: 1).frame(width: 95)
                 Text("\(Int(zoom))×").font(.system(size: 10, design: .monospaced))
@@ -235,7 +245,8 @@ struct ShowWaveformOverview: View {
             }
             if let cue = store.selectedCue, let listID = store.selectedListID {
                 HStack(spacing: 8) {
-                    Image(systemName: "scope").foregroundColor(.cyan)
+                    Image(systemName: "scope").foregroundColor(SculptTheme.accent)
+                    CueRangeEditor(cue: cue, listID: listID, compact: true).id(cue.id)
                     CuePlayFromEditor(cue: cue)
                         .environmentObject(playback)
                     Spacer(minLength: 3)
@@ -267,6 +278,10 @@ struct ShowWaveformOverview: View {
         GeometryReader { geo in
             ScrollView([.horizontal, .vertical]) {
                 VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing:8) {
+                        Text("PLAYBACK IN / OUT").font(.caption2).foregroundStyle(SculptTheme.accent).frame(width:135,alignment:.leading)
+                        CueRangeWaveformRail(cue:cue,listID:listID,duration:timelineDuration(cue),snap:snap)
+                    }
                     HStack(spacing: 8) {
                         Text("MARKERS · double-click to add")
                             .font(.system(size: 9, weight: .semibold, design: .monospaced))
@@ -330,6 +345,7 @@ struct ShowWaveformOverview: View {
     }
 
     private func timelineDuration(_ cue: Cue) -> Double {
+        if let video = cue.video { return max(video.duration,0.01) }
         if cue.durationMode == .fixed { return max(cue.durationSeconds, 0.01) }
         return max(0.01, cue.audioElements.compactMap { cache.envelopes[$0.sourcePath]?.duration }.max() ?? cue.durationSeconds)
     }
@@ -392,7 +408,7 @@ private struct MarkerWaveformRuler: View {
             Image(systemName: marker.rules.isEmpty ? "mappin" : "bolt.fill")
                 .font(.system(size: 14, weight: .bold))
         }
-        .foregroundColor(selectedMarkerID == marker.id ? .yellow : .orange)
+        .foregroundColor(selectedMarkerID == marker.id ? SculptTheme.warning : SculptTheme.gold)
         .frame(width: 29, height: 43)
         .overlay(alignment: .topLeading) {
             Text(marker.name.isEmpty ? "Marker" : marker.name)
@@ -400,12 +416,12 @@ private struct MarkerWaveformRuler: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: 115, alignment: .leading)
-                .foregroundColor(selectedMarkerID == marker.id ? .yellow : .orange)
+                .foregroundColor(selectedMarkerID == marker.id ? SculptTheme.warning : SculptTheme.gold)
                 .offset(x: 27, y: 12)
                 .allowsHitTesting(false)
         }
         .background(selectedMarkerID == marker.id
-                    ? Color.orange.opacity(0.16) : Color.clear,
+                    ? SculptTheme.gold.opacity(0.16) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 4))
         .contentShape(Rectangle())
         .position(x: min(max(15, x), max(15, width - 15)), y: 26)
@@ -456,8 +472,7 @@ private struct WaveformStemLane: View {
                 Text(element.name).font(.system(size: 10, weight: .bold))
                     .lineLimit(1)
                 HStack(spacing: 3) {
-                    Text("OUT \(element.outputStartChannel)" +
-                         ((envelope?.peaks.count ?? 1) > 1 ? "/\(element.outputStartChannel + 1)" : ""))
+                    Text(playback.outputRouteLabel(first: element.outputStartChannel, channels: (envelope?.peaks.count ?? 1) > 1 ? 2 : 1))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 2)
@@ -494,6 +509,12 @@ private struct WaveformStemLane: View {
                             .foregroundColor(failed ? .orange : .secondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                    let rangeStart = CGFloat(cue.playbackStart / duration) * geometry.size.width
+                    let rangeEnd = CGFloat((cue.playbackRange?.end ?? duration) / duration) * geometry.size.width
+                    Rectangle().fill(Color.black.opacity(0.55)).frame(width:rangeStart).allowsHitTesting(false)
+                    Rectangle().fill(Color.black.opacity(0.55)).frame(width:max(0,geometry.size.width-rangeEnd)).offset(x:rangeEnd).allowsHitTesting(false)
+                    WaveformRangeBoundary(cue:cue,listID:listID,duration:duration,width:geometry.size.width,snap:snap,start:true)
+                    WaveformRangeBoundary(cue:cue,listID:listID,duration:duration,width:geometry.size.width,snap:snap,start:false)
                     // Marker lines are draggable directly ON every waveform,
                     // not just from the common ruler. They share one marker ID.
                     ForEach(cue.markers) { marker in
@@ -506,20 +527,21 @@ private struct WaveformStemLane: View {
                     }
                     if playhead == nil {
                         // Blue = an idle audition location, not the live cue playhead.
-                        Rectangle().fill(Color.cyan.opacity(0.95))
+                        Rectangle().fill(SculptTheme.accent.opacity(0.95))
                             .frame(width: 2)
                             .offset(x: CGFloat(MarkerTimelineGeometry.x(
                                 time: auditionCursor, width: Double(geometry.size.width),
                                 duration: duration)))
                             .allowsHitTesting(false)
                     }
-                    if let playhead {
-                        Rectangle().fill(Color.white)
-                            .frame(width: 2)
-                            .offset(x: CGFloat(MarkerTimelineGeometry.x(
-                                time: playhead, width: Double(geometry.size.width),
-                                duration: duration)))
-                            .allowsHitTesting(false)
+                    if playhead != nil {
+                        if let state = playback.snapshots[cue.id] {
+                            PlaybackPositionView(snapshot: state, cueID: cue.id, clock: playback.displayClock) { position in
+                                Rectangle().fill(Color.white).frame(width: 2)
+                                    .offset(x: CGFloat(MarkerTimelineGeometry.x(time: position,
+                                        width: Double(geometry.size.width), duration: duration)))
+                            }.allowsHitTesting(false)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -603,7 +625,7 @@ private struct StaticWaveformDrawing: View, Equatable {
                                 waveform.addLine(to: CGPoint(x: x, y: midY + strength))
                             }
                             context.stroke(waveform, with: .color(
-                                channel == 0 ? .green.opacity(0.85) : .cyan.opacity(0.85)), lineWidth: 1)
+                                channel == 0 ? SculptTheme.meterGreen.opacity(0.85) : SculptTheme.accent.opacity(0.85)), lineWidth: 1)
                             var center = Path()
                             center.move(to: CGPoint(x: 0, y: midY))
                             center.addLine(to: CGPoint(x: size.width, y: midY))
@@ -639,7 +661,7 @@ private struct WaveformMarkerLine: View {
             .frame(width: 18)
             .overlay {
                 Rectangle()
-                    .fill(selectedMarkerID == marker.id ? Color.yellow : Color.orange.opacity(0.65))
+                    .fill(selectedMarkerID == marker.id ? SculptTheme.warning : SculptTheme.gold.opacity(0.65))
                     .frame(width: selectedMarkerID == marker.id ? 2.5 : 1.4)
                     .allowsHitTesting(false)
             }
@@ -648,7 +670,7 @@ private struct WaveformMarkerLine: View {
             .overlay(alignment: .topLeading) {
                 Text(marker.name.isEmpty ? "Marker" : marker.name)
                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .foregroundColor(selectedMarkerID == marker.id ? .yellow : .orange)
+                    .foregroundColor(selectedMarkerID == marker.id ? SculptTheme.warning : SculptTheme.gold)
                     .lineLimit(1)
                     .frame(width: 106, alignment: .leading)
                     .padding(.horizontal, 3)
@@ -724,7 +746,7 @@ private struct CuePlayFromEditor: View {
             }
             .controlSize(.small)
             .disabled(!cue.enabled)
-            .help("PLAY uses this editable location; GLOBAL GO always starts at 00:00:00:000")
+            .help("PLAY uses this editable location; GLOBAL GO starts at cue IN")
         }
         .onAppear { typed = CueClock.format(playback.cuePlayCursor(cue.id)) }
         .onChange(of: cue.id) { _ in
