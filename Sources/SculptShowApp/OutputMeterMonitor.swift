@@ -6,7 +6,7 @@ import SculptShowCore
 /// touches Core Audio: updates to meters cannot invalidate the cue list/editor.
 @MainActor
 final class OutputMeterMonitor: ObservableObject {
-    struct Snapshot {
+    struct Snapshot: Equatable {
         var peaks: [Float] = []
         var rms: [Float] = []
         var holds: [Float] = []
@@ -31,7 +31,8 @@ final class OutputMeterMonitor: ObservableObject {
         // The hold state receives *every* peak. Only UI refreshes are capped.
         guard now - lastUIUpdate >= minUIInterval else { return }
         lastUIUpdate = now
-        snapshot = Snapshot(peaks: peaks, rms: rms, holds: state.values)
+        let next = Snapshot(peaks: peaks, rms: rms, holds: state.values)
+        if next != snapshot { snapshot = next }
     }
 
     func resetHolds() {

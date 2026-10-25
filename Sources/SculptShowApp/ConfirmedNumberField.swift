@@ -1,11 +1,13 @@
 import AppKit
 import SwiftUI
+import SculptShowCore
 
 /// The field editor owns unfinished text. Model/renderer edits happen only on Return.
 struct ConfirmedNumberField: NSViewRepresentable {
     let value: Double
     let range: ClosedRange<Double>
     var decimals = 2
+    var clock = false
     var label = "Value"
     let commit: (Double) -> Void
 
@@ -13,10 +15,12 @@ struct ConfirmedNumberField: NSViewRepresentable {
         var value: Double
         var range: ClosedRange<Double>
         var decimals: Int
+        var clock: Bool
         var commit: (Double) -> Void
         private(set) var editing = false
-        init(_ field: ConfirmedNumberField) { value = field.value; range = field.range; decimals = field.decimals; commit = field.commit }
+        init(_ field: ConfirmedNumberField) { value = field.value; range = field.range; decimals = field.decimals; clock = field.clock; commit = field.commit }
         private func formatted(_ value: Double) -> String {
+            if clock { return CueClock.format(value) }
             let formatter = NumberFormatter(); formatter.numberStyle = .decimal
             formatter.usesGroupingSeparator = false; formatter.maximumFractionDigits = decimals
             return formatter.string(from: NSNumber(value: value)) ?? String(value)
@@ -38,8 +42,8 @@ struct ConfirmedNumberField: NSViewRepresentable {
             guard let field = control as? NSTextField else { return false }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: ".")
-                guard let next = Double(text), next.isFinite, range.contains(next) else {
-                    field.textColor = .systemOrange; field.toolTip = "Enter a number from \(range.lowerBound) to \(range.upperBound), then press Return."
+                guard let next = clock ? CueClock.parse(text) : Double(text), next.isFinite, range.contains(next) else {
+                    field.textColor = .systemOrange; field.toolTip = clock ? "Use HH:MM:SS:MMM within the cue timeline, then press Return." : "Enter a number from \(range.lowerBound) to \(range.upperBound), then press Return."
                     return true
                 }
                 value = next; editing = false
@@ -64,7 +68,7 @@ struct ConfirmedNumberField: NSViewRepresentable {
         context.coordinator.synchronize(field, value: value); return field
     }
     func updateNSView(_ field: NSTextField, context: Context) {
-        context.coordinator.range = range; context.coordinator.decimals = decimals; context.coordinator.commit = commit
+        context.coordinator.range = range; context.coordinator.decimals = decimals; context.coordinator.clock = clock; context.coordinator.commit = commit
         context.coordinator.synchronize(field, value: value)
     }
 }

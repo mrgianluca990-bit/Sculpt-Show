@@ -536,7 +536,7 @@ private struct WaveformStemLane: View {
                     }
                     if playhead != nil {
                         if let state = playback.snapshots[cue.id] {
-                            PlaybackPositionView(snapshot: state) { position in
+                            PlaybackPositionView(snapshot: state, cueID: cue.id, clock: playback.displayClock) { position in
                                 Rectangle().fill(Color.white).frame(width: 2)
                                     .offset(x: CGFloat(MarkerTimelineGeometry.x(time: position,
                                         width: Double(geometry.size.width), duration: duration)))
@@ -746,7 +746,7 @@ private struct CuePlayFromEditor: View {
             }
             .controlSize(.small)
             .disabled(!cue.enabled)
-            .help("PLAY uses this editable location; GLOBAL GO always starts at 00:00:00:000")
+            .help("PLAY uses this editable location; GLOBAL GO starts at cue IN")
         }
         .onAppear { typed = CueClock.format(playback.cuePlayCursor(cue.id)) }
         .onChange(of: cue.id) { _ in

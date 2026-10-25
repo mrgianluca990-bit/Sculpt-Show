@@ -444,6 +444,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     /// This belongs to the cue, not the files inside it.
     public var durationSeconds: Double
     public var playbackRange: CuePlaybackRange? = nil
+    public var automaticFadeInEnabled: Bool? = nil
+    public var automaticFadeOutEnabled: Bool? = nil
 
     public var isEmpty: Bool { elements.isEmpty && video == nil }
     public var hasAudio: Bool { elements.contains { $0.kind == .audio } }
@@ -532,7 +534,7 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case triggers, video, playbackRange
+        case triggers, video, playbackRange, automaticFadeInEnabled, automaticFadeOutEnabled
         case id, name, tint, elements, markers, durationMode, gain, fadeOutSeconds, enabled
         case fadeInSeconds, loop, followOnFinish, preWaitSeconds, rules, ignoreParentRules
         case durationSeconds
@@ -562,6 +564,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         if let contents = try c.decodeIfPresent([CueElement].self, forKey: .elements) {
             elements = contents
         }
+        automaticFadeInEnabled = try c.decodeIfPresent(Bool.self, forKey: .automaticFadeInEnabled)
+        automaticFadeOutEnabled = try c.decodeIfPresent(Bool.self, forKey: .automaticFadeOutEnabled)
         playbackRange = try c.decodeIfPresent(CuePlaybackRange.self, forKey: .playbackRange)
         if let playbackRange, !playbackRange.isValid { throw DecodingError.dataCorruptedError(forKey: .playbackRange, in: c, debugDescription: "Invalid cue IN/OUT") }
         video = try c.decodeIfPresent(CueVideo.self, forKey: .video)
@@ -578,6 +582,8 @@ public struct Cue: Identifiable, Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(automaticFadeInEnabled, forKey: .automaticFadeInEnabled)
+        try c.encodeIfPresent(automaticFadeOutEnabled, forKey: .automaticFadeOutEnabled)
         try c.encodeIfPresent(playbackRange, forKey: .playbackRange)
         try c.encodeIfPresent(video, forKey: .video)
         try c.encode(triggers, forKey: .triggers)

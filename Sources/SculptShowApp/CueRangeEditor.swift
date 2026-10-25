@@ -3,7 +3,9 @@ import SculptShowCore
 
 extension ShowStore {
     func cueSourceDuration(_ cue: Cue) -> Double {
-        cue.sourceTimelineLength(audioEnds: cue.audioElements.compactMap { element -> Double? in
+        if let video = cue.video { return video.duration }
+        if cue.durationMode == .fixed { return max(0,min(86400,cue.durationSeconds)) }
+        return cue.sourceTimelineLength(audioEnds: cue.audioElements.compactMap { element -> Double? in
             if let cached = ShowWaveformCache.shared.envelopes[element.sourcePath] { return cached.duration }
             guard let file = try? SculptPCMReader(URL(fileURLWithPath: element.sourcePath)) else { return nil }
             return Double(file.frameCount) / Double(file.sampleRate)
@@ -33,18 +35,18 @@ struct CueRangeEditor: View {
     var body: some View {
         let full = store.cueSourceDuration(cue)
         VStack(alignment:.leading, spacing:6) {
-            if !compact { Text("PLAYBACK IN / OUT · SOURCE SECONDS").font(.caption.bold()) }
+            if !compact { Text("PLAYBACK IN / OUT · HH:MM:SS:MMM").font(.caption.bold()) }
             HStack(spacing:6) {
                 Text("IN").font(.caption.bold())
-                ConfirmedNumberField(value:cue.playbackStart,range:0...max(0,full-0.001),decimals:3,label:"Cue IN in source seconds") {
+                ConfirmedNumberField(value:cue.playbackStart,range:0...max(0,full-0.001),clock:true,label:"Cue IN HH:MM:SS:MMM") {
                     store.setCuePlaybackRange(cue.id,in:listID,start:$0,end:nil,using:playback)
-                }.frame(width:80,height:24)
+                }.frame(width:120,height:24)
                 Text("OUT").font(.caption.bold())
-                ConfirmedNumberField(value:cue.playbackRange?.end ?? full,range:0...max(0,full),decimals:3,label:"Cue OUT in source seconds") {
+                ConfirmedNumberField(value:cue.playbackRange?.end ?? full,range:0...max(0,full),clock:true,label:"Cue OUT HH:MM:SS:MMM") {
                     store.setCuePlaybackRange(cue.id,in:listID,start:nil,end:$0,using:playback)
-                }.frame(width:80,height:24)
+                }.frame(width:120,height:24)
             }
-            if !compact { Text("Return confirms. GO starts at IN; playback ends at OUT. Fades are relative to these points. Stop this cue before editing.").font(.caption2).foregroundStyle(.secondary) }
+            if !compact { Text("Return confirms. GO starts at IN; playback ends at OUT. Enable automatic fades separately in General. Stop this cue before editing.").font(.caption2).foregroundStyle(.secondary) }
             Button("Full range") { store.setCuePlaybackRange(cue.id,in:listID,start:nil,end:nil,using:playback) }.controlSize(.small)
         }.disabled(playback.snapshots[cue.id] != nil || full < 0.001)
     }

@@ -14,11 +14,32 @@ final class CuePlaybackRangeTests: XCTestCase {
         for r in [CuePlaybackRange(start:-1,end:2),.init(start:2,end:2),.init(start:0,end:.infinity),.init(start:.nan,end:5)] { XCTAssertFalse(r.isValid) }
         var cue = Cue(name:"Fade",fadeOutSeconds:1,fadeInSeconds:2,durationSeconds:10)
         cue.playbackRange = .init(start:3,end:8)
+        cue.automaticFadeInEnabled = true; cue.automaticFadeOutEnabled = true
         XCTAssertEqual(cue.playbackEnvelope(at:3,end:8),0)
         XCTAssertEqual(cue.playbackEnvelope(at:4,end:8),0.5)
         XCTAssertEqual(cue.playbackEnvelope(at:6,end:8),1)
         XCTAssertEqual(cue.playbackEnvelope(at:7.5,end:8),0.5)
         XCTAssertEqual(cue.playbackEnvelope(at:8,end:8),0)
+    }
+    func testAutomaticFadesAreIndependentAndOptIn() throws {
+        var cue = Cue(name:"Optional",fadeOutSeconds:2,fadeInSeconds:2,durationSeconds:10)
+        cue.playbackRange = .init(start:3,end:8)
+        XCTAssertEqual(cue.playbackEnvelope(at:3,end:8),1)
+        XCTAssertEqual(cue.playbackEnvelope(at:8,end:8),1)
+        cue.automaticFadeInEnabled = true
+        XCTAssertEqual(cue.playbackEnvelope(at:3,end:8),0)
+        XCTAssertEqual(cue.playbackEnvelope(at:7,end:8),1)
+        cue.automaticFadeOutEnabled = true; cue.automaticFadeInEnabled = false
+        XCTAssertEqual(cue.playbackEnvelope(at:3,end:8),1)
+        XCTAssertEqual(cue.playbackEnvelope(at:7,end:8),0.5)
+        let decoded = try JSONDecoder().decode(Cue.self,from:JSONEncoder().encode(cue))
+        XCTAssertEqual(decoded.automaticFadeInEnabled,false)
+        XCTAssertEqual(decoded.automaticFadeOutEnabled,true)
+        cue.playbackRange = nil
+        XCTAssertEqual(cue.playbackEnvelope(at:9,end:10),0.5)
+        // Manual Fade continues to use the stored duration even when automatic OUT is off.
+        cue.automaticFadeOutEnabled = false
+        XCTAssertEqual(cue.fadeOutSeconds,2)
     }
     func testPlannerCannotReturnOutsideSelectedRange() {
         var cue = Cue(name:"Markers",durationSeconds:10)

@@ -2051,6 +2051,13 @@ final class ShowStore: ObservableObject {
     }
 
 
+    func setAutomaticFade(_ cueID: UUID, in listID: UUID, incoming: Bool, enabled: Bool, using playback: PlaybackEngine) {
+        editCue(cueID,list:listID) { cue in
+            if incoming { cue.automaticFadeInEnabled = enabled } else { cue.automaticFadeOutEnabled = enabled }
+        }
+        if let cue = show.cue(cueID) { playback.setAutomaticFades(cue) }
+    }
+
     func commitCueRange(_ updated: Show) { commit(updated) }
 
     private func commit(_ updated: Show) {

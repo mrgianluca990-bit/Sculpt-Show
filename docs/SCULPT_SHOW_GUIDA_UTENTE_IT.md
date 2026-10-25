@@ -1,12 +1,12 @@
 # SCULPT SHOW — Guida utente italiana
 
-Edizione 0.23.0 · 25 ottobre 2026. Repository: mrgianluca990-bit/Sculpt-Show. Branch di riferimento: fix/marker-loop-bridge-workspace, PR #2. Questa guida descrive il codice della versione distribuita con essa; non certifica un impianto o la fluidità di ogni file/dispositivo.
+Edizione 0.24.0 RC1 · 25 ottobre 2026. Repository: mrgianluca990-bit/Sculpt-Show. Branch di riferimento: fix/marker-loop-bridge-workspace, PR #2. Questa guida descrive il codice della versione distribuita con essa; non certifica un impianto o la fluidità di ogni file/dispositivo.
 
 ## 1. Ambito, lettura e stato delle funzioni
 
 SCULPT SHOW organizza cue audio, multitraccia, immagini e video in cue list. Una cue può contenere stem audio, un elemento di uscita LTC, marker e Rules. I video possono avere una soundtrack preparata offline e riprodotta attraverso il mixer di SHOW. Più cue possono suonare contemporaneamente.
 
-I nomi inglesi riportati qui corrispondono alle etichette dell’app. «Invio» significa Return/Enter: conferma un campo dove è prevista la conferma esplicita. «GO» è il comando di avvio della cue, non la conferma di un campo. Il separatore dei campi IN/OUT è decimale: 12,345 o 12.345 secondi, non SMPTE. Nei campi SMPTE l’ultimo numero indica frame; nella durata HH:MM:SS:MMM indica millisecondi.
+I nomi inglesi riportati qui corrispondono alle etichette dell’app. «Invio» significa Return/Enter: conferma un campo dove è prevista la conferma esplicita. «GO» è il comando di avvio della cue, non la conferma di un campo. I campi IN/OUT usano HH:MM:SS:MMM: per esempio 00:00:12:345 significa 12 secondi e 345 millisecondi, non un indirizzo SMPTE a frame. Nei campi SMPTE l’ultimo numero indica frame; nella durata HH:MM:SS:MMM indica millisecondi.
 
 **Implementato** significa presente nel codice corrente. **Verificato automaticamente** significa coperto dai test indicati nella checklist della consegna. **Da collaudare sul tuo hardware** riguarda interfaccia multicanale, cavi LTC, MIDI esterno, rete LAN, proiettore, cambio schermi, latenza e file reali. Una build verde non prova questi ultimi aspetti. I test locali con porte MIDI virtuali, UDP localhost e indirizzi LTC simulati non sono un collaudo fisico completo.
 
@@ -78,13 +78,15 @@ La durata del contenitore è indipendente dai file quando impostata come durata 
 
 ## 8. IN/OUT, fade e waveform
 
-General contiene PLAYBACK IN / OUT, in **secondi della timeline originale**, con precisione visualizzata al millisecondo. Entrambi i punti sono digitabili e si confermano con Invio. Devono stare nella durata completa della cue, con almeno 1 ms fra IN e OUT. Full range ripristina il comportamento completo. Fermare la cue prima di modificare questi limiti: vale anche se la cue è in pausa o attesa.
+General contiene PLAYBACK IN / OUT nel formato **HH:MM:SS:MMM della timeline originale**, con tre cifre per i millisecondi. Entrambi i punti sono digitabili e si confermano con Invio. Devono stare nella durata completa della cue, con almeno 1 ms fra IN e OUT. Full range ripristina il comportamento completo. Fermare la cue prima di modificare questi limiti: vale anche se la cue è in pausa o attesa.
 
-Esempio: IN 12,500 e OUT 42,500 selezionano trenta secondi. GO parte a 12,500; OUT termina a 42,500. Un seek precedente a IN viene limitato a IN. Il loop generale ripete l’intervallo selezionato. Il tempo mostrato dalla timeline resta riferito alla sorgente: i marker non vengono rinumerati o traslati. Il cursore PLAY FROM può scegliere una posizione interna, ma non permette di suonare prima di IN o dopo OUT.
+Esempio: IN 00:00:12:500 e OUT 00:00:42:500 selezionano trenta secondi. GO parte a 12,500; OUT termina a 42,500. Un seek precedente a IN viene limitato a IN. Il loop generale ripete l’intervallo selezionato. Il tempo mostrato dalla timeline resta riferito alla sorgente: i marker non vengono rinumerati o traslati. Il cursore PLAY FROM può scegliere una posizione interna, ma non permette di suonare prima di IN o dopo OUT.
 
-Con un intervallo esplicito, fade-in e fade-out si riferiscono a IN e OUT. Il fade-in cresce a partire da IN; il fade-out naturale cala verso OUT. Se i due fade si sovrappongono su un intervallo breve, il livello può non raggiungere l’unità. Sui loop con intervallo esplicito l’inviluppo segue ogni giro; il fade manuale di arresto resta un’azione distinta. Le vecchie cue senza intervallo esplicito conservano il comportamento precedente del fade naturale: selezionare IN/OUT attiva l’inviluppo legato all’intervallo. I fade di regia sono aggiornati dal motore di controllo, non sono una promessa di automazione al singolo campione.
+I fade automatici sono **opzionali e indipendenti**: in General abilitare Automatic fade in at IN e/o Automatic fade out at OUT. Sono disattivati per default, anche nei progetti precedenti senza questi flag; le durate esistenti sono conservate, quindi ricontrollare le due spunte prima dello spettacolo. Il fade-in cresce a partire da IN; il fade-out automatico cala verso OUT, anche con l’intera sorgente selezionata. La durata Fade Out continua a servire per il comando manuale FADE anche se la spunta automatica è disattiva. Le Rules con un fade-in esplicitamente impostato per Fire mantengono quella richiesta sul relativo GO.
 
-Waveforms mostra il rail IN/OUT sopra i marker, i campi numerici e le linee sui singoli stem. Le parti escluse sono oscurate. Trascinare le maniglie sul rail o le linee IN/OUT sul grafico; il movimento segue SNAP e viene salvato al rilascio come modifica Undo. La timeline mostra anche le parti escluse, quindi si può allargare nuovamente la selezione. I file non vengono tagliati né ricampionati da questa operazione.
+Se i fade attivi si sovrappongono su un intervallo breve, il livello può non raggiungere l’unità. Sui loop l’inviluppo automatico segue ogni giro. Disabilitare una spunta rimuove soltanto quel fade automatico e non cancella la durata. Le spunte sono salvate nel progetto. I fade di regia restano aggiornati dal motore di controllo: non sono una promessa di automazione al singolo campione.
+
+Waveforms mostra il rail IN/OUT sopra i marker, i campi HH:MM:SS:MMM e le linee sui singoli stem. Le parti escluse sono oscurate. Trascinare le maniglie sul rail o le linee IN/OUT sul grafico; il movimento segue SNAP e viene salvato al rilascio come modifica Undo. La timeline mostra anche le parti escluse, quindi si può allargare nuovamente la selezione. I file non vengono tagliati né ricampionati da questa operazione.
 
 FIT riporta lo zoom all’intera cue; lo zoom va da1× a64×. SNAP offre1ms,100ms o1s. Import aggiunge media; Import from DAW importa una sessione .scraft come nuova cue; Edit in DAW usa il bridge. Le waveform richiedono analisi del file: durante la preparazione compare il relativo stato; file assenti/unsupported richiedono relink. Per video senza soundtrack non si generano thumbnail video nel pannello audio.
 
@@ -234,7 +236,7 @@ Gli errori bloccanti non sono semplici suggerimenti: risolvere prima del GO. I w
 - **MP4 muto:** controllare che contenga audio supportato, lo stato soundtrack e il suo stem; fermare tutto, Prepare soundtrack again, poi riprovare. Il mute del decoder video è intenzionale.
 - **Loop salta:** distinguere loop generale, marker nativo e fallback seek. Controllare condizioni/secondi ritorni, IN/OUT, LTC nella cue, media e stato disco. Provare il file reale per diversi minuti con altre cue attive.
 - **Cue parte al punto sbagliato:** confrontare IN, PLAY FROM, marker Fire, pre-wait e Rules. I tempi waveform restano sorgente. Full range e cursore all’inizio aiutano la diagnosi.
-- **Campo video non cambia:** il testo è una bozza; premere Invio con valore valido. Esc/uscita dal campo annullano. Il decimale può essere virgola o punto; non usare il formato SMPTE nei campi percentuali/secondi.
+- **Campo video non cambia:** il testo è una bozza; premere Invio con valore valido. Esc/uscita dal campo annullano. Il decimale può essere virgola o punto; IN/OUT richiedono invece HH:MM:SS:MMM, con tre cifre finali per i millisecondi.
 - **LTC LOCK assente:** ingresso corretto, canale, cavo, livello, permesso microfono, FPS e sorgente reali. Il generatore interno non è collegato automaticamente al reader.
 - **LTC LOCK ma nessun GO:** Receive LTC nella cue, indirizzo/FPS, enabled, ARM, media pronti e stato della cue. Un locate oltre l’indirizzo non ricostruisce tutte le partenze saltate.
 - **MIDI/OSC non risponde:** sorgente/porta/IP, Learn/alias/UUID, receiver LAN, conflitti, CC sotto/sopra soglia; un invio OSC a hostname non è un IPv4 numerico supportato. I trigger ricevuti e Sends sono indipendenti.
@@ -265,7 +267,7 @@ Prima dello spettacolo: copia progetto → dispositivo e SR → preparazione med
 
 I test software della checklist allegata indicano build e regressioni realmente eseguite. I test con sette stem e due video non certificano qualsiasi mix di64stem e8filmati. La capacità delle voci è negoziata; quella visuale è un limite massimo applicativo. Per file/proiettori reali controllare fluidità, loop, labiale, sample rate, refresh e durata prolungata. Per LTC provare la catena fisica completa; per MIDI/OSC provare il dispositivo destinatario, non soltanto una porta virtuale.
 
-Questa versione conserva il bridge e le funzioni audio/video correnti mentre aggiunge IN/OUT comune alla cue e riorganizza la UI. Non comprende miglioramenti DAW, main/backup, timecode chase, MTC operativo, bus/PFL/pre-fader generalizzati, automazioni MIDI/OSC al campione o un sistema di registrazione delle uscite. Questi limiti non si risolvono con una diversa impostazione nella guida.
+Questa release candidate conserva il bridge e i percorsi audio/video, con IN/OUT comune alla cue e fade automatici attivabili. Gli aggiornamenti di clock e contatori sono isolati nei piccoli componenti di visualizzazione, evitando di ricostruire l’intero workspace a ogni tick. Questo riduce lavoro UI superfluo; la fluidità percepita resta da verificare sul progetto e sul display reali. Non comprende miglioramenti DAW, main/backup, timecode chase, MTC operativo, bus/PFL/pre-fader generalizzati, automazioni MIDI/OSC al campione o un sistema di registrazione delle uscite. Questi limiti non si risolvono con una diversa impostazione nella guida.
 
 ## 24. Mappa di verifica sul codice
 

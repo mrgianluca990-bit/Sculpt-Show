@@ -9,6 +9,8 @@ public struct CuePlaybackRange: Codable, Equatable, Sendable {
 }
 
 extension Cue {
+    public var automaticFadeInDuration: Double { automaticFadeInEnabled == true ? fadeInSeconds : 0 }
+    public var automaticFadeOutDuration: Double { automaticFadeOutEnabled == true ? fadeOutSeconds : 0 }
     public var playbackStart: Double { playbackRange?.start ?? 0 }
     public func sourceTimelineLength(audioEnds: [Double]) -> Double {
         if let video { return video.duration }
@@ -16,9 +18,8 @@ extension Cue {
         return max(audioEnds.max() ?? 0, 0)
     }
     public func playbackEnvelope(at position: Double, end: Double) -> Double {
-        let incoming = fadeInSeconds > 0 ? min(1, max(0, (position - playbackStart) / fadeInSeconds)) : 1
-        // Existing cues retain their former natural-end behavior until a range is set.
-        let outgoing = playbackRange != nil && fadeOutSeconds > 0 ? min(1, max(0, (end - position) / fadeOutSeconds)) : 1
+        let incoming = automaticFadeInDuration > 0 ? min(1, max(0, (position - playbackStart) / automaticFadeInDuration)) : 1
+        let outgoing = automaticFadeOutDuration > 0 ? min(1, max(0, (end - position) / automaticFadeOutDuration)) : 1
         return min(incoming, outgoing)
     }
 }

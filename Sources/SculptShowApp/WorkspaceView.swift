@@ -740,10 +740,10 @@ struct WorkspaceView: View {
                                 HStack {
                                     Text(state.phase.rawValue).foregroundStyle(state.phase == .paused ? Skin.gold : Skin.green)
                                     Spacer()
-                                    Text("\(clock(state.elapsed)) / \(clock(state.duration))").monospacedDigit()
+                                    PlaybackTimeView(snapshot:state,cueID:cue.id,clock:playback.displayClock) { current in Text("\(clock(current.elapsed)) / \(clock(current.duration))").monospacedDigit() }
                                 }.font(.caption)
-                                PlaybackPositionView(snapshot: state) { position in
-                                    ProgressView(value: min(max(position, 0), max(state.duration, 0.001)), total: max(state.duration, 0.001))
+                                PlaybackPositionView(snapshot: state, cueID: cue.id, clock: playback.displayClock) { position in
+                                    ProgressView(value:min(max(position-(state.phase == .waiting ? 0 : cue.playbackStart),0),max(state.duration-(state.phase == .waiting ? 0 : cue.playbackStart),0.001)),total:max(state.duration-(state.phase == .waiting ? 0 : cue.playbackStart),0.001))
                                 }
                                 HStack {
                                     Button {
@@ -868,6 +868,7 @@ struct WorkspaceView: View {
                             CueTimingEditor(cue: cue, listID: listID).id(cue.id)
                         }
                                 Divider()
+                        Toggle("Automatic fade out at OUT", isOn:Binding(get:{ cue.automaticFadeOutEnabled == true },set:{ store.setAutomaticFade(cue.id,in:listID,incoming:false,enabled:$0,using:playback) })).toggleStyle(.checkbox)
                         HStack {
                             Text("FADE OUT")
                             Spacer()
@@ -882,6 +883,7 @@ struct WorkspaceView: View {
                         ), in: 0...30, step: 0.5)
                         .tint(Skin.gold)
 
+                        Toggle("Automatic fade in at IN", isOn:Binding(get:{ cue.automaticFadeInEnabled == true },set:{ store.setAutomaticFade(cue.id,in:listID,incoming:true,enabled:$0,using:playback) })).toggleStyle(.checkbox)
                         HStack {
                             Text("FADE IN")
                             Spacer()
@@ -937,7 +939,7 @@ struct WorkspaceView: View {
                                 Text(active.phase == .waiting ? "START IN" : "REMAINING")
                                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                                     .foregroundColor(Skin.soft)
-                                Text("−" + clock(active.remaining))
+                                PlaybackTimeView(snapshot:active,cueID:cue.id,clock:playback.displayClock) { current in Text("−" + clock(current.remaining)) }
                                     .font(.system(size: 24, weight: .bold, design: .monospaced))
                                     .foregroundColor(Skin.green)
                             }
@@ -1639,7 +1641,9 @@ private struct CueRow: View {
                 .foregroundColor(cue.enabled ? .white : Skin.soft)
             HStack(spacing: 6) {
                 Image(systemName: cue.video != nil ? (cue.video?.isImage == true ? "photo" : "film") : cue.hasAudio ? "waveform" : cue.hasTimecode ? "clock" : "square.dashed")
-                Text(playbackLabel)
+                if let state {
+                    PlaybackTimeView(snapshot:state,cueID:cue.id,clock:playback.displayClock) { current in Text(current.phase == .waiting ? "WAIT  −\(clock(current.remaining))" : "\(clock(current.elapsed))  •  −\(clock(current.remaining))") }
+                } else { Text(playbackLabel) }
                 if !cue.markers.isEmpty {
                     Image(systemName: "mappin")
                     Text("M\(cue.markers.count)")
@@ -1695,8 +1699,8 @@ private struct CueRow: View {
     private var progressBar: some View {
         Group {
             if let state {
-                PlaybackPositionView(snapshot: state) { position in
-                    progressSlider(fraction: position / max(0.001, state.duration))
+                PlaybackPositionView(snapshot: state, cueID: cue.id, clock: playback.displayClock) { position in
+                    progressSlider(fraction: max(0,position - (state.phase == .waiting ? 0 : cue.playbackStart)) / max(0.001, state.duration - (state.phase == .waiting ? 0 : cue.playbackStart)))
                 }
             } else { progressSlider(fraction: 0) }
         }
