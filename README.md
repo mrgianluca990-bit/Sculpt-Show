@@ -1,13 +1,15 @@
-# Sculpt Show v0.24.0 RC1 — Cue IN/OUT, inspector e guida italiana
+# Sculpt Show v0.24.1 RC2 — Stabilità inspector
 
 ## Guida italiana e versione corrente
 
-SHOW 0.24.0 RC1 include la [guida utente italiana completa](docs/SCULPT_SHOW_GUIDA_UTENTE_IT.md), disponibile offline dal menu Help dell’app. La [versione HTML](docs/SCULPT_SHOW_GUIDA_UTENTE_IT.html) è consultabile/stampabile; il [rapporto sorgenti](docs/SCULPT_SHOW_VERIFICA_GUIDA_IT.json) registra gli hash del codice verificato. La guida distingue funzioni operative, MTC storico escluso, backup non implementato e collaudi hardware ancora necessari. IN/OUT in HH:MM:SS:MMM, con fade automatici opzionali; si digitano in General o nella waveform e si trascinano sul grafico; i parametri video si confermano con Invio.
+RC2 mantiene i gruppi dell’inspector aperti durante la selezione delle cue e sostituisce il layout lazy del pannello con geometria completa e ritorno in cima al cambio cue. I campi non confermati non passano alla cue successiva.
+
+SHOW 0.24.1 RC2 include la [guida utente italiana completa](docs/SCULPT_SHOW_GUIDA_UTENTE_IT.md), disponibile offline dal menu Help dell’app. La [versione HTML](docs/SCULPT_SHOW_GUIDA_UTENTE_IT.html) è consultabile/stampabile; il [rapporto sorgenti](docs/SCULPT_SHOW_VERIFICA_GUIDA_IT.json) registra gli hash del codice verificato. La guida distingue funzioni operative, MTC storico escluso, backup non implementato e collaudi hardware ancora necessari. IN/OUT in HH:MM:SS:MMM, con fade automatici opzionali; si digitano in General o nella waveform e si trascinano sul grafico; i parametri video si confermano con Invio.
 
 
 ## Note storiche fino alla 0.18.2
 
-Le note seguenti sono conservate come storico; per comportamento e limiti correnti usare la guida 0.24.0 RC1 sopra.
+Le note seguenti sono conservate come storico; per comportamento e limiti correnti usare la guida 0.24.1 RC2 sopra.
 
 ## Layout
 - Inspector and its Timecode monitor share a permanent right-hand rail, outside the mixer/waveform `VSplitView`. Opening or resizing the mixer cannot cover the right rail.

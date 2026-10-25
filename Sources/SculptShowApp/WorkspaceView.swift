@@ -290,8 +290,8 @@ struct WorkspaceView: View {
                 store.handleRuleEvent(.stopping, source: id, using: playback)
             }
         }
-        .onChange(of: store.selectedCueID) { _ in expandedInspectorSections.removeAll() }
-        .onChange(of: store.documentURL) { _ in timecodeReader.triggersArmed = false; expandedInspectorSections.removeAll() }
+        .onChange(of: store.documentURL) { _ in timecodeReader.triggersArmed = false }
+        .onChange(of: store.projectIdentity) { _ in expandedInspectorSections.removeAll() }
         .onChange(of: store.isLoadingProject) { loading in if loading { timecodeReader.triggersArmed = false } }
         .onChange(of: store.show) { next in
             playback.applyCueListTrims(next)
@@ -769,13 +769,17 @@ struct WorkspaceView: View {
     }
 
     private var inspector: some View {
+        ScrollViewReader { scroll in
         ScrollView(.vertical) {
-            LazyVStack(alignment: .leading, spacing: 10) {
+            // Only five groups: keep their full geometry available when a group
+            // shrinks or selection changes, instead of recycling lazy rows.
+            VStack(alignment: .leading, spacing: 10) {
                 Text("CUE INSPECTOR")
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
                     .tracking(1.1)
                     .foregroundColor(Skin.gold)
                     .padding(.bottom, 4)
+                    .id("inspector-top")
 
                 if let listID = store.selectedListID, let cue = store.selectedCue {
                     EditableTitle(title: cue.name, context: "Cue", fontSize: 16,
@@ -975,10 +979,17 @@ struct WorkspaceView: View {
                         .multilineTextAlignment(.center)
                 }
             }
+            // Discard field drafts when changing cue; section expansion belongs
+            // to the workspace and survives manual selection and AUTO after GO.
+            .id(store.selectedCueID)
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(Skin.panel)
+        .onChange(of: store.selectedCueID) { _ in
+            scroll.scrollTo("inspector-top", anchor: .top)
+        }
+        }
     }
 
     private func inspectorSection<Content: View>(_ title: String,
@@ -1045,7 +1056,7 @@ struct WorkspaceView: View {
                 Text("NORMALIZING CUE LIST…")
             }
             Spacer()
-            Text("SCULPT SHOW 0.19.1")
+            Text("SCULPT SHOW " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "DEV"))
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .foregroundColor(Skin.soft)

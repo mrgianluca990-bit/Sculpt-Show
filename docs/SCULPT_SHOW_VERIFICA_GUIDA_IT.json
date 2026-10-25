@@ -1,10 +1,10 @@
 {
-  "version": "0.24.0",
+  "version": "0.24.1",
   "branch": "fix/marker-loop-bridge-workspace",
   "pull_request": 2,
   "edition": "2026-10-25",
-  "source_fingerprint_sha256": "a4946aa4f3ca65627c897a54ac5e2b9600a6d4565f3364af56b7596fc65fe9d9",
-  "guide_markdown_sha256": "3ee1ad44b426d9659247f315275063c1cae8e4cfc3a2a171d0520a93b383db96",
+  "source_fingerprint_sha256": "8aed4f9e7723a5b998784f603dfd5f60c4ac549190d4a86f93c09c48a70ef84c",
+  "guide_markdown_sha256": "9a0502c603aeff8e6aaa3b671ed323bbd38a1160cb1cf234cf7f12178a884a40",
   "cited_sources": {
     "AudioGainPlan.swift": "Sources/SculptShowCore/AudioGainPlan.swift",
     "ConditionalLoopRealtime.swift": "Sources/SculptShowApp/ConditionalLoopRealtime.swift",
@@ -113,7 +113,7 @@
     "Sources/SculptShowApp/VideoSoundtrack.swift": "a616614e3d17f8fab094b486caac7b07fc89087100b8042b35fef8fdff82a299",
     "Sources/SculptShowApp/VideoTransformEditor.swift": "958369be080eb779d4d363e6e67d390fbf1dc5fdf8e4a2a5406c92c7a00f9bda",
     "Sources/SculptShowApp/VideoVoice.swift": "6d7ed4166147ced20743d5a0b238a19043c358218b7c705deb0fda6483b4cda6",
-    "Sources/SculptShowApp/WorkspaceView.swift": "28f74e3e687a91e18395ecabf70f74a2eb1ca889741c654ab41331edc8d43554",
+    "Sources/SculptShowApp/WorkspaceView.swift": "d09ba09b5e5a07a03aaf7cc6248ee01ea8ed2fc95af28c3b18199848f01dd858",
     "Sources/SculptShowCore/AudioFramePlan.swift": "697e406003350a5763802ed5ba8133734d100bfe009f7ccc08133738bad7934d",
     "Sources/SculptShowCore/AudioGainPlan.swift": "1dd40b1b7868d26fde20e0b3babf0faa726150f01f5e4c8e04d54f6e9881428c",
     "Sources/SculptShowCore/AudioRoutePlan.swift": "aa2a18c4f17e44835050c50dc68adbff10897d96e36e3261f3d7c054899187b3",

@@ -1,6 +1,6 @@
 # SCULPT SHOW — Guida utente italiana
 
-Edizione 0.24.0 RC1 · 25 ottobre 2026. Repository: mrgianluca990-bit/Sculpt-Show. Branch di riferimento: fix/marker-loop-bridge-workspace, PR #2. Questa guida descrive il codice della versione distribuita con essa; non certifica un impianto o la fluidità di ogni file/dispositivo.
+Edizione 0.24.1 RC2 · 25 ottobre 2026. Repository: mrgianluca990-bit/Sculpt-Show. Branch di riferimento: fix/marker-loop-bridge-workspace, PR #2. Questa guida descrive il codice della versione distribuita con essa; non certifica un impianto o la fluidità di ogni file/dispositivo.
 
 ## 1. Ambito, lettura e stato delle funzioni
 
@@ -30,7 +30,7 @@ Le cue list occupano il centro. Il pannello destro offre Inspector oppure Active
 
 Si possono ridimensionare le cue list e l’inspector tramite i divisori. Le larghezze sono preferenze locali del Mac. Riordinare le liste trascinando la maniglia a righe verso un’altra lista o la zona finale. Il riordino conserva gli identificatori delle cue e i loro riferimenti.
 
-L’inspector ha sezioni richiudibili, nell’ordine **GENERAL, MARKER, TRIGGER, STEMS, RULES & ACTIONS**. Sono chiuse inizialmente; cambiando cue si richiudono. Anche i gruppi interni Video Transform, Receive, Sends e Timecode iniziano chiusi. Aprire ciò che occorre con la freccia del gruppo.
+L’inspector ha sezioni richiudibili, nell’ordine **GENERAL, MARKER, TRIGGER, STEMS, RULES & ACTIONS**. Sono chiuse inizialmente e quando si apre un altro progetto. I gruppi aperti restano aperti quando si seleziona un’altra cue, anche durante il play o con AUTO; il pannello torna in cima e gli eventuali valori digitati ma non confermati vengono scartati. Anche i gruppi interni Video Transform, Receive, Sends e Timecode iniziano chiusi. Aprire ciò che occorre con la freccia del gruppo.
 
 - General: video/immagine, trasformazioni, IN/OUT, duplicazione/spostamento/rimozione, colore, gain, pre-wait, durata, fade, loop, auto-follow ed enabled.
 - Marker: selezione e modifica di marker e relative Rules.
