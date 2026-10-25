@@ -1,20 +1,22 @@
-# Sculpt Show v1.0.0 RC1 — Sculpt CH/BUS finish
+# Sculpt Show v1.0.0 RC2 — Dock ridimensionabile e icona SHOW
 
 ## Guida italiana e versione corrente
+
+RC2 aggiunge la maniglia orizzontale tra Cue List e Mixer/Waveform: trascinare su/giù, altezza condivisa salvata solo al rilascio. L’icona originale SHOW sostituisce il wordmark nell’intestazione. Sono due modifiche di layout richieste esplicitamente dopo il restyling; il gate registra questa eccezione e mantiene congelati gli altri controlli e i motori. B01 resta aperto, senza modifiche funzionali ai motori.
 
 Restyling esclusivamente grafico: palette Sculpt centralizzata, superfici antracite, accenti ambra, selezione turchese e trasporto distinto. Dimensioni, posizioni, comandi e motori preservati. La promozione a v1 definitiva richiede il collaudo del progetto/hardware descritto nella checklist.
 
 La base mantiene i gruppi dell’inspector aperti durante la selezione delle cue e sostituisce il layout lazy del pannello con geometria completa e ritorno in cima al cambio cue. I campi non confermati non passano alla cue successiva.
 
-SHOW 1.0.0 RC1 include la [guida utente italiana completa](docs/SCULPT_SHOW_GUIDA_UTENTE_IT.md), disponibile offline dal menu Help dell’app. La [versione HTML](docs/SCULPT_SHOW_GUIDA_UTENTE_IT.html) è consultabile/stampabile; il [rapporto sorgenti](docs/SCULPT_SHOW_VERIFICA_GUIDA_IT.json) registra gli hash del codice verificato. La guida distingue funzioni operative, MTC storico escluso, backup non implementato e collaudi hardware ancora necessari. IN/OUT in HH:MM:SS:MMM, con fade automatici opzionali; si digitano in General o nella waveform e si trascinano sul grafico; i parametri video si confermano con Invio.
+SHOW 1.0.0 RC2 include la [guida utente italiana completa](docs/SCULPT_SHOW_GUIDA_UTENTE_IT.md), disponibile offline dal menu Help dell’app. La [versione HTML](docs/SCULPT_SHOW_GUIDA_UTENTE_IT.html) è consultabile/stampabile; il [rapporto sorgenti](docs/SCULPT_SHOW_VERIFICA_GUIDA_IT.json) registra gli hash del codice verificato. La guida distingue funzioni operative, MTC storico escluso, backup non implementato e collaudi hardware ancora necessari. IN/OUT in HH:MM:SS:MMM, con fade automatici opzionali; si digitano in General o nella waveform e si trascinano sul grafico; i parametri video si confermano con Invio.
 
 
 ## Note storiche fino alla 0.18.2
 
-Le note seguenti sono conservate come storico; per comportamento e limiti correnti usare la guida 1.0.0 RC1 sopra.
+Le note seguenti sono conservate come storico; per comportamento e limiti correnti usare la guida 1.0.0 RC2 sopra.
 
 ## Layout
-- Inspector and its Timecode monitor share a permanent right-hand rail, outside the mixer/waveform `VSplitView`. Opening or resizing the mixer cannot cover the right rail.
+- Inspector and its Timecode monitor share a permanent right-hand rail, outside the mixer/waveform height split. Opening or resizing the mixer cannot cover the right rail.
 - Timecode occupies the bottom of the Inspector (approximately 46% of the available right-rail height); Inspector sections remain scrollable above it. Timecode inherits the Inspector's width and can be shown/hidden independently.
 - All Inspector sections remain collapsed by default, as in v0.18.1.
 

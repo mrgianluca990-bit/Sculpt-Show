@@ -27,7 +27,7 @@ for path,h in baseline['source_sha256'].items():
   if baseline['layout_calls'][path]!=calls(now):geometry.append(path)
  if any(x in path for x in ['SculptShowCore/','SculptLTCCore/']) or Path(path).name in ['PlaybackEngine.swift','RoutedAudioEngine.swift','ShowStore.swift','VideoPlayback.swift','VideoVoice.swift','OSCControl.swift','MIDIControl.swift','OutputMeterMonitor.swift','PlaybackPositionView.swift','VideoSoundtrack.swift','SculptDAWLaunchBridge.swift','SculptDAWSessionImport.swift','ConditionalLoopRealtime.swift','LTCRealtimeState.swift','CenteringPanControl.swift']:
   if hashlib.sha256((root/path).read_bytes()).hexdigest()!=h:protected.append(path)
-report={'baseline':baseline['base_commit'],'geometry_or_typography_changed':geometry,'protected_sources_changed':protected,'pass':not geometry and not protected}
+report={'baseline':baseline['base_commit'],'geometry_or_typography_changed':geometry,'protected_sources_changed':protected,'authorized_layout_changes':baseline.get('authorized_layout_changes',{}),'pass':not geometry and not protected}
 print(json.dumps(report,indent=2))
 if len(__import__('sys').argv)>1:Path(__import__('sys').argv[1]).write_text(json.dumps(report,indent=2)+'\n')
 assert report['pass']

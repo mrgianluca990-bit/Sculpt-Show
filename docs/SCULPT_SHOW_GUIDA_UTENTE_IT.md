@@ -1,6 +1,6 @@
 # SCULPT SHOW — Guida utente italiana
 
-Edizione 1.0.0 RC1 (candidata, collaudo hardware da completare) · 25 ottobre 2026. Repository: mrgianluca990-bit/Sculpt-Show. Branch di riferimento: fix/marker-loop-bridge-workspace, PR #2. Questa guida descrive il codice della versione distribuita con essa; non certifica un impianto o la fluidità di ogni file/dispositivo.
+Edizione 1.0.0 RC2 (candidata, collaudo hardware da completare) · 25 ottobre 2026. Repository: mrgianluca990-bit/Sculpt-Show. Branch di riferimento: fix/marker-loop-bridge-workspace, PR #2. Questa guida descrive il codice della versione distribuita con essa; non certifica un impianto o la fluidità di ogni file/dispositivo.
 
 ## 1. Ambito, lettura e stato delle funzioni
 
@@ -28,7 +28,7 @@ In alto sono presenti apertura, salvataggio, Show Rules, Preflight e New List. L
 
 Le cue list occupano il centro. Il pannello destro offre Inspector oppure Active Cues, come viste alternative. Active Cues elenca le cue attive con fase, tempo/progresso e controlli di selezione, pausa/ripresa, fade e stop. Il lettore Timecode dispone del suo pannello. Mixer e waveform non devono coprire il trasporto o l’inspector.
 
-Si possono ridimensionare le cue list e l’inspector tramite i divisori. Le larghezze sono preferenze locali del Mac. Riordinare le liste trascinando la maniglia a righe verso un’altra lista o la zona finale. Il riordino conserva gli identificatori delle cue e i loro riferimenti.
+Si possono ridimensionare le cue list e l’inspector tramite i divisori. Le larghezze sono preferenze locali del Mac. Tra Cue List e Mixer/Waveform c’è una maniglia orizzontale: trascinarla verso l’alto o il basso per regolare l’altezza del dock. Mixer e Waveform condividono l’altezza, salvata al rilascio e ripristinata alla riapertura. L’icona SHOW nell’intestazione identifica l’app; il titolo accanto resta modificabile. Riordinare le liste trascinando la maniglia a righe verso un’altra lista o la zona finale. Il riordino conserva gli identificatori delle cue e i loro riferimenti.
 
 La finitura Sculpt usa superfici antracite, accenti ambra e selezione turchese. GO è turchese, STOP rosso, FADE ambra; il colore di selezione non indica che la cue sia in riproduzione. Stati e icone restano distinti. Il tema è centralizzato in SculptTheme.swift e non cambia comandi o layout.
 

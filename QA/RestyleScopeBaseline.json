@@ -362,8 +362,10 @@
       ".frame(width: 12)",
       ".padding(16)",
       ".frame(minWidth: 300)",
-      ".frame(minHeight: min(235, available.size.height * 0.35))",
-      ".frame(minHeight: min(240, available.size.height * 0.35),\n                            idealHeight: min(340, available.size.height * 0.5))",
+      ".frame(maxHeight: .infinity)",
+      ".frame(height: 8)",
+      ".frame(width: 48, height: 3)",
+      ".frame(height: height)",
       ".frame(width: available.size.width, height: available.size.height)",
       ".frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)",
       ".frame(width: 8)",
@@ -375,11 +377,7 @@
       ".frame(maxWidth: .infinity)",
       ".frame(width: min(650, max(280, inspectorWidth)))",
       ".frame(maxWidth: .infinity, maxHeight: .infinity)",
-      ".font(.system(size: 28, weight: .medium))",
-      ".font(.system(size: 21, weight: .black, design: .rounded))",
-      ".tracking(3)",
-      ".font(.system(size: 10, weight: .semibold, design: .monospaced))",
-      ".tracking(3)",
+      ".frame(width: 54, height: 54)",
       ".frame(width: 1, height: 31)",
       ".padding(.horizontal, 12)",
       ".frame(maxWidth: 350, alignment: .leading)",
@@ -741,5 +739,12 @@
       ".padding(24)",
       ".frame(width: 620)"
     ]
+  },
+  "authorized_layout_changes": {
+    "Sources/SculptShowApp/WorkspaceView.swift": {
+      "date": "2026-10-25",
+      "reason": "User explicitly requested a draggable height divider for Mixer/Waveform and original app icon instead of the header wordmark. Only these two regions change; protected engines remain frozen.",
+      "previous_commit": "004eb04703921c95c23120b81d25907039e972f4"
+    }
   }
 }

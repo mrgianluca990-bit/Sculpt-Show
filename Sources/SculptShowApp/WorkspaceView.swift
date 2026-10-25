@@ -5,6 +5,16 @@ import UniformTypeIdentifiers
 
 private typealias Skin = SculptTheme
 
+private enum ShowBrand {
+    // Load once; the installed app always uses its existing icon resource.
+    static let icon: NSImage = {
+        let development = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/SculptShow.icns")
+        let url = Bundle.main.url(forResource: "SculptShow", withExtension: "icns") ?? development
+        return NSImage(contentsOf: url) ?? NSImage(named: NSImage.applicationIconName) ?? NSImage()
+    }()
+}
 
 private extension CueTint {
     var swatch: Color {
@@ -148,6 +158,9 @@ struct WorkspaceView: View {
     @State private var inspectorWidth: Double = 346
     @AppStorage("SculptShow.RightPanel.v1") private var rightPanel = "Inspector"
     @State private var inspectorResizeStart: Double?
+    @AppStorage("SculptShow.DockHeight.v1") private var savedDockHeight: Double = 340
+    @State private var dockHeight: Double = 340
+    @State private var dockResizeStart: Double?
     @State private var expandedInspectorSections: Set<String> = []
     @State private var keyboardMonitor: Any?
 
@@ -412,7 +425,7 @@ struct WorkspaceView: View {
         store.removeCue(cueID, from: listID)
     }
 
-    /// The cue-list workspace alone participates in the mixer VSplitView.
+    /// The cue-list workspace alone participates in the mixer height split.
     /// Inspector and LTC reader remain in the foreground to its right.
     private var cueListWorkspace: some View {
         ScrollView(.horizontal) {
@@ -440,15 +453,31 @@ struct WorkspaceView: View {
         Group {
             if showingOutputMixer || showingWaveforms {
                 GeometryReader { available in
-                    // Fixed split minima could exceed the window and draw over
-                    // the transport. Scale both minima to the actual editor area.
-                    VSplitView {
-                        cueListWorkspace.frame(minHeight: min(235, available.size.height * 0.35))
-                        waveformAndMixer.frame(minHeight: min(240, available.size.height * 0.35),
-                            idealHeight: min(340, available.size.height * 0.5))
+                    let minimum = min(150.0, Double(available.size.height) * 0.25)
+                    let maximum = max(minimum, Double(available.size.height) - minimum - 8)
+                    let height = min(maximum, max(minimum, dockHeight))
+                    VStack(spacing: 0) {
+                        cueListWorkspace.frame(maxHeight: .infinity)
+                        Rectangle().fill(Skin.stroke).frame(height: 8)
+                            .overlay(Capsule().fill(Skin.gold.opacity(0.65)).frame(width: 48, height: 3))
+                            .contentShape(Rectangle())
+                            .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                                .onChanged { value in
+                                    if dockResizeStart == nil { dockResizeStart = height }
+                                    dockHeight = min(maximum, max(minimum,
+                                        (dockResizeStart ?? height) - Double(value.translation.height)))
+                                }
+                                .onEnded { _ in
+                                    savedDockHeight = dockHeight
+                                    dockResizeStart = nil
+                                })
+                            .accessibilityLabel("Resize Mixer / Waveform")
+                            .help("Drag up or down to resize Mixer / Waveform")
+                        waveformAndMixer.frame(height: height)
                     }
                     .frame(width: available.size.width, height: available.size.height)
                     .clipped()
+                    .onAppear { dockHeight = savedDockHeight.isFinite ? savedDockHeight : 340 }
                 }
             } else {
                 cueListWorkspace
@@ -533,18 +562,9 @@ struct WorkspaceView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "waveform.path")
-                .font(.system(size: 28, weight: .medium))
-                .foregroundColor(Skin.gold)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("SCULPT")
-                    .font(.system(size: 21, weight: .black, design: .rounded))
-                    .tracking(3)
-                Text("S H O W")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .tracking(3)
-                    .foregroundColor(Skin.gold)
-            }
+            Image(nsImage: ShowBrand.icon).resizable().interpolation(.high)
+                .frame(width: 54, height: 54)
+                .accessibilityLabel("Sculpt Show")
             Rectangle().fill(Skin.stroke).frame(width: 1, height: 31).padding(.horizontal, 12)
             EditableTitle(
                 title: store.show.name,
