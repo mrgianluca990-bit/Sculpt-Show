@@ -54,16 +54,16 @@ private struct StemInputStrip: View {
             } label: {
                 Text("PAN " + (element.pan == 0 ? "C" : String(Int((element.pan * 100).rounded()))) + " ↺")
                     .font(.system(size: 8, design: .monospaced)).frame(maxWidth: .infinity, minHeight: 20)
-                    .contentShape(Rectangle()).background(Color.gray.opacity(0.2), in: RoundedRectangle(cornerRadius: 3))
+                    .contentShape(Rectangle()).background(SculptTheme.stroke.opacity(0.5), in: RoundedRectangle(cornerRadius: 3))
             }.buttonStyle(.plain).help("Click to center pan").accessibilityLabel("Center pan " + element.name)
             CenteringPanControl(value: Binding(get: { element.pan }, set: {
                 store.setStemMixer(element.id, cueID: cue.id, listID: listID, pan: $0, using: playback)
             }), label: "Pan " + element.name).frame(height: 18)
             HStack(spacing: 2) {
-                MixerSwitch(title: "M", active: element.muted, color: .red) {
+                MixerSwitch(title: "M", active: element.muted, color: SculptTheme.danger) {
                     store.setElementMuted(element.id, in: cue.id, listID: listID, to: !element.muted, using: playback)
                 }.accessibilityLabel("Mute " + element.name)
-                MixerSwitch(title: "S", active: playback.inputSoloIDs.contains(element.id), color: .yellow) {
+                MixerSwitch(title: "S", active: playback.inputSoloIDs.contains(element.id), color: SculptTheme.warning) {
                     playback.toggleInputSolo(element.id)
                 }.accessibilityLabel("Solo " + element.name)
             }
@@ -77,7 +77,7 @@ private struct StemInputStrip: View {
                 .font(.system(size: 8)).lineLimit(1)
         }
         .padding(4).frame(width: 51)
-        .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        .background(SculptTheme.raised, in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -87,7 +87,7 @@ private struct MonitorMasterStrip: View {
     let faderHeight: CGFloat
     var body: some View {
         VStack(spacing: 4) {
-            Text("MONITOR").font(.system(size: 11, weight: .heavy, design: .monospaced)).foregroundStyle(.cyan)
+            Text("MONITOR").font(.system(size: 11, weight: .heavy, design: .monospaced)).foregroundStyle(SculptTheme.accent)
             Text("OUT \(store.show.monitor.leftOutput) / \(store.show.monitor.rightOutput)").font(.system(size: 9))
             Text("\(Int(store.show.monitor.gain * 100)) %").font(.system(size: 10, design: .monospaced))
             MixerFader(value: Binding(get: { store.show.monitor.gain }, set: {
@@ -98,26 +98,26 @@ private struct MonitorMasterStrip: View {
             } label: {
                 Text("PAN " + (store.show.monitor.pan == 0 ? "C" : String(Int((store.show.monitor.pan * 100).rounded()))) + " ↺")
                     .font(.system(size: 9, design: .monospaced)).frame(maxWidth: .infinity, minHeight: 20)
-                    .contentShape(Rectangle()).background(Color.cyan.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
+                    .contentShape(Rectangle()).background(SculptTheme.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
             }.buttonStyle(.plain).help("Click to center Monitor pan").accessibilityLabel("Center Monitor pan")
             CenteringPanControl(value: Binding(get: { store.show.monitor.pan }, set: {
                 store.setMonitorMix(pan: $0, using: playback)
             }), label: "Monitor pan").frame(height: 18)
-            MixerSwitch(title: "MUTE", active: store.show.monitor.muted, color: .red) {
+            MixerSwitch(title: "MUTE", active: store.show.monitor.muted, color: SculptTheme.danger) {
                 store.setMonitorMix(muted: !store.show.monitor.muted, using: playback)
             }.accessibilityLabel("Monitor mute")
             if !store.show.monitor.isAvailable(deviceUID: playback.routingDeviceUID, channels: playback.routingOutputCount) {
-                Text("UNAVAILABLE").font(.caption2).foregroundStyle(.orange)
+                Text("UNAVAILABLE").font(.caption2).foregroundStyle(SculptTheme.gold)
             } else if playback.programOutputCount == 0 {
-                Text("Monitor only").font(.caption2).foregroundStyle(.cyan)
+                Text("Monitor only").font(.caption2).foregroundStyle(SculptTheme.accent)
             } else if playback.monitorOutputs.contains(where: { !playback.outputControls.isAudible($0) }) {
-                Text("OUTPUT MUTED").font(.caption2).foregroundStyle(.orange)
+                Text("OUTPUT MUTED").font(.caption2).foregroundStyle(SculptTheme.gold)
             }
             Text("POST-FADER").font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
         }
         .padding(8).frame(maxWidth: .infinity)
-        .background(Color.cyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.cyan.opacity(0.5)))
+        .background(SculptTheme.selection, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(SculptTheme.accent.opacity(0.5)))
     }
 }
 
@@ -139,9 +139,9 @@ private struct MixerSwitch: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Text(title).font(.system(size: 10, weight: .bold)).foregroundColor(active ? .black : .white)
+            Text(title).font(.system(size: 10, weight: .bold)).foregroundColor(active ? SculptTheme.base : SculptTheme.text)
                 .frame(minWidth: 18, minHeight: 20).padding(.horizontal, 2)
-                .background(active ? color : Color.gray.opacity(0.22), in: RoundedRectangle(cornerRadius: 3))
+                .background(active ? color : SculptTheme.raised, in: RoundedRectangle(cornerRadius: 3))
         }.buttonStyle(.plain).accessibilityValue(active ? "On" : "Off")
     }
 }
@@ -162,8 +162,8 @@ struct MonitorSetupView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Picker("LEFT", selection: $left) { ForEach(1...max(1, playback.routingOutputCount), id: \.self) { Text("OUT \($0)").tag($0) } }
             Picker("RIGHT", selection: $right) { ForEach(1...max(1, playback.routingOutputCount), id: \.self) { Text("OUT \($0)").tag($0) } }
-            if playback.routingOutputCount == 2 { Text("This interface will carry Monitor only. Program outputs return when Monitor is disabled.").font(.caption).foregroundStyle(.orange) }
-            if !idle { Text("STOP ALL required to configure outputs").foregroundStyle(.orange) }
+            if playback.routingOutputCount == 2 { Text("This interface will carry Monitor only. Program outputs return when Monitor is disabled.").font(.caption).foregroundStyle(SculptTheme.gold) }
+            if !idle { Text("STOP ALL required to configure outputs").foregroundStyle(SculptTheme.gold) }
             if store.show.monitor.enabled {
                 Button("Disable Monitor") {
                     var settings = store.show.monitor; settings.enabled = false

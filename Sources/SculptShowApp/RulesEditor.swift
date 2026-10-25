@@ -76,7 +76,7 @@ struct RulesEditor: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .padding(.horizontal, 18)
                 Text(inheritanceStatus)
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.caption).foregroundStyle(SculptTheme.gold)
                     .padding(.horizontal, 18).padding(.bottom, 10)
             }
             Divider()
@@ -101,7 +101,7 @@ struct RulesEditor: View {
     private var topBar: some View {
         HStack {
             Image(systemName: "arrow.triangle.branch")
-                .foregroundStyle(.orange)
+                .foregroundStyle(SculptTheme.gold)
             VStack(alignment: .leading, spacing: 3) {
                 Text(isMarkerRule ? "MARKER INTERACTION RULES" : "INTERACTION RULES").font(.headline)
                 Text(scopeName).font(.caption).foregroundStyle(.secondary)
@@ -135,7 +135,7 @@ struct RulesEditor: View {
                             }
                             .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(selectedID == rule.id ? Color.orange.opacity(0.19) : Color.gray.opacity(0.12),
+                            .background(selectedID == rule.id ? Color.orange.opacity(0.19) : SculptTheme.raised,
                                         in: RoundedRectangle(cornerRadius: 7))
                         }
                         .buttonStyle(.plain)

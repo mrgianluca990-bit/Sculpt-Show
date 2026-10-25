@@ -3,15 +3,7 @@ import AppKit
 import SculptShowCore
 import UniformTypeIdentifiers
 
-private enum Skin {
-    static let base = Color(red: 0.075, green: 0.082, blue: 0.085)
-    static let panel = Color(red: 0.12, green: 0.13, blue: 0.14)
-    static let raised = Color(red: 0.17, green: 0.18, blue: 0.19)
-    static let stroke = Color(red: 0.26, green: 0.27, blue: 0.28)
-    static let gold = Color(red: 0.93, green: 0.70, blue: 0.38)
-    static let green = Color(red: 0.44, green: 0.82, blue: 0.60)
-    static let soft = Color(red: 0.62, green: 0.65, blue: 0.67)
-}
+private typealias Skin = SculptTheme
 
 
 private extension CueTint {
@@ -174,6 +166,7 @@ struct WorkspaceView: View {
             statusBar
         }
         .background(Skin.base)
+        .tint(SculptTheme.gold)
         .overlay {
             if store.isLoadingProject {
                 ZStack {
@@ -606,7 +599,7 @@ struct WorkspaceView: View {
                     .font(.system(size: 17, weight: .black, design: .rounded))
                     .foregroundColor(.black)
                     .frame(width: 100, height: 43)
-                    .background(Skin.green, in: RoundedRectangle(cornerRadius: 6))
+                    .background(SculptTheme.accent, in: RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)
             .disabled(store.selectedCue == nil)
@@ -716,7 +709,7 @@ struct WorkspaceView: View {
             .frame(minHeight: 29)
             .fixedSize(horizontal: true, vertical: false)
         }
-        .buttonStyle(TransportControlStyle(destructive: destructive))
+        .buttonStyle(TransportControlStyle(destructive: destructive, warning: name == "FADE"))
         .help(name)
         .accessibilityLabel(name)
     }
@@ -756,7 +749,7 @@ struct WorkspaceView: View {
                                     .help(state.phase == .paused ? "Resume cue" : "Pause cue")
                                     Button("FADE") { playback.fadeOut(cue) }
                                     Spacer()
-                                    Button("STOP") { playback.stop(cue.id) }.tint(.red)
+                                    Button("STOP") { playback.stop(cue.id) }.tint(SculptTheme.danger)
                                 }.buttonStyle(.bordered)
                             }
                             .padding(12)
@@ -1169,7 +1162,7 @@ private struct CueListPanel: View {
                 Spacer()
                 if !list.rules.isEmpty {
                     Image(systemName: "bolt.fill")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(SculptTheme.gold)
                         .help("\(list.rules.count) list rules")
                 }
                 Text("\(list.cues.count)")
@@ -1285,7 +1278,7 @@ private struct CueListPanel: View {
                         store.stopList(list.id, using: playback)
                     } label: {
                         Label("STOP", systemImage: "stop.fill")
-                            .foregroundColor(.red)
+                            .foregroundColor(SculptTheme.danger)
                     }
                     .help("Stop this list and cancel its pending starts")
                 }
@@ -1586,12 +1579,12 @@ private struct CueRow: View {
     }
 
     private var rowBackground: Color {
-        if cue.tint == .none { return selected ? Skin.gold.opacity(0.15) : Skin.raised }
+        if cue.tint == .none { return selected ? SculptTheme.selection : Skin.raised }
         return cue.tint.swatch.opacity(selected ? 0.32 : 0.22)
     }
 
     private var rowOutline: Color {
-        selected ? Skin.gold.opacity(0.55) : .clear
+        selected ? SculptTheme.accent.opacity(0.85) : .clear
     }
 
     private var controlsRow: some View {
@@ -1635,7 +1628,7 @@ private struct CueRow: View {
             HStack(alignment: .center, spacing: 9) {
                 Text(String(format: "%03d", cueNumber))
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(selected ? Skin.gold : Skin.soft)
+                    .foregroundColor(selected ? SculptTheme.accent : Skin.soft)
                 cueDetails
                 Spacer(minLength: 0)
             }
@@ -1744,13 +1737,15 @@ private struct CueRow: View {
 private struct TransportControlStyle: ButtonStyle {
     var selected = false
     var destructive = false
+    var warning = false
+    @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundColor(selected ? .black : (destructive ? .red : .white))
+            .foregroundColor(selected ? SculptTheme.base : (destructive ? SculptTheme.danger : warning ? SculptTheme.gold : SculptTheme.text))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(selected ? Skin.gold : Skin.raised, in: RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Skin.soft.opacity(0.4)))
-            .opacity(configuration.isPressed ? 0.7 : 1)
+            .background(selected ? SculptTheme.accent : destructive ? SculptTheme.danger.opacity(0.12) : warning ? SculptTheme.gold.opacity(0.12) : Skin.raised, in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(selected ? SculptTheme.accent : destructive ? SculptTheme.danger.opacity(0.65) : warning ? SculptTheme.gold.opacity(0.65) : Skin.stroke))
+            .opacity(!enabled ? 0.40 : configuration.isPressed ? 0.65 : 1)
     }
 }

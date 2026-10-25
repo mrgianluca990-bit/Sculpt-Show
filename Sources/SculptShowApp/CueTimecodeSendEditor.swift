@@ -34,7 +34,7 @@ struct CueTimecodeSendEditor: View {
                         TimecodeEntry(element: element, cueID: cue.id, listID: listID)
                         Text("SMPTE LTC is generated on a dedicated mono Core Audio output. Output must be assigned explicitly; settings take effect at the next GO or PLAY.")
                             .font(.caption).foregroundColor(.secondary)
-                    }.padding(8).background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                    }.padding(8).background(SculptTheme.raised, in: RoundedRectangle(cornerRadius: 6))
                 }
                 Button { store.addTimecode(to: cue.id, in: listID, using: playback) } label: { Label("Timecode +", systemImage: "clock") }
                     .disabled(cue.video != nil || cue.elements.contains(where: { $0.kind == .timecode }))
@@ -75,7 +75,7 @@ struct TimecodeEntry: View {
             }
             if invalidStart {
                 Text("Use valid HH:MM:SS:FF for the selected frame rate.")
-                    .font(.caption2).foregroundColor(.orange)
+                    .font(.caption2).foregroundColor(SculptTheme.gold)
             }
             HStack(spacing: 6) {
                 Text("TC OFFSET")
@@ -99,7 +99,7 @@ struct TimecodeEntry: View {
             .controlSize(.small)
             if invalidTrim {
                 Text("Use ±HH:MM:SS:FF within the selected frame rate.")
-                    .font(.caption2).foregroundColor(.orange)
+                    .font(.caption2).foregroundColor(SculptTheme.gold)
             }
             Text("Return confirms and closes editing · negative offset subtracts LTC frames")
                 .font(.caption2).foregroundStyle(.secondary)
@@ -149,7 +149,7 @@ struct TimecodeEntry: View {
             .font(.system(size: 10, weight: .semibold, design: .monospaced))
             if current.ltcOutputChannel == nil && !current.muted {
                 Label("Select an LTC output before playback", systemImage: "exclamationmark.triangle")
-                    .font(.caption2).foregroundColor(.orange)
+                    .font(.caption2).foregroundColor(SculptTheme.gold)
             }
         }
         .onAppear {

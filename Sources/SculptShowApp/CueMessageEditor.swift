@@ -74,7 +74,7 @@ private struct OSCMessageRow: View {
             Picker("Argument", selection: $draft.argument) { ForEach(CueOSCArgument.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
             if draft.argument != .none { TextField("Value", text: $draft.value) }
             HStack { Button("Apply OSC") { save(draft) }.disabled(!draft.isValid); Button("Remove OSC", action: remove) }.controlSize(.small)
-            if !draft.isValid { Text("Enter a valid IPv4, port, literal path and argument.").foregroundStyle(.orange).font(.caption2) }
+            if !draft.isValid { Text("Enter a valid IPv4, port, literal path and argument.").foregroundStyle(SculptTheme.gold).font(.caption2) }
         }.textFieldStyle(.roundedBorder).onAppear { draft = message }.onChange(of: message) { draft = $0 }
     }
 }

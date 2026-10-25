@@ -105,7 +105,7 @@ struct WaveformRangeBoundary: View {
         let position = preview ?? (start ? cue.playbackStart : (cue.playbackRange?.end ?? duration))
         ZStack(alignment:.top) {
             Rectangle().fill(Color.cyan).frame(width:2)
-            Text(start ? "IN" : "OUT").font(.system(size:9,weight:.bold,design:.monospaced)).foregroundStyle(.cyan).padding(2).background(.black.opacity(0.8))
+            Text(start ? "IN" : "OUT").font(.system(size:9,weight:.bold,design:.monospaced)).foregroundStyle(SculptTheme.accent).padding(2).background(.black.opacity(0.8))
         }.frame(width:26).contentShape(Rectangle())
             .offset(x:CGFloat(position/duration)*width-13)
             .gesture(DragGesture(minimumDistance:2,coordinateSpace:.named("waveform-marker-lane"))

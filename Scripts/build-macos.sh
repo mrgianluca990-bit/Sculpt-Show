@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+python3 QA/verify-restyle-scope.py
 python3 Scripts/build-user-guide.py
 swift test
 swift build -c release --arch arm64 --arch x86_64 --product SculptShow

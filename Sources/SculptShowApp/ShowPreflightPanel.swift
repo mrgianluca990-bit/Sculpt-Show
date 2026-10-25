@@ -35,7 +35,7 @@ struct ShowPreflightPanel: View {
                 if result.ready && result.warningCount == 0 {
                     Label("No issues detected in the checked media and routing assignments.",
                           systemImage: "checkmark.circle.fill")
-                        .foregroundColor(.green)
+                        .foregroundColor(SculptTheme.green)
                 }
                 if let relinkedMessage { Text(relinkedMessage).foregroundColor(.secondary) }
                 Divider()

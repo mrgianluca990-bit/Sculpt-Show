@@ -10,7 +10,7 @@ import WebKit
         window.isReleasedWhenClosed = false; window.contentView = guide.web; window.orderFront(nil)
         defer { window.orderOut(nil) }
         for _ in 0..<200 { if guide.web.title?.contains("Guida utente italiana") == true && !guide.web.isLoading { break }; try await Task.sleep(nanoseconds:50_000_000) }
-        guard guide.web.title?.contains("0.24.1") == true else { fatalError("Guide HTML did not load: \(guide.web.title ?? "nil")") }
+        guard guide.web.title?.contains("1.0.0") == true else { fatalError("Guide HTML did not load: \(guide.web.title ?? "nil")") }
         print("PASS · offline Italian guide renders inside real WKWebView")
         let found: Bool = await withCheckedContinuation { done in guide.web.find("IN/OUT",configuration:WKFindConfiguration()) { done.resume(returning:$0.matchFound) } }
         guard found else { fatalError("Guide search failed") }

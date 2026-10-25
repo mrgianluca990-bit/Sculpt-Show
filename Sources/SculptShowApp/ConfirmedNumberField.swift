@@ -30,13 +30,13 @@ struct ConfirmedNumberField: NSViewRepresentable {
             if !editing {
                 let display = formatted(value)
                 if field.stringValue != display { field.stringValue = display }
-                field.textColor = .labelColor
+                field.textColor = SculptTheme.nsText
             }
         }
         func controlTextDidBeginEditing(_ obj: Notification) { editing = true }
         func controlTextDidEndEditing(_ obj: Notification) {
             editing = false
-            if let field = obj.object as? NSTextField { field.stringValue = formatted(value); field.textColor = .labelColor }
+            if let field = obj.object as? NSTextField { field.stringValue = formatted(value); field.textColor = SculptTheme.nsText }
         }
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             guard let field = control as? NSTextField else { return false }
@@ -47,13 +47,13 @@ struct ConfirmedNumberField: NSViewRepresentable {
                     return true
                 }
                 value = next; editing = false
-                field.stringValue = formatted(next); field.textColor = .labelColor; field.toolTip = "Return confirms; leaving the field discards unfinished edits."
+                field.stringValue = formatted(next); field.textColor = SculptTheme.nsText; field.toolTip = "Return confirms; leaving the field discards unfinished edits."
                 commit(next)
                 field.window?.makeFirstResponder(nil)
                 return true
             }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-                editing = false; field.stringValue = formatted(value); field.textColor = .labelColor
+                editing = false; field.stringValue = formatted(value); field.textColor = SculptTheme.nsText
                 field.window?.makeFirstResponder(nil); return true
             }
             return false
@@ -62,7 +62,7 @@ struct ConfirmedNumberField: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField(); field.isEditable = true; field.isSelectable = true; field.isBezeled = true
-        field.bezelStyle = .roundedBezel; field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        field.bezelStyle = .roundedBezel; field.backgroundColor = SculptTheme.nsField; field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         field.alignment = .right; field.delegate = context.coordinator
         field.setAccessibilityLabel(label); field.toolTip = "Return confirms; leaving the field discards unfinished edits."
         context.coordinator.synchronize(field, value: value); return field

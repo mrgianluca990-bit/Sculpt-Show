@@ -44,7 +44,7 @@ struct ShowOutputMixerView: View {
         HStack(spacing: 12) {
             Label("MIXER", systemImage: "slider.vertical.3")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .foregroundColor(Color(red: 0.93, green: 0.70, blue: 0.38))
+                .foregroundColor(SculptTheme.gold)
             Text("\(deviceName) · \(channelCount) OUT")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -52,7 +52,7 @@ struct ShowOutputMixerView: View {
             if playback.outputControls.anySolo {
                 Text("SOLO: \(playback.outputControls.soloDescription)")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(.yellow)
+                    .foregroundColor(SculptTheme.warning)
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
@@ -60,7 +60,7 @@ struct ShowOutputMixerView: View {
                 .controlSize(.small).tint(store.show.monitor.enabled ? .cyan : .accentColor)
                 .disabled(!playback.routingEnabled || !playback.snapshots.isEmpty || (!store.show.monitor.enabled && channelCount < 2))
             if !playback.inputSoloIDs.isEmpty {
-                Button("CLEAR INPUT SOLO") { playback.clearInputSolos() }.controlSize(.small).tint(.yellow)
+                Button("CLEAR INPUT SOLO") { playback.clearInputSolos() }.controlSize(.small).tint(SculptTheme.warning)
             }
             if section == 1 {
             Button("CLEAR PEAK") { playback.resetOutputPeakHolds() }
@@ -174,11 +174,11 @@ private struct OutputChannelStrip: View {
                 }
             }
             if playback.monitorOutputs.contains(channel) {
-                Text("MON").font(.system(size: 9, weight: .bold)).foregroundStyle(.cyan)
+                Text("MON").font(.system(size: 9, weight: .bold)).foregroundStyle(SculptTheme.accent)
             } else if playback.generatedLTC?.output == channel {
                 Text("LTC")
                     .font(.system(size: 9, weight: .heavy, design: .monospaced))
-                    .foregroundColor(.orange)
+                    .foregroundColor(SculptTheme.gold)
                     .help("This output is carrying SMPTE LTC, not program audio")
             } else {
                 labelView
@@ -196,14 +196,13 @@ private struct OutputChannelStrip: View {
         Button(action: action) {
             Text(letter)
                 .font(.system(size: 10, weight: .heavy, design: .monospaced))
-                .foregroundColor(isActive ? .black : .gray)
+                .foregroundColor(isActive ? SculptTheme.base : SculptTheme.soft)
                 .frame(width: 19, height: 18)
-                .background(isActive ? activeColor : Color.black.opacity(0.38),
+                .background(isActive ? activeColor : SculptTheme.base,
                             in: RoundedRectangle(cornerRadius: 3))
                 .overlay(RoundedRectangle(cornerRadius: 3)
-                    .strokeBorder(isActive ? activeColor : Color.gray.opacity(0.35), lineWidth: 1))
-                .shadow(color: isActive ? activeColor.opacity(0.65) : .clear,
-                        radius: isActive ? 4 : 0)
+                    .strokeBorder(isActive ? activeColor : SculptTheme.stroke, lineWidth: 1))
+
         }
         .buttonStyle(.plain)
         .accessibilityLabel(help)
@@ -217,13 +216,13 @@ private struct OutputChannelStrip: View {
         let rmsValue = CGFloat(OutputMeterLevels.normalized(levels.rms))
         let peakValue = CGFloat(OutputMeterLevels.normalized(levels.peak))
         let heldValue = CGFloat(OutputMeterLevels.normalized(hold))
-        let currentColor: Color = peakValue > 0.98 ? .red : peakValue > 0.83 ? .yellow : .green
+        let currentColor: Color = peakValue > 0.98 ? SculptTheme.meterClip : peakValue > 0.83 ? SculptTheme.meterAmber : SculptTheme.meterGreen
         return ZStack(alignment: .bottom) {
             RoundedRectangle(cornerRadius: 2)
                 .fill(Color.black.opacity(0.48))
                 .frame(width: 17, height: meterHeight)
             RoundedRectangle(cornerRadius: 2)
-                .fill(Color.green.opacity(0.8))
+                .fill(SculptTheme.meterGreen.opacity(0.85))
                 .frame(width: 17, height: meterHeight * rmsValue)
             if levels.peak > 0 {
                 Rectangle()
@@ -233,7 +232,7 @@ private struct OutputChannelStrip: View {
             }
             if hold > 0 {
                 Rectangle()
-                    .fill(hold >= 1 ? Color.red : Color.yellow)
+                    .fill(hold >= 1 ? SculptTheme.meterClip : SculptTheme.meterAmber)
                     .frame(width: 17, height: 2)
                     .offset(y: -max(0, meterHeight * heldValue - 2))
             }

@@ -1,6 +1,6 @@
 # SCULPT SHOW — Guida utente italiana
 
-Edizione 0.24.1 RC2 · 25 ottobre 2026. Repository: mrgianluca990-bit/Sculpt-Show. Branch di riferimento: fix/marker-loop-bridge-workspace, PR #2. Questa guida descrive il codice della versione distribuita con essa; non certifica un impianto o la fluidità di ogni file/dispositivo.
+Edizione 1.0.0 RC1 (candidata, collaudo hardware da completare) · 25 ottobre 2026. Repository: mrgianluca990-bit/Sculpt-Show. Branch di riferimento: fix/marker-loop-bridge-workspace, PR #2. Questa guida descrive il codice della versione distribuita con essa; non certifica un impianto o la fluidità di ogni file/dispositivo.
 
 ## 1. Ambito, lettura e stato delle funzioni
 
@@ -29,6 +29,8 @@ In alto sono presenti apertura, salvataggio, Show Rules, Preflight e New List. L
 Le cue list occupano il centro. Il pannello destro offre Inspector oppure Active Cues, come viste alternative. Active Cues elenca le cue attive con fase, tempo/progresso e controlli di selezione, pausa/ripresa, fade e stop. Il lettore Timecode dispone del suo pannello. Mixer e waveform non devono coprire il trasporto o l’inspector.
 
 Si possono ridimensionare le cue list e l’inspector tramite i divisori. Le larghezze sono preferenze locali del Mac. Riordinare le liste trascinando la maniglia a righe verso un’altra lista o la zona finale. Il riordino conserva gli identificatori delle cue e i loro riferimenti.
+
+La finitura Sculpt usa superfici antracite, accenti ambra e selezione turchese. GO è turchese, STOP rosso, FADE ambra; il colore di selezione non indica che la cue sia in riproduzione. Stati e icone restano distinti. Il tema è centralizzato in SculptTheme.swift e non cambia comandi o layout.
 
 L’inspector ha sezioni richiudibili, nell’ordine **GENERAL, MARKER, TRIGGER, STEMS, RULES & ACTIONS**. Sono chiuse inizialmente e quando si apre un altro progetto. I gruppi aperti restano aperti quando si seleziona un’altra cue, anche durante il play o con AUTO; il pannello torna in cima e gli eventuali valori digitati ma non confermati vengono scartati. Anche i gruppi interni Video Transform, Receive, Sends e Timecode iniziano chiusi. Aprire ciò che occorre con la freccia del gruppo.
 

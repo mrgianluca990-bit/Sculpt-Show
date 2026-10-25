@@ -28,6 +28,7 @@ struct SculptShowApp: App {
                 .environmentObject(playback)
                 .environmentObject(midi)
                 .preferredColorScheme(.dark)
+                .modifier(SculptSurface())
                 .onAppear {
                     osc.handle = { [weak showStore, weak playback] command in
                         guard let showStore, let playback else { return "Show unavailable" }
@@ -163,9 +164,11 @@ struct SculptShowApp: App {
         }
         Window("Guida utente italiana · SCULPT SHOW", id:"sculpt-user-guide") {
             UserGuideView().preferredColorScheme(.dark)
+                .modifier(SculptSurface())
         }.defaultSize(width:950,height:740)
         Window("Screens", id: "sculpt-screens") {
             VideoOutputSettings(video: playback.video).preferredColorScheme(.dark)
+                .modifier(SculptSurface())
         }.windowResizability(.contentSize)
     }
 }

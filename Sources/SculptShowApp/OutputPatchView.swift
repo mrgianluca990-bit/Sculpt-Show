@@ -84,14 +84,14 @@ struct OutputPatchView: View {
                 .font(.caption).foregroundStyle(issues.isEmpty ? Color.secondary : .orange)
             if store.show.monitor.enabled {
                 Text("Monitor OUT \(store.show.monitor.leftOutput)/\(store.show.monitor.rightOutput) · reserved · configure in Mixer")
-                    .font(.caption).foregroundStyle(.cyan)
+                    .font(.caption).foregroundStyle(SculptTheme.accent)
             }
-            if stale { Text("Project or device changed. Reload this draft before Apply.").font(.caption).foregroundStyle(.orange) }
+            if stale { Text("Project or device changed. Reload this draft before Apply.").font(.caption).foregroundStyle(SculptTheme.gold) }
             if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.secondary) }
             HStack {
                 Button("Cancel / Reload") { reload() }
                 Spacer()
-                if !idle { Text("STOP ALL required to apply").font(.caption).foregroundStyle(.orange) }
+                if !idle { Text("STOP ALL required to apply").font(.caption).foregroundStyle(SculptTheme.gold) }
                 Button("Apply Patch") { apply() }.buttonStyle(.borderedProminent)
                     .disabled(!idle || stale || uid.isEmpty || !playback.routingEnabled)
             }

@@ -128,13 +128,13 @@ struct CueContentsEditor: View {
                             .textSelection(.enabled)
                         if !FileManager.default.fileExists(atPath: element.sourcePath) {
                             Label("Audio not found", systemImage: "exclamationmark.triangle")
-                                .font(.caption).foregroundColor(.orange)
+                                .font(.caption).foregroundColor(SculptTheme.gold)
                         }
 
                     }
                 }
                 .padding(10)
-                .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                .background(SculptTheme.raised, in: RoundedRectangle(cornerRadius: 6))
             }
             if cue.hasAudio {
                 Text("Audio stems: START 00:00 · FULL SOURCE · aligned within the cue. Only the container duration limits playback.")

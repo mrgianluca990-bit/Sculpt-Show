@@ -208,7 +208,7 @@ struct TimecodeReaderView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Label("SMPTE LTC MONITOR", systemImage: "clock")
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(red: 0.93, green: 0.70, blue: 0.38))
+                    .foregroundColor(SculptTheme.gold)
                 Divider()
                 GeneratedLTCDisplay(clock:playback.displayClock)
                 Divider()
@@ -256,7 +256,7 @@ struct TimecodeReaderView: View {
                     Spacer()
                 }
                 if let error = reader.errorMessage {
-                    Text(error).font(.caption2).foregroundColor(.orange)
+                    Text(error).font(.caption2).foregroundColor(SculptTheme.gold)
                 }
                 Text("To verify LTC, patch the dedicated LTC OUT to a Core Audio input or loopback. " +
                      "The receiver decodes actual biphase-mark PCM. Use matching frame rates. " +
